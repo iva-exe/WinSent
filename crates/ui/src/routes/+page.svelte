@@ -13,7 +13,7 @@
 			daemon = {
 				alive: true,
 				uptime_s: pong.uptime_s,
-				detail: `služba běží (uptime ${formatUptime(pong.uptime_s)})`
+				detail: `uptime ${formatUptime(pong.uptime_s)} · protokol v${pong.protocol_version}`
 			};
 		} catch (e) {
 			daemon = { alive: false, uptime_s: 0, detail: String(e) };
@@ -34,6 +34,7 @@
 </script>
 
 <div class="shell">
+	<!-- Hlavička: glassmorphism, trvalý indikátor stavu démona -->
 	<header>
 		<h1>syswatch</h1>
 		<div class="daemon" title={daemon.detail}>
@@ -43,69 +44,93 @@
 	</header>
 
 	<main>
-		<p class="placeholder">
-			v0 — prázdný skelet. Obsah přijde s v1 (živé procesy).
-		</p>
-		<p class="detail">{daemon.detail}</p>
+		<div class="card">
+			<p class="placeholder">v0 — prázdný skelet</p>
+			<p class="detail">{daemon.detail}</p>
+			<p class="hint">Obsah přijde s v1 (živé procesy).</p>
+		</div>
 	</main>
 </div>
 
 <style>
-	/* Tech + minimalismus, tmavý základ (SPEC kap. 9.4). */
-	:global(body) {
-		background: #101014;
-		color: #e8e8ea;
-		font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
-	}
 	.shell {
 		display: flex;
 		flex-direction: column;
 		height: 100vh;
 	}
+
+	/* ── Hlavička — glassmorphism, jemný border (SPEC 9.4) ── */
 	header {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 0.75rem 1.25rem;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-		background: rgba(255, 255, 255, 0.03);
+		padding: 0.65rem 1.25rem;
+		border-bottom: 1px solid var(--border);
+		background: var(--surface);
+		backdrop-filter: blur(18px);
 	}
 	h1 {
 		margin: 0;
-		font-size: 1.05rem;
+		font-family: var(--font-heading);
+		font-size: 1.1rem;
 		font-weight: 600;
-		letter-spacing: 0.02em;
+		letter-spacing: 0.01em;
+		color: var(--accent);
 	}
+
+	/* ── Indikátor démona — barva výhradně podle stavu ── */
 	.daemon {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-		font-size: 0.85rem;
-		color: #b8b8bd;
+		padding: 0.25rem 0.7rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		background: var(--surface);
+		font-size: 0.82rem;
+		color: var(--text-dim);
 	}
 	.dot {
-		width: 10px;
-		height: 10px;
+		width: 8px;
+		height: 8px;
 		border-radius: 50%;
-		background: #e5484d; /* neběží = červená */
+		background: var(--danger);
+		box-shadow: 0 0 6px color-mix(in srgb, var(--danger) 60%, transparent);
 	}
 	.dot.alive {
-		background: #46a758; /* běží = zelená */
+		background: var(--ok);
+		box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 60%, transparent);
 	}
+
+	/* ── Obsah ── */
 	main {
 		flex: 1;
+		display: grid;
+		place-items: center;
+	}
+	.card {
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		justify-content: center;
-		gap: 0.5rem;
+		gap: 0.35rem;
+		padding: 1.5rem 2.5rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		background: var(--surface);
 	}
 	.placeholder {
-		color: #8a8a90;
+		margin: 0;
+		color: var(--text);
 		font-size: 0.95rem;
 	}
 	.detail {
-		color: #55555c;
-		font-size: 0.8rem;
+		margin: 0;
+		color: var(--text-dim);
+		font-size: 0.82rem;
+	}
+	.hint {
+		margin: 0;
+		color: var(--text-faint);
+		font-size: 0.78rem;
 	}
 </style>

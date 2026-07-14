@@ -1,0 +1,76 @@
+/* ═══ Designové tokeny (SPEC kap. 9.4 + preference) ═══
+ *
+ * Tech + minimalismus, tmavý základ, glassmorphism, jemné bordery.
+ * Akcent: čistě bílá — používá se pro aktivní/zvýrazněné prvky.
+ * Barvy se používají CÍLENĚ podle funkce, ne dekorativně:
+ *   --ok      zeleně = běží / v pořádku (jen skutečný stav, ne „nastaveno“)
+ *   --danger  červeně = neběží / problém
+ *   --warn    jantarová = varování / nevynucené (kap. 13.4)
+ * Inspirace Windows 11: vrstvené tmavé povrchy, decentní 1px bordery,
+ * radius 4–8 px, Segoe UI Variable jako fallback za Inter.
+ */
+
+:root {
+	/* povrchy — vrstvení jako Win11 mica/card */
+	--bg: #0f0f12;
+	--surface: rgba(255, 255, 255, 0.035);
+	--surface-hover: rgba(255, 255, 255, 0.06);
+	--border: rgba(255, 255, 255, 0.08);
+	--border-strong: rgba(255, 255, 255, 0.14);
+
+	/* text */
+	--text: #ececef;
+	--text-dim: #9a9aa1;
+	--text-faint: #5c5c63;
+
+	/* akcent — čistě bílá, střídmě (aktivní stavy, důraz) */
+	--accent: #ffffff;
+
+	/* funkční barvy — výhradně podle významu */
+	--ok: #5dbb63;
+	--danger: #e5484d;
+	--warn: #f0b429;
+
+	/* geometrie */
+	--radius-sm: 4px;
+	--radius: 6px;
+	--radius-lg: 8px;
+
+	/* typografie (SPEC 9.4: Tiempos Headline nadpisy, Inter text) */
+	--font-text: 'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+	--font-heading: 'Tiempos Headline', 'Georgia', serif;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	height: 100%;
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--font-text);
+	font-size: 14px;
+	line-height: 1.45;
+	-webkit-font-smoothing: antialiased;
+}
+
+/* Decentní scrollbar ve stylu Win11 */
+::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+::-webkit-scrollbar-thumb {
+	background: rgba(255, 255, 255, 0.14);
+	border-radius: 5px;
+	border: 3px solid transparent;
+	background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+	background-color: rgba(255, 255, 255, 0.22);
+}
+::-webkit-scrollbar-track {
+	background: transparent;
+}
