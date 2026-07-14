@@ -1,0 +1,24 @@
+# Rust
+/target/
+
+# Node / Bun / SvelteKit
+node_modules/
+.svelte-kit/
+build/
+dist/
+
+# Tauri
+crates/ui/src-tauri/target/
+crates/ui/src-tauri/gen/
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# Lokální artefakty
+*.log
+*.etl

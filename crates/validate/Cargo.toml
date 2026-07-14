@@ -1,0 +1,13 @@
+[package]
+name = "validate"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# ⚠ TVRDÉ PRAVIDLO (SPEC kap. 2.2, 17.1): validate závisí JEN na
+# core-types a win-sys. Žádný actor-*, collector-*, store, ipc ani ui.
+# Izolaci hlídá CI přes `cargo tree -p validate`.
+[dependencies]
+core-types = { workspace = true }
+win-sys = { workspace = true }
+thiserror = { workspace = true }

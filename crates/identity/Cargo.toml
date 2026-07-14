@@ -1,0 +1,11 @@
+[package]
+name = "identity"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# Crate čtecí cesty. Nikdy nesmí nic měnit (SPEC kap. 2 — oddělené cesty).
+[dependencies]
+core-types = { workspace = true }
+win-sys = { workspace = true }
+thiserror = { workspace = true }

@@ -1,0 +1,38 @@
+# CI (INFRA kap. 2.3): build + testy na Windows runneru + strážce
+# nejdůležitější architektonické invarianty — izolace validate/.
+name: build
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      # --locked: přesně verze z Cargo.lock, žádný drift (INFRA kap. 3.2).
+      - run: cargo build --locked --release --target x86_64-pc-windows-msvc
+      - run: cargo test --locked --target x86_64-pc-windows-msvc
+      - run: cargo clippy --locked --target x86_64-pc-windows-msvc -- -D warnings
+      - run: cargo fmt --all --check
+
+      # Invarianta: validační vrstva musí zůstat izolovaná (SPEC kap. 17.1).
+      # Selže, kdyby validate/ začal záviset na exekutorech, kolektorech
+      # nebo infrastruktuře.
+      - name: validate isolation guard
+        shell: pwsh
+        run: |
+          $tree = cargo tree -p validate --edges normal
+          $bad = $tree | Select-String -Pattern '\b(actor-\w+|collector-\w+|store|ipc|ui) v'
+          if ($bad) {
+            $bad
+            Write-Error "validate/ ztratil izolaci (SPEC kap. 2.2, 17.1)"
+            exit 1
+          }
+          Write-Host "validate/ je izolovany - OK"

@@ -1,0 +1,98 @@
+# Cargo workspace — rozdělení do crates dle SPEC.md kap. 2.2.
+# Tvrdé pravidlo závislostí: validate/ závisí JEN na core-types + win-sys (hlídá CI).
+[workspace]
+resolver = "2"
+members = [
+    "crates/core-types",
+    "crates/win-sys",
+
+    # ── ČTECÍ CESTA (horká, 24/7, levná) ──
+    "crates/identity",
+    "crates/collector-proc",
+    "crates/collector-etw",
+    "crates/collector-inv",
+    "crates/collector-drv",
+    "crates/collector-boot",
+    "crates/collector-net",
+    "crates/collector-sec",
+    "crates/collector-users",
+    "crates/collector-hw",
+    "crates/collector-sensors",
+    "crates/collector-crash",
+    "crates/collector-lock",
+    "crates/fs-index",
+
+    # ── MUTUJÍCÍ CESTA (studená, na vyžádání, neprůstřelná) ──
+    "crates/validate",
+    "crates/actor-toggle",
+    "crates/actor-file",
+    "crates/actor-app",
+    "crates/actor-proc",
+
+    # ── INFRASTRUKTURA ──
+    "crates/store",
+    "crates/ipc",
+    "crates/svc",
+    "crates/ui/src-tauri",
+]
+
+# `cargo build` bez argumentů staví vše kromě UI — to staví `tauri dev/build`,
+# protože potřebuje frontend (SvelteKit) sestavený Bunem.
+default-members = [
+    "crates/core-types",
+    "crates/win-sys",
+    "crates/identity",
+    "crates/collector-proc",
+    "crates/collector-etw",
+    "crates/collector-inv",
+    "crates/collector-drv",
+    "crates/collector-boot",
+    "crates/collector-net",
+    "crates/collector-sec",
+    "crates/collector-users",
+    "crates/collector-hw",
+    "crates/collector-sensors",
+    "crates/collector-crash",
+    "crates/collector-lock",
+    "crates/fs-index",
+    "crates/validate",
+    "crates/actor-toggle",
+    "crates/actor-file",
+    "crates/actor-app",
+    "crates/actor-proc",
+    "crates/store",
+    "crates/ipc",
+    "crates/svc",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+
+[workspace.dependencies]
+# interní crates
+core-types = { path = "crates/core-types" }
+win-sys = { path = "crates/win-sys" }
+validate = { path = "crates/validate" }
+store = { path = "crates/store" }
+ipc = { path = "crates/ipc" }
+
+# externí — verze zamčené přes Cargo.lock, tady jen semver rozsahy
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+windows = "0.61"
+windows-service = "0.7"
+rusqlite = { version = "0.32", features = ["bundled"] }
+toml = "0.8"
+notify = "7"
+ctrlc = "3"
+
+[profile.release]
+# Menší binárka služby; panic=abort ať Service Recovery restart funguje i při panice.
+lto = "thin"
+panic = "abort"
