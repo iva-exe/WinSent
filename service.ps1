@@ -1,4 +1,4 @@
-# service.ps1 — správa Windows služby syswatch.
+﻿# service.ps1 — správa Windows služby syswatch.
 #
 # Použití (z elevovaného PowerShellu; skript si elevaci vyžádá sám):
 #   .\service.ps1 -Install     registrace služby + Service Recovery watchdog

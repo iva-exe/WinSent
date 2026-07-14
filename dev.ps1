@@ -1,4 +1,4 @@
-# dev.ps1 — jedním spuštěním celé vývojové prostředí:
+﻿# dev.ps1 — jedním spuštěním celé vývojové prostředí:
 #   1. self-elevace (UAC) — démon potřebuje admin práva
 #   2. kontrola nástrojů (rustc, cargo, link.exe, bun, tauri CLI)
 #   3. cargo build celého workspace
