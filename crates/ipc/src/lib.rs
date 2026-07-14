@@ -33,6 +33,11 @@ pub enum Error {
     },
     #[error("služba neběží nebo pipe neexistuje")]
     NotAvailable,
+    #[error(
+        "pipe {PIPE_NAME} už existuje — běží jiná instance démona? \
+         (nainstalovanou službu zastav: .\\service.ps1 -Stop)"
+    )]
+    PipeAlreadyExists,
     #[error("služba vrátila chybu: {message}")]
     Remote { message: String },
 }

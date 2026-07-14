@@ -28,9 +28,11 @@ if (-not $isAdmin) {
 Set-Location $root
 
 # ── 2. Kontrola nástrojů ────────────────────────────────────────────
-# cargo bin nemusí být v PATH elevované session — přidáme ho.
+# cargo/bun bin nemusí být v PATH elevované session — přidáme je.
 $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
 if (Test-Path $cargoBin) { $env:Path = "$cargoBin;$env:Path" }
+$bunBin = Join-Path $env:USERPROFILE '.bun\bin'
+if (Test-Path $bunBin) { $env:Path = "$bunBin;$env:Path" }
 
 $missing = @()
 foreach ($tool in @('rustc', 'cargo', 'bun')) {
@@ -52,6 +54,16 @@ if ($missing.Count -gt 0) {
 }
 
 # ── 3. Build workspace ──────────────────────────────────────────────
+# Běžící služba drží pipe \\.\pipe\syswatch (a starší instalace i
+# binárku v target\) — zastavíme ji před buildem. Po dev session ji
+# případně vrátíš přes .\service.ps1 -Start.
+$svc = Get-Service -Name syswatch -ErrorAction SilentlyContinue
+if ($svc -and $svc.Status -ne 'Stopped') {
+    Write-Host 'Zastavuji nainstalovanou službu syswatch…' -ForegroundColor Yellow
+    Stop-Service -Name syswatch -Force
+    $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(15))
+}
+
 Write-Host '=== cargo build ===' -ForegroundColor Cyan
 cargo build
 if ($LASTEXITCODE -ne 0) {

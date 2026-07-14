@@ -89,6 +89,7 @@
 		background: var(--surface);
 		font-size: 0.82rem;
 		color: var(--text-dim);
+		font-variant-numeric: tabular-nums;
 	}
 	.dot {
 		width: 8px;
@@ -127,6 +128,7 @@
 		margin: 0;
 		color: var(--text-dim);
 		font-size: 0.82rem;
+		font-variant-numeric: tabular-nums;
 	}
 	.hint {
 		margin: 0;

@@ -12,10 +12,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{LocalFree, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL};
+use windows::Win32::Foundation::{
+    LocalFree, ERROR_ACCESS_DENIED, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL,
+};
 use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
 use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
-use windows::Win32::Storage::FileSystem::{FlushFileBuffers, PIPE_ACCESS_DUPLEX};
+use windows::Win32::Storage::FileSystem::{
+    FlushFileBuffers, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
+};
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
@@ -26,9 +30,12 @@ use core_types::ipc::{Request, Response};
 use crate::{frame, Error, MAX_FRAME_LEN, PIPE_NAME};
 
 /// SDDL pro DACL pipe: P = protected (žádná dědičnost), SYSTEM (SY) a
-/// Administrators (BA) generic all, interaktivní uživatelé (IU) generic
-/// read+write. Nikdo jiný pipe neotevře.
-const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)";
+/// Administrators (BA) plný přístup, interaktivní uživatelé (IU) jen
+/// čtení+zápis BEZ práva FILE_CREATE_PIPE_INSTANCE (0x4) — jinak by si
+/// kdokoli mohl vytvořit vlastní instanci naší pipe a odposlouchávat
+/// požadavky (pipe je útočná plocha, SPEC kap. 21 bod 10).
+/// 0x12019b = (FILE_GENERIC_READ | FILE_GENERIC_WRITE) & ~FILE_CREATE_PIPE_INSTANCE
+const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;IU)";
 
 /// Obsluha jednoho požadavku. Služba dodá funkci, server ji volá pro
 /// každý přijatý Request — server sám protokolu nerozumí.
@@ -39,6 +46,10 @@ pub type Handler = Arc<dyn Fn(Request) -> Response + Send + Sync>;
 struct PipeSecurity {
     descriptor: PSECURITY_DESCRIPTOR,
 }
+
+// SAFETY: descriptor je vlastněná LocalAlloc paměť bez vazby na vlákno;
+// přesun do server vlákna je bezpečný, přístup je výhradně read-only.
+unsafe impl Send for PipeSecurity {}
 
 impl Drop for PipeSecurity {
     fn drop(&mut self) {
@@ -71,18 +82,26 @@ fn build_pipe_security() -> Result<PipeSecurity, Error> {
 }
 
 /// Vytvoří novou instanci pipe připravenou na jednoho klienta.
-fn create_instance(sec: &PipeSecurity) -> Result<HANDLE, Error> {
+///
+/// První instance nese FILE_FLAG_FIRST_PIPE_INSTANCE: když pipe už
+/// existuje (běžící služba vs. vývojový --console démon), start selže
+/// s jasnou chybou místo tichého souboje dvou serverů o klienty.
+fn create_instance(sec: &PipeSecurity, first: bool) -> Result<HANDLE, Error> {
     let name: Vec<u16> = PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
     let sa = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: sec.descriptor.0,
         bInheritHandle: false.into(),
     };
+    let mut open_mode = PIPE_ACCESS_DUPLEX;
+    if first {
+        open_mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
+    }
     // SAFETY: name i sa žijí po dobu volání; handle vlastníme my.
     let handle = unsafe {
         CreateNamedPipeW(
             PCWSTR(name.as_ptr()),
-            PIPE_ACCESS_DUPLEX,
+            open_mode,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_UNLIMITED_INSTANCES,
             MAX_FRAME_LEN,
@@ -92,22 +111,51 @@ fn create_instance(sec: &PipeSecurity) -> Result<HANDLE, Error> {
         )
     };
     if handle.is_invalid() {
+        let source = windows::core::Error::from_win32();
+        if first && source.code() == ERROR_ACCESS_DENIED.to_hresult() {
+            return Err(Error::PipeAlreadyExists);
+        }
         return Err(Error::Win32 {
             call: "CreateNamedPipeW",
-            source: windows::core::Error::from_win32(),
+            source,
         });
     }
     Ok(handle)
 }
 
+/// Server navázaný na pipe: DACL + první instance (exkluzivní vlastnictví
+/// jména). Vzniká synchronně přes `bind()`, takže kolize s jiným démonem
+/// selže hned při startu, ne až v obslužném vlákně.
+pub struct Bound {
+    sec: PipeSecurity,
+    // HANDLE jako isize, aby byl Bound Send (surový HANDLE není).
+    first_instance: isize,
+}
+
+/// Naváže server na pipe: vytvoří DACL a první instanci. Když jméno už
+/// vlastní jiný proces, vrátí `PipeAlreadyExists`.
+pub fn bind() -> Result<Bound, Error> {
+    let sec = build_pipe_security()?;
+    let first = create_instance(&sec, true)?;
+    Ok(Bound {
+        sec,
+        first_instance: first.0 as isize,
+    })
+}
+
 /// Akceptační smyčka serveru. Blokuje, dokud `stop` nenastaví služba;
 /// probuzení z blokujícího čekání zajistí `wake()`.
-pub fn run(handler: Handler, stop: Arc<AtomicBool>) -> Result<(), Error> {
-    let sec = build_pipe_security()?;
+pub fn run(bound: Bound, handler: Handler, stop: Arc<AtomicBool>) -> Result<(), Error> {
+    let sec = bound.sec;
+    let mut pending = Some(HANDLE(bound.first_instance as _));
     tracing::info!(pipe = PIPE_NAME, "IPC server naslouchá");
 
     while !stop.load(Ordering::SeqCst) {
-        let pipe = create_instance(&sec)?;
+        // První kolo použije instanci z bind(), další se vytváří průběžně.
+        let pipe = match pending.take() {
+            Some(h) => h,
+            None => create_instance(&sec, false)?,
+        };
 
         // Čekání na klienta. ERROR_PIPE_CONNECTED = klient se stihl
         // připojit mezi vytvořením a čekáním — to je úspěch.

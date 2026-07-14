@@ -20,6 +20,8 @@ pub enum Error {
     Config(#[from] crate::config::Error),
     #[error("nelze spustit vlákno: {0}")]
     Thread(#[from] std::io::Error),
+    #[error("ipc: {0}")]
+    Ipc(#[from] ipc::Error),
 }
 
 /// Spustí démona a blokuje, dokud `stop` nenastaví okolí (SCM handler
@@ -55,8 +57,10 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             .spawn(move || retention_loop(conn, cfg, stop))?
     };
 
-    // IPC server ve vlastním vlákně. Handler zná jen Ping — odpovídá
-    // verzí protokolu a uptime.
+    // IPC server: navázání na pipe je synchronní — kolize s jinou
+    // instancí démona (běžící služba vs. --console) shodí start hned,
+    // s jasnou chybou. Akceptační smyčka pak běží ve vlastním vlákně.
+    let ipc_bound = ipc::server::bind()?;
     let ipc_handle = {
         let stop = Arc::clone(&stop);
         let handler: ipc::server::Handler = Arc::new(move |req| match req {
@@ -77,7 +81,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         std::thread::Builder::new()
             .name("ipc-server".into())
             .spawn(move || {
-                if let Err(e) = ipc::server::run(handler, stop) {
+                if let Err(e) = ipc::server::run(ipc_bound, handler, stop) {
                     tracing::error!(error = %e, "IPC server spadl");
                 }
             })?

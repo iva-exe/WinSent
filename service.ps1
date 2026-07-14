@@ -17,7 +17,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $serviceName = 'syswatch'
-$exePath = Join-Path $PSScriptRoot 'target\debug\syswatch.exe'
+# Build artefakt (zdroj) vs. instalovaná kopie: služba běží z kopie v
+# ProgramData, aby nedržela zámek na target\ — jinak by každý cargo
+# build za běhu služby spadl na "Přístup byl odepřen".
+$buildExe = Join-Path $PSScriptRoot 'target\debug\syswatch.exe'
+$installDir = Join-Path $env:ProgramData 'syswatch\bin'
+$exePath = Join-Path $installDir 'syswatch.exe'
 
 # Status jen čte — nepotřebuje elevaci. Vše ostatní ano.
 $needsAdmin = $Install -or $Uninstall -or $Start -or $Stop
@@ -48,8 +53,8 @@ function Show-Status {
 }
 
 if ($Install) {
-    if (-not (Test-Path $exePath)) {
-        Write-Host "Binárka $exePath neexistuje — nejdřív spusť cargo build (nebo dev.bat)." -ForegroundColor Red
+    if (-not (Test-Path $buildExe)) {
+        Write-Host "Binárka $buildExe neexistuje — nejdřív spusť cargo build (nebo dev.bat)." -ForegroundColor Red
         exit 1
     }
     if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
@@ -57,8 +62,12 @@ if ($Install) {
         exit 1
     }
 
+    # Kopie binárky mimo target\, aby služba neblokovala další buildy.
+    New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+    Copy-Item $buildExe $exePath -Force
+
     # Registrace: auto start, LocalSystem (default), argument --service.
-    Write-Host "Instaluji službu '$serviceName'…" -ForegroundColor Cyan
+    Write-Host "Instaluji službu '$serviceName' (kopie v $installDir)…" -ForegroundColor Cyan
     sc.exe create $serviceName binPath= "`"$exePath`" --service" start= auto DisplayName= "syswatch — systémový monitor" | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Host 'sc create selhalo.' -ForegroundColor Red; exit 1 }
     sc.exe description $serviceName "Démon systémového monitoru syswatch (v0 skelet)." | Out-Null
