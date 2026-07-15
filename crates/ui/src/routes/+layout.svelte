@@ -7,6 +7,7 @@
 	import '@fontsource/fira-mono/500.css';
 
 	import { onMount } from 'svelte';
+	import { fade } from 'svelte/transition';
 	import { page } from '$app/state';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { daemon, startDaemonPolling } from '$lib/daemon.svelte.js';
@@ -18,7 +19,7 @@
 		ListStart,
 		Users,
 		Cpu,
-		CircuitBoard,
+		BrainCircuit,
 		Wifi,
 		Router,
 		Shield,
@@ -39,7 +40,7 @@
 		{ href: '/onstart', label: 'On start', icon: ListStart },
 		{ href: '/users', label: 'Users', icon: Users },
 		{ href: '/hardware', label: 'Hardware', icon: Cpu },
-		{ href: '/drivers', label: 'Drivers', icon: CircuitBoard },
+		{ href: '/drivers', label: 'Drivers', icon: BrainCircuit },
 		{ href: '/connection', label: 'Connection', icon: Wifi },
 		{ href: '/network', label: 'Network', icon: Router },
 		{ href: '/security', label: 'Security', icon: Shield }
@@ -105,7 +106,12 @@
 		</nav>
 
 		<main class="content">
-			{@render children()}
+			<!-- Jemný fade při přepnutí sekce — žádné vjezdy (DESIGN.md kap. 9). -->
+			{#key page.url.pathname}
+				<div class="route" in:fade={{ duration: 150 }}>
+					{@render children()}
+				</div>
+			{/key}
 		</main>
 	</div>
 </div>
@@ -115,6 +121,18 @@
 		display: flex;
 		flex-direction: column;
 		height: 100vh;
+		/* Zaoblené rohy okna: okno samotné je průhledné, tvar dává tento
+		   kontejner. Poloprůhledné pozadí nechává prosvítat acrylic blur
+		   (jediný povolený gradient — zadní plocha, DESIGN.md kap. 2). */
+		background: radial-gradient(
+			120% 90% at 20% 0%,
+			rgba(20, 21, 26, 0.82) 0%,
+			rgba(14, 15, 18, 0.78) 55%,
+			rgba(11, 12, 15, 0.84) 100%
+		);
+		border: 1px solid var(--border);
+		border-radius: 12px;
+		overflow: hidden;
 	}
 
 	/* ── Titlebar ── */
@@ -252,5 +270,9 @@
 		border-radius: var(--radius-lg);
 		overflow-y: auto;
 		padding: 1.25rem 1.4rem;
+	}
+	.route {
+		height: 100%;
+		min-height: 0;
 	}
 </style>

@@ -39,12 +39,32 @@ fn query_system() -> Result<core_types::proc::SystemSnapshot, String> {
     ipc::client::query_system().map_err(|e| e.to_string())
 }
 
+/// Vlastní spotřeba nástroje pro dlaždici v Settings (SPEC kap. 2.3).
+#[derive(Debug, Serialize)]
+struct SelfUsageDto {
+    cpu_pct: f32,
+    ws_bytes: u64,
+    db_bytes: u64,
+}
+
+#[tauri::command]
+fn query_self_usage() -> Result<SelfUsageDto, String> {
+    ipc::client::query_self_usage()
+        .map(|u| SelfUsageDto {
+            cpu_pct: u.cpu_pct,
+            ws_bytes: u.ws_bytes,
+            db_bytes: u.db_bytes,
+        })
+        .map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             ping_daemon,
             query_procs,
-            query_system
+            query_system,
+            query_self_usage
         ])
         .run(tauri::generate_context!())
         .expect("start Tauri selhal");

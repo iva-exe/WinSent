@@ -1,13 +1,30 @@
-//! Retenční smyčka (SPEC kap. 8) — běží v samostatném vlákně na
-//! BELOW_NORMAL prioritě. v0 nemá datové tabulky, takže krok nemá co
-//! mazat — smyčka ale běží, aby infrastruktura existovala a měřila se
-//! od začátku.
+//! Retenční smyčka (SPEC kap. 8) — běží v zapisovacím vlákně služby
+//! na BELOW_NORMAL prioritě.
+//!
+//! v1: prosté mazání surových vzorků starších než 1 hodina, aby DB
+//! nerostla. Plná kaskáda (agregace 1s → 10s → 1m před smazáním)
+//! přijde ve v3 s historií — mazat se pak bude až PO agregaci.
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
-/// Jeden krok retence. Ve v1+ sem přijde kaskáda
-/// `sample_1s → sample_10s → sample_1m` dle SPEC kap. 8.
-pub fn tick(_conn: &Connection) -> Result<(), rusqlite::Error> {
-    tracing::debug!("retenční krok: zatím není co mazat (v0)");
+/// Retence surových vzorků: 1 hodina (SPEC kap. 8, kaskáda v3).
+const SAMPLE_1S_KEEP_S: i64 = 3600;
+
+/// Jeden krok retence.
+pub fn tick(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let cutoff = chrono_now_unix() - SAMPLE_1S_KEEP_S;
+    let a = conn.execute("DELETE FROM sample_1s WHERE ts < ?1", params![cutoff])?;
+    let b = conn.execute("DELETE FROM system_1s WHERE ts < ?1", params![cutoff])?;
+    if a + b > 0 {
+        tracing::debug!(sample_1s = a, system_1s = b, "retence smazala staré vzorky");
+    }
     Ok(())
+}
+
+/// Unix čas bez závislosti na chrono crate.
+fn chrono_now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }

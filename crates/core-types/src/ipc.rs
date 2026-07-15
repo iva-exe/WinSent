@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -19,6 +19,9 @@ pub enum Request {
     QueryProcs,
     /// Aktuální systémové metriky (CPU, RAM).
     QuerySystem,
+    /// Vlastní spotřeba nástroje (SPEC kap. 2.3) — rozpočet musí být
+    /// ověřitelný uživatelem, ne slibovaný.
+    QuerySelfUsage,
 }
 
 /// Odpověď služba → UI.
@@ -31,6 +34,12 @@ pub enum Response {
     },
     Procs(Vec<crate::proc::ProcRow>),
     System(crate::proc::SystemSnapshot),
+    /// Vlastní spotřeba: CPU %, working set a velikost databáze.
+    SelfUsage {
+        cpu_pct: f32,
+        ws_bytes: u64,
+        db_bytes: u64,
+    },
     /// Chyba zpracování požadavku. Nic neselhává mlčky (SPEC kap. 22).
     Error {
         message: String,

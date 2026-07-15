@@ -13,6 +13,7 @@ pub use rusqlite::Connection;
 
 pub mod migrations;
 pub mod retention;
+pub mod samples;
 
 /// Chyby úložiště.
 #[derive(Debug, thiserror::Error)]

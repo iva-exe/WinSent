@@ -79,6 +79,34 @@ pub fn query_procs() -> Result<Vec<ProcRow>, Error> {
     }
 }
 
+/// Vlastní spotřeba nástroje (SPEC kap. 2.3).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SelfUsage {
+    pub cpu_pct: f32,
+    pub ws_bytes: u64,
+    pub db_bytes: u64,
+}
+
+/// Dotaz na vlastní spotřebu služby.
+pub fn query_self_usage() -> Result<SelfUsage, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QuerySelfUsage)? {
+        Response::SelfUsage {
+            cpu_pct,
+            ws_bytes,
+            db_bytes,
+        } => Ok(SelfUsage {
+            cpu_pct,
+            ws_bytes,
+            db_bytes,
+        }),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Aktuální systémové metriky ze sampleru služby.
 pub fn query_system() -> Result<SystemSnapshot, Error> {
     let mut stream = connect()?;

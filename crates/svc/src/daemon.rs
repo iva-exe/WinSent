@@ -53,22 +53,29 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     // Watcher musí zůstat živý po celou dobu běhu — drop by reload vypnul.
     let _cfg_watcher = crate::config::watch(&cfg_path, Arc::clone(&cfg))?;
 
-    // SQLite store: otevření + migrace, pak retenční smyčka ve vlastním
-    // vlákně na BELOW_NORMAL prioritě (SPEC kap. 8).
+    // SQLite store: otevření + migrace. Zápis vzorků i retence běží
+    // v jediném zapisovacím vlákně (SQLite má jednoho zapisovatele)
+    // na BELOW_NORMAL prioritě (SPEC kap. 3.4, 8).
     let db_path = store::db_path()?;
     let conn = store::open(&db_path)?;
     tracing::info!(db = %db_path.display(), "databáze otevřena, schéma zmigrováno");
 
-    let retention_handle = {
+    // Kanál sampler → zapisovací vlákno. Bounded: když zápis nestíhá
+    // (disk saturovaný), vzorky se zahazují — sampler NIKDY nesmí
+    // blokovat na I/O (SPEC kap. 3.4).
+    let (sample_tx, sample_rx) =
+        std::sync::mpsc::sync_channel::<(i64, Vec<ProcRow>, SystemSnapshot)>(4);
+
+    let store_handle = {
         let stop = Arc::clone(&stop);
         let cfg = Arc::clone(&cfg);
         std::thread::Builder::new()
-            .name("retention".into())
-            .spawn(move || retention_loop(conn, cfg, stop))?
+            .name("store-writer".into())
+            .spawn(move || store_loop(conn, cfg, stop, sample_rx))?
     };
 
     // Sampler procesů (v1, SPEC kap. 3.1): 1 Hz vlákno plní sdílený
-    // poslední vzorek, ze kterého IPC handler odpovídá bez čekání.
+    // poslední vzorek (pro IPC) a posílá tick zapisovacímu vláknu.
     let live: Arc<RwLock<LiveSample>> = Arc::new(RwLock::new(LiveSample::default()));
     let sampler_handle = {
         let stop = Arc::clone(&stop);
@@ -80,6 +87,14 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 while !stop.load(Ordering::SeqCst) {
                     match collector_proc::tick(&mut state) {
                         Ok((procs, system)) => {
+                            let ts = unix_now();
+                            // Plný kanál = zápis nestíhá; vzorek se zahodí
+                            // a zaloguje, sampler neblokuje.
+                            if let Err(std::sync::mpsc::TrySendError::Full(_)) =
+                                sample_tx.try_send((ts, procs.clone(), system))
+                            {
+                                tracing::warn!("zapisovací vlákno nestíhá — vzorek zahozen");
+                            }
                             let mut slot = live.write().expect("live lock poisoned");
                             slot.procs = procs;
                             slot.system = system;
@@ -91,6 +106,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     wait_or_stop(&stop, Duration::from_millis(1000));
                 }
                 collector_proc::shutdown(state);
+                // Drop sample_tx → zapisovací vlákno pozná konec.
             })?
     };
 
@@ -101,6 +117,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     let ipc_handle = {
         let stop = Arc::clone(&stop);
         let live = Arc::clone(&live);
+        let self_db_path = db_path.clone();
         let handler: ipc::server::Handler = Arc::new(move |req| match req {
             Request::Ping { protocol_version } => {
                 if protocol_version != PROTOCOL_VERSION {
@@ -120,6 +137,24 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             }
             Request::QuerySystem => {
                 Response::System(live.read().expect("live lock poisoned").system)
+            }
+            // Sebemonitoring (SPEC kap. 2.3): vlastní řádek ze stejného
+            // sampleru jako všechny ostatní procesy — žádný speciální kód.
+            Request::QuerySelfUsage => {
+                let own_pid = std::process::id();
+                let live = live.read().expect("live lock poisoned");
+                let own = live.procs.iter().find(|p| p.pid == own_pid);
+                let db_bytes = db_size_bytes(&self_db_path);
+                match own {
+                    Some(p) => Response::SelfUsage {
+                        cpu_pct: p.cpu_pct,
+                        ws_bytes: p.ws_bytes,
+                        db_bytes,
+                    },
+                    None => Response::Error {
+                        message: "vlastní proces zatím není ve vzorku".into(),
+                    },
+                }
             }
         });
         std::thread::Builder::new()
@@ -147,27 +182,77 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     ipc::server::wake();
     let _ = ipc_handle.join();
     let _ = sampler_handle.join();
-    let _ = retention_handle.join();
+    let _ = store_handle.join();
     tracing::info!("démon ukončen čistě");
     Ok(())
 }
 
-/// Retenční smyčka (v0 naprázdno). Vlastní vlákno, BELOW_NORMAL.
-fn retention_loop(conn: store::Connection, cfg: Arc<RwLock<Config>>, stop: Arc<AtomicBool>) {
+/// Zapisovací vlákno store: přijímá ticky sampleru, dávkově zapisuje
+/// do SQLite a v intervalu pouští retenci. Jediný zapisovatel DB.
+fn store_loop(
+    mut conn: store::Connection,
+    cfg: Arc<RwLock<Config>>,
+    stop: Arc<AtomicBool>,
+    rx: std::sync::mpsc::Receiver<(i64, Vec<ProcRow>, SystemSnapshot)>,
+) {
+    use std::sync::mpsc::RecvTimeoutError;
+
     if let Err(e) = win_sys::threading::set_current_thread_below_normal() {
-        tracing::warn!(error = %e, "nepodařilo se snížit prioritu retenčního vlákna");
+        tracing::warn!(error = %e, "nepodařilo se snížit prioritu zapisovacího vlákna");
     }
-    while !stop.load(Ordering::SeqCst) {
-        if let Err(e) = store::retention::tick(&conn) {
-            // Chyba retence nesmí shodit službu — zaloguje se a jede dál.
-            tracing::error!(error = %e, "retenční krok selhal");
+
+    let mut last_retention = Instant::now();
+    loop {
+        match rx.recv_timeout(Duration::from_millis(250)) {
+            Ok((ts, procs, sys)) => {
+                if let Err(e) = store::samples::insert_tick(&mut conn, ts, &sys, &procs) {
+                    // Chyba zápisu nesmí shodit službu (SPEC kap. 22).
+                    tracing::error!(error = %e, "zápis vzorku selhal");
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            // Sampler skončil a kanál je prázdný → konec.
+            Err(RecvTimeoutError::Disconnected) => break,
         }
+
         let interval = {
             let cfg = cfg.read().expect("config lock poisoned");
             store::retention_interval(&cfg)
         };
-        wait_or_stop(&stop, interval);
+        if last_retention.elapsed() >= interval {
+            last_retention = Instant::now();
+            if let Err(e) = store::retention::tick(&conn) {
+                tracing::error!(error = %e, "retenční krok selhal");
+            }
+        }
+
+        if stop.load(Ordering::SeqCst) {
+            // Doprázdnit kanál, ať poslední vzorky nezmizí, pak konec.
+            while let Ok((ts, procs, sys)) = rx.try_recv() {
+                if let Err(e) = store::samples::insert_tick(&mut conn, ts, &sys, &procs) {
+                    tracing::error!(error = %e, "zápis vzorku při ukončení selhal");
+                }
+            }
+            break;
+        }
     }
+}
+
+/// Velikost databáze vč. WAL (pro dlaždici spotřeby).
+fn db_size_bytes(db_path: &std::path::Path) -> u64 {
+    let main = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
+    let wal = std::fs::metadata(db_path.with_extension("db-wal"))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    main + wal
+}
+
+/// Unix čas v sekundách.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Spí po daný interval, ale reaguje na stop do ~50 ms.

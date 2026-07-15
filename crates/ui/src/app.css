@@ -7,7 +7,8 @@
 :root {
 	/* povrchy — vrstvení jako Win11 */
 	--bg: #0e0f12;
-	--panel: #16171c;
+	/* Panely poloprůhledné — prosvítá acrylic blur okna. */
+	--panel: rgba(22, 23, 28, 0.6);
 	--surface: rgba(255, 255, 255, 0.04);
 	--surface-hover: rgba(255, 255, 255, 0.07);
 	--border: rgba(255, 255, 255, 0.08);
@@ -50,8 +51,9 @@ body {
 	margin: 0;
 	height: 100%;
 	overflow: hidden;
-	/* jediné povolené gradientové pozadí — úplně zadní plocha okna */
-	background: radial-gradient(120% 90% at 20% 0%, #14151a 0%, var(--bg) 55%, #0b0c0f 100%);
+	/* Okno je průhledné (acrylic blur dělá Windows) — barvu dává až
+	   kořenový .app kontejner, aby fungovaly zaoblené rohy okna. */
+	background: transparent;
 	color: var(--text);
 	font-family: var(--font-ui);
 	font-size: 14px;

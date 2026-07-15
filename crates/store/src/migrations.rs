@@ -16,6 +16,30 @@ const MIGRATIONS: &[&str] = &[
         value TEXT NOT NULL
     ) WITHOUT ROWID;
     INSERT INTO meta (key, value) VALUES ('created_ts', strftime('%s','now'));",
+    // → verze 2 (v1): vzorky sampleru dle SPEC kap. 8.
+    // sample_1s.proc_id je zatím PID — proc_instance (stabilní identita
+    // z ETW ProcessStart) přijde ve v3, pak přibude migrace s převodem.
+    // system_1s má sloupce dle SPEC; v1 plní jen cpu_pct a mem, zbytek
+    // NULL (senzory/disk přijdou ve v3/v9).
+    "CREATE TABLE system_1s (
+        ts INTEGER PRIMARY KEY,
+        cpu_pct REAL, mem_used_mb INTEGER, commit_mb INTEGER,
+        disk_qlen REAL, disk_lat_ms REAL, hard_flt_rate INTEGER,
+        gpu_pct REAL, thermal_throttle INTEGER,
+        cpu_temp_c REAL, cpu_temp_src TEXT,
+        cpu_clock_mhz INTEGER, cpu_clock_max_mhz INTEGER
+    ) WITHOUT ROWID;
+    CREATE TABLE sample_1s (
+        ts        INTEGER NOT NULL,
+        proc_id   INTEGER NOT NULL,
+        cpu_pm    INTEGER,
+        ws_kb     INTEGER,
+        priv_kb   INTEGER,
+        io_r      INTEGER,
+        io_w      INTEGER,
+        hard_flt  INTEGER,
+        PRIMARY KEY (ts, proc_id)
+    ) WITHOUT ROWID;",
 ];
 
 /// Aplikuje všechny dosud neaplikované migrace. Bezpečné volat při

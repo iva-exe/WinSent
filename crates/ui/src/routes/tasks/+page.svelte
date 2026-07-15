@@ -1,6 +1,8 @@
 <script>
 	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
+	import { Tween } from 'svelte/motion';
+	import { cubicOut } from 'svelte/easing';
 	import { daemon } from '$lib/daemon.svelte.js';
 	import LiveChart from '$lib/LiveChart.svelte';
 
@@ -13,6 +15,21 @@
 	let system = $state(null);
 	let procs = $state([]);
 	let error = $state('');
+
+	// Režim grafu: jedna proměnná (gradient dle zátěže) / celý systém.
+	let mode = $state('all');
+	const modes = [
+		{ id: 'cpu', label: 'CPU' },
+		{ id: 'ram', label: 'RAM' },
+		{ id: 'all', label: 'System' }
+	];
+
+	// Hodnoty z času pod kurzorem (hover na grafu), jinak živé hodnoty.
+	let hover = $state(null);
+
+	// Tweenované readouty — čísla plynou místo skoků 1×/s.
+	const cpuT = new Tween(0, { duration: 700, easing: cubicOut });
+	const ramT = new Tween(0, { duration: 700, easing: cubicOut });
 
 	// Řazení tabulky — default CPU sestupně.
 	let sortKey = $state('cpu_pct');
@@ -41,6 +58,8 @@
 			const s = await invoke('query_system');
 			system = s;
 			error = '';
+			cpuT.set(s.cpu_pct);
+			ramT.set(s.mem_used_mb / 1024);
 			const now = Math.floor(Date.now() / 1000);
 			ts = [...ts.slice(-(WINDOW - 1)), now];
 			cpu = [...cpu.slice(-(WINDOW - 1)), s.cpu_pct];
@@ -64,6 +83,10 @@
 		return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`;
 	}
 
+	function fmtClock(unix) {
+		return new Date(unix * 1000).toLocaleTimeString('cs-CZ');
+	}
+
 	onMount(() => {
 		pollSystem();
 		pollProcs();
@@ -81,32 +104,34 @@
 	<!-- ── Hlavní časový graf (komponentový princip: graf nahoře) ── -->
 	<section class="card">
 		<header class="card-head">
-			<span class="label-tech">// tasks / system</span>
+			<div class="head-left">
+				<span class="label-tech">// tasks / system</span>
+				<!-- Přepínač proměnné grafu -->
+				<div class="seg">
+					{#each modes as m (m.id)}
+						<button class:active={mode === m.id} onclick={() => (mode = m.id)}>
+							{m.label}
+						</button>
+					{/each}
+				</div>
+			</div>
 			<div class="readouts value-mono">
-				{#if system}
-					<span class="readout">
-						<span class="k">CPU</span>
-						<span class="v accent">{system.cpu_pct.toFixed(1)} %</span>
-					</span>
-					<span class="readout">
-						<span class="k">RAM</span>
-						<span class="v">{(system.mem_used_mb / 1024).toFixed(1)} / {(system.mem_total_mb / 1024).toFixed(1)} GB</span>
-					</span>
-					<span class="readout">
-						<span class="k">PROC</span>
-						<span class="v">{system.proc_count}</span>
-					</span>
+				{#if hover}
+					<!-- Hodnoty z času pod kurzorem -->
+					<span class="readout"><span class="k">ČAS</span><span class="v">{fmtClock(hover.t)}</span></span>
+					<span class="readout"><span class="k">CPU</span><span class="v accent">{hover.cpu?.toFixed(1) ?? '—'} %</span></span>
+					<span class="readout"><span class="k">RAM</span><span class="v">{hover.mem?.toFixed(1) ?? '—'} %</span></span>
+				{:else if system}
+					<span class="readout"><span class="k">CPU</span><span class="v accent">{cpuT.current.toFixed(1)} %</span></span>
+					<span class="readout"><span class="k">RAM</span><span class="v">{ramT.current.toFixed(1)} / {(system.mem_total_mb / 1024).toFixed(1)} GB</span></span>
+					<span class="readout"><span class="k">PROC</span><span class="v">{system.proc_count}</span></span>
 				{:else}
 					<span class="readout"><span class="k">—</span></span>
 				{/if}
 			</div>
 		</header>
 		{#if daemon.alive || ts.length > 0}
-			<LiveChart {ts} {cpu} {mem} />
-			<div class="legend label-tech">
-				<span><i class="sw accent-bg"></i> cpu</span>
-				<span><i class="sw dim-bg"></i> ram</span>
-			</div>
+			<LiveChart {ts} {cpu} {mem} {mode} onhover={(h) => (hover = h)} />
 		{:else}
 			<p class="err">{error || 'služba neběží — graf čeká na data'}</p>
 		{/if}
@@ -177,9 +202,43 @@
 	}
 	.card-head {
 		display: flex;
-		align-items: baseline;
+		align-items: center;
 		justify-content: space-between;
 		margin-bottom: 0.7rem;
+		min-height: 26px;
+	}
+	.head-left {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+	}
+
+	/* segmentový přepínač proměnné grafu */
+	.seg {
+		display: inline-flex;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		overflow: hidden;
+	}
+	.seg button {
+		border: 0;
+		background: transparent;
+		color: var(--text-faint);
+		font-family: var(--font-mono);
+		font-size: 10.5px;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		padding: 0.28rem 0.7rem;
+		cursor: default;
+		transition: background 130ms ease-out, color 130ms ease-out;
+	}
+	.seg button:hover {
+		color: var(--text-dim);
+		background: var(--surface);
+	}
+	.seg button.active {
+		color: var(--accent);
+		background: var(--surface-hover);
 	}
 
 	.readouts {
@@ -197,26 +256,6 @@
 	}
 	.readout .v.accent {
 		color: var(--accent);
-	}
-
-	.legend {
-		display: flex;
-		gap: 1.2rem;
-		margin-top: 0.5rem;
-	}
-	.legend .sw {
-		display: inline-block;
-		width: 14px;
-		height: 2px;
-		vertical-align: middle;
-		margin-right: 0.35rem;
-	}
-	.accent-bg {
-		background: var(--accent);
-		box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 45%, transparent);
-	}
-	.dim-bg {
-		background: var(--text-dim);
 	}
 
 	.err {
@@ -247,7 +286,8 @@
 	thead th {
 		position: sticky;
 		top: 0;
-		background: #1a1b21;
+		background: rgba(26, 27, 33, 0.92);
+		backdrop-filter: blur(8px);
 		text-align: left;
 		font-family: var(--font-mono);
 		font-size: 10.5px;
@@ -258,6 +298,7 @@
 		padding: 0.45rem 1rem;
 		border-bottom: 1px dotted var(--border-strong);
 		white-space: nowrap;
+		transition: color 130ms ease-out;
 	}
 	thead th:hover {
 		color: var(--text-dim);
@@ -267,6 +308,7 @@
 		border-bottom: 1px solid var(--border);
 		color: var(--text-dim);
 		white-space: nowrap;
+		transition: background 130ms ease-out;
 	}
 	tbody tr:hover td {
 		background: var(--surface);
