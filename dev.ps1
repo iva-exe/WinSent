@@ -53,7 +53,7 @@ if ($missing.Count -gt 0) {
     exit 1
 }
 
-# ── 3. Build workspace ──────────────────────────────────────────────
+# ── 3. Úklid + build workspace ──────────────────────────────────────
 # Běžící služba drží pipe \\.\pipe\syswatch (a starší instalace i
 # binárku v target\) — zastavíme ji před buildem. Po dev session ji
 # případně vrátíš přes .\service.ps1 -Start.
@@ -63,6 +63,23 @@ if ($svc -and $svc.Status -ne 'Stopped') {
     Stop-Service -Name syswatch -Force
     $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(15))
 }
+
+# Zapomenutý --console démon z minulé session drží pipe i binárku.
+Get-Process -Name syswatch -ErrorAction SilentlyContinue | ForEach-Object {
+    Write-Host "Ukončuji zapomenutého démona (PID $($_.Id))…" -ForegroundColor Yellow
+    Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+}
+
+# Opuštěný vite dev server z minulé session drží port 1420 → tauri dev
+# by spadl na "Port 1420 is already in use".
+Get-NetTCPConnection -LocalPort 1420 -State Listen -ErrorAction SilentlyContinue |
+    Select-Object -Unique OwningProcess | ForEach-Object {
+        $holder = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+        if ($holder) {
+            Write-Host "Uvolňuji port 1420 (držel $($holder.Name), PID $($holder.Id))…" -ForegroundColor Yellow
+            Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
 
 Write-Host '=== cargo build ===' -ForegroundColor Cyan
 cargo build
