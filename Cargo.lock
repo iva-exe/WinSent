@@ -475,6 +475,7 @@ version = "0.1.0"
 dependencies = [
  "core-types",
  "thiserror 2.0.18",
+ "tracing",
  "win-sys",
 ]
 

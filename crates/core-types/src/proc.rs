@@ -31,6 +31,9 @@ pub struct SystemSnapshot {
     /// fyzická rozhraní kromě loopbacku).
     pub net_rx_bps: u64,
     pub net_tx_bps: u64,
+    /// GPU využití v % (NVML). None = nedostupné — nikdy nepředstírat
+    /// číslo, které nemáme (SPEC kap. 15.2).
+    pub gpu_pct: Option<f32>,
 }
 
 /// Jeden bod historie systémových metrik (z tabulky system_1s).
@@ -41,6 +44,7 @@ pub struct SystemPoint {
     pub mem_used_mb: u64,
     pub net_rx_bps: u64,
     pub net_tx_bps: u64,
+    pub gpu_pct: Option<f32>,
 }
 
 /// Řádek procesu z historie (tabulky sample_1s + proc_names).

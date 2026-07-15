@@ -12,7 +12,7 @@ pub fn system_history(
     to: i64,
 ) -> Result<Vec<SystemPoint>, rusqlite::Error> {
     let mut stmt = conn.prepare_cached(
-        "SELECT ts, cpu_pct, mem_used_mb, net_rx_bps, net_tx_bps
+        "SELECT ts, cpu_pct, mem_used_mb, net_rx_bps, net_tx_bps, gpu_pct
          FROM system_1s WHERE ts BETWEEN ?1 AND ?2 ORDER BY ts",
     )?;
     let rows = stmt.query_map(params![from, to], |r| {
@@ -22,6 +22,7 @@ pub fn system_history(
             mem_used_mb: r.get::<_, i64>(2)?.max(0) as u64,
             net_rx_bps: r.get::<_, Option<i64>>(3)?.unwrap_or(0).max(0) as u64,
             net_tx_bps: r.get::<_, Option<i64>>(4)?.unwrap_or(0).max(0) as u64,
+            gpu_pct: r.get::<_, Option<f64>>(5)?.map(|v| v as f32),
         })
     })?;
     rows.collect()

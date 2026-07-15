@@ -17,4 +17,5 @@ windows = { workspace = true, features = [
     "Win32_System_SystemInformation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
+    "Win32_System_LibraryLoader",
 ] }

@@ -16,14 +16,15 @@ pub fn insert_tick(
     {
         tx.execute(
             "INSERT OR REPLACE INTO system_1s
-                 (ts, cpu_pct, mem_used_mb, net_rx_bps, net_tx_bps)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+                 (ts, cpu_pct, mem_used_mb, net_rx_bps, net_tx_bps, gpu_pct)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 ts,
                 sys.cpu_pct as f64,
                 sys.mem_used_mb as i64,
                 sys.net_rx_bps as i64,
-                sys.net_tx_bps as i64
+                sys.net_tx_bps as i64,
+                sys.gpu_pct.map(|v| v as f64)
             ],
         )?;
 

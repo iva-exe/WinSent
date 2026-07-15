@@ -3,16 +3,14 @@
 	//
 	// Interakce:
 	//  • kolečko        = posun v čase (dolů = do minulosti); u přítomnosti
-	//                     se přisnapne a sleduje živá data — v minulosti se
-	//                     view NEHÝBE, i když přitékají nová data
+	//                     snap na živě — v minulosti se view nehýbe
 	//  • Ctrl+kolečko   = zoom (30 s – 1 h)
-	//  • klik do grafu  = zámek na bod v čase (nezávislý na myši);
-	//                     přepíše se dalším klikem, ruší se klikem mimo graf
-	//  • hover          = linka + dutá tečka s borderem v barvě zátěže,
-	//                     hodnoty hlásí `onhover`
-	// Indikátory: spodní čára = pozice okna v historii (skrytá na živě),
-	// pravá čára = zoom (střed výšky = odzoomováno, plná = přizoomováno;
-	// skrytá v defaultu 180 s).
+	//  • klik do grafu  = zámek na bod v čase (linka + tečka na křivce,
+	//                     nezávislé na myši); přepíše se dalším klikem,
+	//                     ruší se klikem mimo graf
+	//  • hover          = linka + dutá tečka s borderem v barvě zátěže
+	// Režimy: procentní (cpu/ram/gpu/sys, gradient dle zátěže) a 'net'
+	// (dvě série: download --net-down, upload --net-up, dynamická osa).
 	import uPlot from 'uplot';
 	import 'uplot/dist/uPlot.min.css';
 	import { onMount } from 'svelte';
@@ -20,6 +18,7 @@
 	let {
 		ts = [],
 		values = [],
+		values2 = null,
 		mode = 'sys',
 		pinned = null,
 		onhover = () => {},
@@ -32,15 +31,14 @@
 
 	let el;
 	let u;
-	let pinEl;
+	let pinLineEl;
+	let pinDotEl;
 
-	// View: span = viditelné sekundy, endTs = pravý okraj (null = živě).
 	let span = $state(SPAN_DEFAULT);
 	let endTs = $state(null);
 
-	// Indikátory (odvozené při každém překreslení).
 	let panFrac = $state({ left: 0, width: 1 });
-	const isPercent = $derived(mode !== 'down' && mode !== 'up');
+	const isNet = $derived(mode === 'net');
 	const follow = $derived(endTs === null);
 	const zoomT = $derived(
 		(Math.log(SPAN_MAX) - Math.log(span)) / (Math.log(SPAN_MAX) - Math.log(SPAN_MIN))
@@ -49,7 +47,6 @@
 	function cssVar(name) {
 		return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 	}
-
 	function hexToRgb(hex) {
 		const v = hex.replace('#', '');
 		const n = parseInt(v.length === 3 ? v.replace(/./g, (c) => c + c) : v, 16);
@@ -58,7 +55,6 @@
 	const rgba = ([r, g, b], a) => `rgba(${r}, ${g}, ${b}, ${a})`;
 	const lerp = (c1, c2, t) => c1.map((v, i) => Math.round(v + (c2[i] - v) * t));
 
-	// Barva pro hodnotu zátěže (0–100) — stejné zastávky jako gradient.
 	function colorForLoad(v) {
 		const ok = hexToRgb(cssVar('--ok') || '#4ade80');
 		const warn = hexToRgb(cssVar('--warn') || '#f59e0b');
@@ -92,11 +88,12 @@
 		return `${(v / 1024).toFixed(0)} kB/s`;
 	}
 
-	function lastTs() {
-		return ts.length ? ts[ts.length - 1] : null;
+	const lastTs = () => (ts.length ? ts[ts.length - 1] : null);
+
+	function chartData() {
+		return isNet ? [ts, values, values2 ?? []] : [ts, values];
 	}
 
-	// Nastaví osu x podle view a přepočítá indikátory.
 	function applyScale() {
 		const last = lastTs();
 		if (!u || last == null) return;
@@ -111,20 +108,51 @@
 		positionPin();
 	}
 
-	// Svislá linka zámku — overlay v CSS souřadnicích plochy grafu.
+	// Zámek: svislá linka + tečka na křivce v zamčeném čase.
 	function positionPin() {
-		if (!u || !pinEl) return;
+		if (!u || !pinLineEl) return;
 		if (pinned == null) {
-			pinEl.style.display = 'none';
+			pinLineEl.style.display = 'none';
+			pinDotEl.style.display = 'none';
 			return;
 		}
 		const x = u.valToPos(pinned, 'x', false);
 		if (x < 0 || x > u.over.clientWidth) {
-			pinEl.style.display = 'none';
+			pinLineEl.style.display = 'none';
+			pinDotEl.style.display = 'none';
 			return;
 		}
-		pinEl.style.display = 'block';
-		pinEl.style.left = `${x}px`;
+		pinLineEl.style.display = 'block';
+		pinLineEl.style.left = `${x}px`;
+
+		// Tečka na hodnotě primární série (u sítě na downloadu).
+		const i = nearestIdx(pinned);
+		const v = i != null ? values[i] : null;
+		if (v == null) {
+			pinDotEl.style.display = 'none';
+			return;
+		}
+		const y = u.valToPos(v, 'y', false);
+		pinDotEl.style.display = 'block';
+		pinDotEl.style.left = `${x}px`;
+		pinDotEl.style.top = `${y}px`;
+		pinDotEl.style.borderColor = isNet
+			? cssVar('--net-down') || '#7cc0ff'
+			: colorForLoad(v);
+	}
+
+	function nearestIdx(t) {
+		if (!ts.length) return null;
+		// binární hledání nejbližšího času
+		let lo = 0;
+		let hi = ts.length - 1;
+		while (lo < hi) {
+			const mid = (lo + hi) >> 1;
+			if (ts[mid] < t) lo = mid + 1;
+			else hi = mid;
+		}
+		if (lo > 0 && Math.abs(ts[lo - 1] - t) < Math.abs(ts[lo] - t)) lo -= 1;
+		return lo;
 	}
 
 	function onWheel(e) {
@@ -132,16 +160,13 @@
 		const last = lastTs();
 		if (last == null) return;
 		if (e.ctrlKey) {
-			// Zoom kolem pravého okraje.
 			const f = e.deltaY > 0 ? 1.25 : 0.8;
 			span = Math.round(Math.min(SPAN_MAX, Math.max(SPAN_MIN, span * f)));
 		} else {
-			// Pan: dolů = do minulosti, nahoru = k přítomnosti.
 			const step = span * 0.12;
 			let end = (endTs ?? last) + (e.deltaY > 0 ? -step : step);
 			const first = ts.length ? ts[0] : last;
 			end = Math.max(Math.min(end, last), Math.min(first + span, last));
-			// Snap na přítomnost → follow režim.
 			endTs = end >= last - 0.5 ? null : end;
 		}
 		applyScale();
@@ -157,9 +182,26 @@
 
 	function build() {
 		const faint = cssVar('--text-faint') || '#5c5c63';
-		const accent = cssVar('--accent') || '#ffffff';
 		const grid = 'rgba(255,255,255,0.07)';
+		const netDown = cssVar('--net-down') || '#7cc0ff';
+		const netUp = cssVar('--net-up') || '#c4a7ff';
+
 		u?.destroy();
+		const series = isNet
+			? [
+					{},
+					{ width: 1.6, stroke: netDown, fill: rgba(hexToRgb(netDown), 0.06) },
+					{ width: 1.6, stroke: netUp, fill: rgba(hexToRgb(netUp), 0.06) }
+				]
+			: [
+					{},
+					{
+						width: 1.8,
+						stroke: (uu) => loadGradient(uu, 1),
+						fill: (uu) => loadGradient(uu, 0.07)
+					}
+				];
+
 		u = new uPlot(
 			{
 				width: el.clientWidth,
@@ -176,18 +218,17 @@
 						width: 1.6,
 						fill: () => 'rgba(0,0,0,0)',
 						stroke: (uu, sidx) => {
+							if (isNet) return sidx === 1 ? netDown : netUp;
 							const i = uu.cursor.idx;
 							const v = i != null ? uu.data[sidx]?.[i] : null;
-							return isPercent ? colorForLoad(v) : accent;
+							return colorForLoad(v);
 						}
 					}
 				},
 				scales: {
-					y: isPercent
-						? { range: [0, 100] }
-						: {
-								range: (_u, _min, max) => [0, Math.max((max ?? 0) * 1.15, 1024 * 1024)]
-							}
+					y: isNet
+						? { range: (_u, _min, max) => [0, Math.max((max ?? 0) * 1.15, 1024 * 1024)] }
+						: { range: [0, 100] }
 				},
 				axes: [
 					{
@@ -199,27 +240,13 @@
 					{
 						stroke: faint,
 						font: '10px "Fira Mono", monospace',
-						size: isPercent ? 42 : 64,
+						size: isNet ? 64 : 42,
 						ticks: { show: false },
 						grid: { stroke: grid, width: 1, dash: [2, 4] },
-						values: (_u, vals) =>
-							vals.map((v) => (isPercent ? `${v} %` : fmtBps(v)))
+						values: (_u, vals) => vals.map((v) => (isNet ? fmtBps(v) : `${v} %`))
 					}
 				],
-				series: [
-					{},
-					isPercent
-						? {
-								width: 1.8,
-								stroke: (uu) => loadGradient(uu, 1),
-								fill: (uu) => loadGradient(uu, 0.07)
-							}
-						: {
-								width: 1.6,
-								stroke: accent,
-								fill: 'rgba(255,255,255,0.05)'
-							}
-				],
+				series,
 				hooks: {
 					setCursor: [
 						(uu) => {
@@ -227,22 +254,25 @@
 							if (i == null || ts[i] == null) {
 								onhover(null);
 							} else {
-								onhover({ t: ts[i], v: values[i], i });
+								onhover({ t: ts[i], i });
 							}
 						}
 					],
 					draw: [() => positionPin()]
 				}
 			},
-			[ts, values],
+			chartData(),
 			el
 		);
 
-		// Overlay pro zámek + interakce na ploše grafu.
-		pinEl = document.createElement('div');
-		pinEl.className = 'pin-line';
-		pinEl.style.display = 'none';
-		u.over.appendChild(pinEl);
+		pinLineEl = document.createElement('div');
+		pinLineEl.className = 'pin-line';
+		pinLineEl.style.display = 'none';
+		pinDotEl = document.createElement('div');
+		pinDotEl.className = 'pin-dot';
+		pinDotEl.style.display = 'none';
+		u.over.appendChild(pinLineEl);
+		u.over.appendChild(pinDotEl);
 		u.over.addEventListener('wheel', onWheel, { passive: false });
 		u.over.addEventListener('click', onClick);
 		applyScale();
@@ -263,20 +293,17 @@
 		};
 	});
 
-	// Změna metriky → nový graf (jiná osa/škála/gradient).
 	$effect(() => {
 		mode;
 		if (u && el) build();
 	});
 
-	// Nová data: doplnit body BEZ resetu os; na živě posunout okno.
 	$effect(() => {
 		if (!u) return;
-		u.setData([ts, values], false);
+		u.setData(chartData(), false);
 		applyScale();
 	});
 
-	// Zámek zvenku (zrušení klikem mimo graf) → překreslit linku.
 	$effect(() => {
 		pinned;
 		positionPin();
@@ -285,6 +312,13 @@
 
 <div class="wrap">
 	<div bind:this={el} class="chart"></div>
+
+	{#if isNet}
+		<div class="legend label-tech">
+			<span><i class="sw down"></i> download</span>
+			<span><i class="sw up"></i> upload</span>
+		</div>
+	{/if}
 
 	<!-- Zoom indikátor: střed = odzoomováno, plná výška = přizoomováno -->
 	<div
@@ -315,7 +349,6 @@
 	.chart :global(.u-over) {
 		cursor: crosshair;
 	}
-	/* Linka zámku času — drží pozici nezávisle na myši. */
 	.chart :global(.pin-line) {
 		position: absolute;
 		top: 0;
@@ -324,8 +357,37 @@
 		border-left: 1px solid rgba(255, 255, 255, 0.55);
 		pointer-events: none;
 	}
+	/* Tečka zámku — plná linka, dutý střed v barvě hodnoty. */
+	.chart :global(.pin-dot) {
+		position: absolute;
+		width: 9px;
+		height: 9px;
+		border-radius: 50%;
+		border: 1.6px solid var(--accent);
+		background: transparent;
+		transform: translate(-50%, -50%);
+		pointer-events: none;
+	}
 
-	/* Ukazatele: lehce průhledné bílé čáry, v defaultu neviditelné. */
+	.legend {
+		display: flex;
+		gap: 1.2rem;
+		margin-top: 0.45rem;
+	}
+	.legend .sw {
+		display: inline-block;
+		width: 14px;
+		height: 2px;
+		vertical-align: middle;
+		margin-right: 0.35rem;
+	}
+	.legend .sw.down {
+		background: var(--net-down);
+	}
+	.legend .sw.up {
+		background: var(--net-up);
+	}
+
 	.zoom-ind {
 		position: absolute;
 		right: 2px;

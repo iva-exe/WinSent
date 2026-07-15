@@ -27,6 +27,10 @@
 	--danger: #ef4444;
 	--warn: #f59e0b;
 
+	/* síť: download světle modrá, upload světle fialová */
+	--net-down: #7cc0ff;
+	--net-up: #c4a7ff;
+
 	/* glow — jen významové barvy a akcent */
 	--glow-ok: 0 0 8px color-mix(in srgb, var(--ok) 55%, transparent);
 	--glow-danger: 0 0 8px color-mix(in srgb, var(--danger) 55%, transparent);

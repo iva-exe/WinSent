@@ -10,8 +10,14 @@ fn main() {
         }
     };
     println!(
-        "CPU {:.1} %  RAM {}/{} MB  procesů {}",
-        sys.cpu_pct, sys.mem_used_mb, sys.mem_total_mb, sys.proc_count
+        "CPU {:.1} %  RAM {}/{} MB  GPU {:?}  ↓{} B/s ↑{} B/s  procesů {}",
+        sys.cpu_pct,
+        sys.mem_used_mb,
+        sys.mem_total_mb,
+        sys.gpu_pct,
+        sys.net_rx_bps,
+        sys.net_tx_bps,
+        sys.proc_count
     );
 
     let mut procs = match ipc::client::query_procs() {

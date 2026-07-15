@@ -28,6 +28,8 @@ pub struct State {
     prev_tick: Instant,
     prev_sys: win_sys::sysinfo::SystemTimes,
     prev_net: win_sys::net::NetTotals,
+    /// NVML kontext; None = GPU metrika nedostupná (bez NVIDIA).
+    gpu: Option<win_sys::gpu::Nvml>,
     /// Počet logických jader — normalizace na % celkové kapacity.
     n_cpus: f64,
 }
@@ -37,12 +39,17 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
     let n_cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1) as f64;
+    let gpu = win_sys::gpu::Nvml::init();
+    if gpu.is_none() {
+        tracing::info!("NVML nedostupné — GPU metrika bude hlášena jako nedostupná");
+    }
     Ok(State {
         buf: Vec::new(),
         prev_cpu: HashMap::new(),
         prev_tick: Instant::now(),
         prev_sys: win_sys::sysinfo::system_times()?,
         prev_net: win_sys::net::net_totals()?,
+        gpu,
         n_cpus,
     })
 }
@@ -116,6 +123,7 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
         proc_count: rows.len() as u32,
         net_rx_bps,
         net_tx_bps,
+        gpu_pct: state.gpu.as_ref().and_then(|g| g.utilization_pct()),
     };
     Ok((rows, snapshot))
 }
