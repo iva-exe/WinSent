@@ -39,6 +39,80 @@ pub fn system_times() -> Result<SystemTimes, Error> {
     })
 }
 
+// Per-core časy: NtQuerySystemInformation(SystemProcessorPerformanceInformation).
+#[link(name = "ntdll")]
+extern "system" {
+    fn NtQuerySystemInformation(
+        class: u32,
+        info: *mut std::ffi::c_void,
+        len: u32,
+        ret_len: *mut u32,
+    ) -> i32;
+}
+
+const SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION_CLASS: u32 = 8;
+
+/// SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION (winternl, stabilní layout).
+#[repr(C)]
+#[derive(Clone)]
+struct ProcessorPerf {
+    idle: i64,
+    kernel: i64,
+    user: i64,
+    dpc: i64,
+    interrupt: i64,
+    interrupt_count: u32,
+}
+
+/// Kumulativní časy jednoho jádra (100 ns). `kernel` zahrnuje `idle`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CoreTimes {
+    pub idle: u64,
+    pub kernel: u64,
+    pub user: u64,
+}
+
+/// Přečte kumulativní časy všech logických jader.
+pub fn core_times(n_cpus: usize) -> Result<Vec<CoreTimes>, Error> {
+    let mut buf = vec![
+        ProcessorPerf {
+            idle: 0,
+            kernel: 0,
+            user: 0,
+            dpc: 0,
+            interrupt: 0,
+            interrupt_count: 0,
+        };
+        n_cpus
+    ];
+    let mut ret_len = 0u32;
+    // SAFETY: buffer má přesnou velikost pole struktur; délku validujeme.
+    let status = unsafe {
+        NtQuerySystemInformation(
+            SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION_CLASS,
+            buf.as_mut_ptr() as *mut _,
+            (buf.len() * std::mem::size_of::<ProcessorPerf>()) as u32,
+            &mut ret_len,
+        )
+    };
+    if status != 0 {
+        return Err(Error::Win32 {
+            call: "NtQuerySystemInformation(SystemProcessorPerformanceInformation)",
+            code: status,
+        });
+    }
+    let filled = ret_len as usize / std::mem::size_of::<ProcessorPerf>();
+    Ok(buf
+        .iter()
+        .take(filled)
+        .map(|p| CoreTimes {
+            idle: p.idle.max(0) as u64,
+            kernel: p.kernel.max(0) as u64,
+            user: p.user.max(0) as u64,
+        })
+        .collect())
+}
+
 /// Stav fyzické paměti: (použito MB, celkem MB).
 pub fn memory_status_mb() -> Result<(u64, u64), Error> {
     let mut mem = MEMORYSTATUSEX {

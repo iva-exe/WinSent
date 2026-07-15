@@ -62,7 +62,7 @@
 	<!-- ── Titlebar (vlastní, drag region) ─────────────────────── -->
 	<header class="titlebar" data-tauri-drag-region>
 		<div class="brand" data-tauri-drag-region>
-			<Shield size={18} strokeWidth={1.75} />
+			<img src="/icon.png" alt="" width="20" height="20" draggable="false" />
 			<span class="wordmark">Winsent</span>
 		</div>
 

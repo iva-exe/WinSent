@@ -28,6 +28,7 @@ pub struct State {
     prev_tick: Instant,
     prev_sys: win_sys::sysinfo::SystemTimes,
     prev_net: win_sys::net::NetTotals,
+    prev_cores: Vec<win_sys::sysinfo::CoreTimes>,
     /// NVML kontext; None = GPU metrika nedostupná (bez NVIDIA).
     gpu: Option<win_sys::gpu::Nvml>,
     /// Počet logických jader — normalizace na % celkové kapacity.
@@ -49,6 +50,7 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
         prev_tick: Instant::now(),
         prev_sys: win_sys::sysinfo::system_times()?,
         prev_net: win_sys::net::net_totals()?,
+        prev_cores: win_sys::sysinfo::core_times(n_cpus as usize)?,
         gpu,
         n_cpus,
     })
@@ -116,6 +118,35 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
     let net_tx_bps = (net.tx_bytes.saturating_sub(state.prev_net.tx_bytes) as f64 / wall_s) as u64;
     state.prev_net = net;
 
+    // Per-core zátěž: busy = 1 − idle_d / (kernel_d + user_d).
+    let cores_now = win_sys::sysinfo::core_times(state.n_cpus as usize)?;
+    let cores = cores_now
+        .iter()
+        .zip(state.prev_cores.iter())
+        .map(|(now, prev)| {
+            let idle_d = now.idle.saturating_sub(prev.idle) as f64;
+            let total_d = (now.kernel.saturating_sub(prev.kernel)
+                + now.user.saturating_sub(prev.user)) as f64;
+            if total_d > 0.0 {
+                (((1.0 - idle_d / total_d) * 100.0) as f32).clamp(0.0, 100.0)
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    state.prev_cores = cores_now;
+
+    let gpu_detail = state.gpu.as_ref().map(|g| {
+        let d = g.details();
+        core_types::proc::GpuInfo {
+            temp_c: d.temp_c,
+            vram_used_mb: d.vram_used_mb,
+            vram_total_mb: d.vram_total_mb,
+            power_w: d.power_w,
+            clock_mhz: d.clock_mhz,
+        }
+    });
+
     let snapshot = SystemSnapshot {
         cpu_pct: cpu_pct.clamp(0.0, 100.0),
         mem_used_mb,
@@ -124,6 +155,8 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
         net_rx_bps,
         net_tx_bps,
         gpu_pct: state.gpu.as_ref().and_then(|g| g.utilization_pct()),
+        cores,
+        gpu: gpu_detail,
     };
     Ok((rows, snapshot))
 }

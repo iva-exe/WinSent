@@ -17,15 +17,42 @@ struct NvmlUtilization {
     memory: u32,
 }
 
+/// nvmlMemory_t.
+#[repr(C)]
+struct NvmlMemory {
+    total: u64,
+    free: u64,
+    used: u64,
+}
+
 type FnInit = unsafe extern "C" fn() -> i32;
 type FnDeviceByIndex = unsafe extern "C" fn(u32, *mut *mut c_void) -> i32;
 type FnUtilization = unsafe extern "C" fn(*mut c_void, *mut NvmlUtilization) -> i32;
+type FnTemperature = unsafe extern "C" fn(*mut c_void, u32, *mut u32) -> i32;
+type FnMemoryInfo = unsafe extern "C" fn(*mut c_void, *mut NvmlMemory) -> i32;
+type FnPower = unsafe extern "C" fn(*mut c_void, *mut u32) -> i32;
+type FnClock = unsafe extern "C" fn(*mut c_void, u32, *mut u32) -> i32;
+
+/// Doplňkové údaje GPU pro detail sekci.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GpuDetails {
+    pub temp_c: Option<f32>,
+    pub vram_used_mb: Option<u64>,
+    pub vram_total_mb: Option<u64>,
+    pub power_w: Option<f32>,
+    pub clock_mhz: Option<u32>,
+}
 
 /// Inicializovaný NVML kontext: knihovna + handle prvního GPU.
+/// Doplňkové symboly jsou volitelné (starší ovladače).
 pub struct Nvml {
     lib: windows::Win32::Foundation::HMODULE,
     device: *mut c_void,
     get_utilization: FnUtilization,
+    get_temperature: Option<FnTemperature>,
+    get_memory: Option<FnMemoryInfo>,
+    get_power: Option<FnPower>,
+    get_clock: Option<FnClock>,
 }
 
 // SAFETY: NVML je vláknově bezpečné (dokumentované), handle je opaque
@@ -57,6 +84,14 @@ impl Nvml {
                 lib,
                 device,
                 get_utilization,
+                get_temperature: load(lib, s!("nvmlDeviceGetTemperature"))
+                    .map(|f| std::mem::transmute::<_, FnTemperature>(f)),
+                get_memory: load(lib, s!("nvmlDeviceGetMemoryInfo"))
+                    .map(|f| std::mem::transmute::<_, FnMemoryInfo>(f)),
+                get_power: load(lib, s!("nvmlDeviceGetPowerUsage"))
+                    .map(|f| std::mem::transmute::<_, FnPower>(f)),
+                get_clock: load(lib, s!("nvmlDeviceGetClockInfo"))
+                    .map(|f| std::mem::transmute::<_, FnClock>(f)),
             })
         }
     }
@@ -67,6 +102,46 @@ impl Nvml {
         // SAFETY: device i výstupní struktura jsou platné po dobu volání.
         let rc = unsafe { (self.get_utilization)(self.device, &mut util) };
         (rc == 0).then_some(util.gpu.min(100) as f32)
+    }
+
+    /// Doplňkové údaje (teplota, VRAM, spotřeba, takt) — co ovladač dá.
+    pub fn details(&self) -> GpuDetails {
+        // SAFETY: všechny výstupy jsou lokální, device platí.
+        unsafe {
+            let mut d = GpuDetails::default();
+            if let Some(f) = self.get_temperature {
+                let mut t = 0u32;
+                // 0 = NVML_TEMPERATURE_GPU
+                if f(self.device, 0, &mut t) == 0 {
+                    d.temp_c = Some(t as f32);
+                }
+            }
+            if let Some(f) = self.get_memory {
+                let mut m = NvmlMemory {
+                    total: 0,
+                    free: 0,
+                    used: 0,
+                };
+                if f(self.device, &mut m) == 0 {
+                    d.vram_used_mb = Some(m.used / (1024 * 1024));
+                    d.vram_total_mb = Some(m.total / (1024 * 1024));
+                }
+            }
+            if let Some(f) = self.get_power {
+                let mut mw = 0u32;
+                if f(self.device, &mut mw) == 0 {
+                    d.power_w = Some(mw as f32 / 1000.0);
+                }
+            }
+            if let Some(f) = self.get_clock {
+                let mut mhz = 0u32;
+                // 0 = NVML_CLOCK_GRAPHICS
+                if f(self.device, 0, &mut mhz) == 0 {
+                    d.clock_mhz = Some(mhz);
+                }
+            }
+            d
+        }
     }
 }
 

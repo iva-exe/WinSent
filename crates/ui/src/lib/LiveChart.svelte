@@ -155,22 +155,68 @@
 		return lo;
 	}
 
-	function onWheel(e) {
-		e.preventDefault();
+	// ── Pan/zoom s rAF throttlingem: wheel eventy chodí rychleji než
+	// stíhá překreslení; deltu akumulujeme a aplikujeme 1× za snímek.
+	let pendingPan = 0;
+	let pendingZoom = 0;
+	let rafId = null;
+
+	function setEnd(end) {
 		const last = lastTs();
 		if (last == null) return;
-		if (e.ctrlKey) {
-			const f = e.deltaY > 0 ? 1.25 : 0.8;
+		const first = ts.length ? ts[0] : last;
+		end = Math.max(Math.min(end, last), Math.min(first + span, last));
+		endTs = end >= last - 0.5 ? null : end;
+	}
+
+	function flushView() {
+		rafId = null;
+		const last = lastTs();
+		if (last == null) return;
+		if (pendingZoom !== 0) {
+			const f = Math.pow(1.25, pendingZoom);
 			span = Math.round(Math.min(SPAN_MAX, Math.max(SPAN_MIN, span * f)));
-		} else {
-			const step = span * 0.12;
-			let end = (endTs ?? last) + (e.deltaY > 0 ? -step : step);
-			const first = ts.length ? ts[0] : last;
-			end = Math.max(Math.min(end, last), Math.min(first + span, last));
-			endTs = end >= last - 0.5 ? null : end;
+			pendingZoom = 0;
+		}
+		if (pendingPan !== 0) {
+			setEnd((endTs ?? last) + pendingPan);
+			pendingPan = 0;
 		}
 		applyScale();
-		u?.redraw();
+	}
+
+	function scheduleFlush() {
+		if (rafId == null) rafId = requestAnimationFrame(flushView);
+	}
+
+	function onWheel(e) {
+		e.preventDefault();
+		if (e.ctrlKey) {
+			pendingZoom += e.deltaY > 0 ? 1 : -1;
+		} else {
+			pendingPan += span * 0.12 * (e.deltaY > 0 ? -1 : 1);
+		}
+		scheduleFlush();
+	}
+
+	// Pan tažením: držení kolečka (prostřední tlačítko) na grafu.
+	let dragging = false;
+
+	function onMouseDown(e) {
+		if (e.button !== 1) return;
+		e.preventDefault(); // vypnout autoscroll Windows
+		dragging = true;
+	}
+
+	function onMouseMove(e) {
+		if (!dragging || !u) return;
+		const secPerPx = span / Math.max(u.over.clientWidth, 1);
+		pendingPan -= e.movementX * secPerPx;
+		scheduleFlush();
+	}
+
+	function onMouseUp() {
+		dragging = false;
 	}
 
 	function onClick() {
@@ -178,6 +224,33 @@
 		if (i != null && ts[i] != null) {
 			onpin(ts[i]);
 		}
+	}
+
+	// Tažení spodní čáry (pan indikátoru) — grab & scroll historií.
+	let trackEl;
+	let trackDrag = false;
+
+	function trackSeek(clientX) {
+		const last = lastTs();
+		if (!trackEl || last == null) return;
+		const rect = trackEl.getBoundingClientRect();
+		const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+		// frac = střed okna v hodinové historii
+		const histStart = last - SPAN_MAX;
+		setEnd(histStart + frac * SPAN_MAX + span / 2);
+		scheduleFlush();
+	}
+
+	function onTrackDown(e) {
+		trackDrag = true;
+		trackSeek(e.clientX);
+	}
+	function onWinMove(e) {
+		if (trackDrag) trackSeek(e.clientX);
+	}
+	function onWinUp() {
+		trackDrag = false;
+		dragging = false;
 	}
 
 	function build() {
@@ -212,18 +285,8 @@
 					x: true,
 					y: false,
 					drag: { x: false, y: false },
-					points: {
-						show: true,
-						size: 8,
-						width: 1.6,
-						fill: () => 'rgba(0,0,0,0)',
-						stroke: (uu, sidx) => {
-							if (isNet) return sidx === 1 ? netDown : netUp;
-							const i = uu.cursor.idx;
-							const v = i != null ? uu.data[sidx]?.[i] : null;
-							return colorForLoad(v);
-						}
-					}
+					// Žádné tečky při hoveru — jen linka; tečka patří zámku.
+					points: { show: false }
 				},
 				scales: {
 					y: isNet
@@ -275,6 +338,11 @@
 		u.over.appendChild(pinDotEl);
 		u.over.addEventListener('wheel', onWheel, { passive: false });
 		u.over.addEventListener('click', onClick);
+		u.over.addEventListener('mousedown', onMouseDown);
+		u.over.addEventListener('mousemove', onMouseMove);
+		u.over.addEventListener('mouseup', onMouseUp);
+		// auxclick = kliknutí kolečkem — nesmí se počítat jako zámek
+		u.over.addEventListener('auxclick', (e) => e.preventDefault());
 		applyScale();
 	}
 
@@ -327,8 +395,15 @@
 		style:height={`${50 + 50 * zoomT}%`}
 	></div>
 
-	<!-- Pan indikátor: pozice okna v hodinové historii (skrytý na živě) -->
-	<div class="pan-ind" class:hidden={follow}>
+	<!-- Pan indikátor: pozice okna v hodinové historii (skrytý na živě);
+	     jde grabnout a scrollovat tažením -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="pan-ind"
+		class:hidden={follow && !trackDrag}
+		bind:this={trackEl}
+		onmousedown={onTrackDown}
+	>
 		<div
 			class="thumb"
 			style:left={`${panFrac.left * 100}%`}
@@ -336,6 +411,8 @@
 		></div>
 	</div>
 </div>
+
+<svelte:window onmousemove={onWinMove} onmouseup={onWinUp} />
 
 <style>
 	.wrap {
@@ -400,11 +477,15 @@
 	}
 	.pan-ind {
 		position: relative;
-		height: 3px;
+		height: 5px;
 		margin-top: 4px;
 		border-radius: 2px;
 		background: rgba(255, 255, 255, 0.06);
 		transition: opacity 200ms ease-out;
+		cursor: grab;
+	}
+	.pan-ind:active {
+		cursor: grabbing;
 	}
 	.pan-ind .thumb {
 		position: absolute;
@@ -412,9 +493,10 @@
 		bottom: 0;
 		border-radius: 2px;
 		background: rgba(255, 255, 255, 0.28);
-		transition: left 80ms linear, width 120ms ease-out;
+		pointer-events: none;
 	}
 	.hidden {
 		opacity: 0;
+		pointer-events: none;
 	}
 </style>

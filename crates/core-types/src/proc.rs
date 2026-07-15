@@ -19,8 +19,19 @@ pub struct ProcRow {
     pub session_id: u32,
 }
 
-/// Systémové metriky z téhož vzorku.
+/// Doplňkové údaje GPU (NVML) pro detail sekci — jen živý pohled,
+/// do historie se neukládá (senzory naostro přijdou ve v3).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub struct GpuInfo {
+    pub temp_c: Option<f32>,
+    pub vram_used_mb: Option<u64>,
+    pub vram_total_mb: Option<u64>,
+    pub power_w: Option<f32>,
+    pub clock_mhz: Option<u32>,
+}
+
+/// Systémové metriky z téhož vzorku.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SystemSnapshot {
     /// Celkové CPU v % (0–100).
     pub cpu_pct: f32,
@@ -34,6 +45,10 @@ pub struct SystemSnapshot {
     /// GPU využití v % (NVML). None = nedostupné — nikdy nepředstírat
     /// číslo, které nemáme (SPEC kap. 15.2).
     pub gpu_pct: Option<f32>,
+    /// Zátěž jednotlivých logických jader v % (0–100).
+    pub cores: Vec<f32>,
+    /// Doplňkové GPU údaje (teplota, VRAM…), když je NVML.
+    pub gpu: Option<GpuInfo>,
 }
 
 /// Jeden bod historie systémových metrik (z tabulky system_1s).

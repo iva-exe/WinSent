@@ -6,6 +6,8 @@
 	import { flip } from 'svelte/animate';
 	import { daemon } from '$lib/daemon.svelte.js';
 	import LiveChart from '$lib/LiveChart.svelte';
+	import Sparkline from '$lib/Sparkline.svelte';
+	import { Cpu, MemoryStick, Zap, ArrowDown, ArrowUp } from 'lucide-svelte';
 
 	// Buffery na celou dostupnou historii (1 h retence surových vzorků).
 	const CAP = 3600;
@@ -29,11 +31,11 @@
 	// Metrika grafu — procentní režimy mají gradient, Síť dvě série.
 	let mode = $state('sys');
 	const modes = [
+		{ id: 'sys', label: 'System' },
 		{ id: 'cpu', label: 'CPU' },
 		{ id: 'ram', label: 'RAM' },
 		{ id: 'gpu', label: 'GPU' },
-		{ id: 'net', label: 'Síť' },
-		{ id: 'sys', label: 'System' }
+		{ id: 'net', label: 'Síť' }
 	];
 	const chartValues = $derived(
 		mode === 'cpu' ? cpu : mode === 'ram' ? mem : mode === 'gpu' ? gpu : mode === 'net' ? down : sys
@@ -71,18 +73,15 @@
 		return lo;
 	}
 
-	// Stav tasků z minulosti (hover/zámek mimo přítomnost).
+	// Stav tasků z minulosti — VÝHRADNĚ pro zámek (klik do grafu).
+	// Hover ukazuje jen hodnoty v hlavičce, list nechává živý.
 	let histProcs = $state(null);
 	let histTimer = null;
-	const showingPast = $derived(
-		focusTs != null && ts.length > 0 && focusTs < ts[ts.length - 1] - 2
-	);
 
 	$effect(() => {
-		const t = focusTs;
-		const past = showingPast;
+		const t = pinned;
 		clearTimeout(histTimer);
-		if (!past || t == null) {
+		if (t == null) {
 			if (histProcs) {
 				histProcs = null;
 				refreshTable(true);
@@ -96,13 +95,44 @@
 				histProcs = null;
 			}
 			refreshTable(true);
-		}, 200);
+		}, 150);
 	});
 
 	// Tweenované readouty.
 	const cpuT = new Tween(0, { duration: 700, easing: cubicOut });
 	const ramT = new Tween(0, { duration: 700, easing: cubicOut });
 	const sysT = new Tween(0, { duration: 700, easing: cubicOut });
+
+	// ── Detail sekce: historie jader (sparklines) + síťové špičky ──
+	let coresHist = $state([]);
+	let peakDown = $state(0);
+	let peakUp = $state(0);
+
+	// Barva podle zátěže (0–100) — stejné zastávky jako gradient grafu.
+	const OK_C = [74, 222, 128];
+	const WARN_C = [245, 158, 11];
+	const DANGER_C = [239, 68, 68];
+	const TEMP_COLD = [124, 192, 255];
+
+	const lerpC = (c1, c2, t) => c1.map((v, i) => Math.round(v + (c2[i] - v) * t));
+	const rgb = (c) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+
+	function colorForLoad(v) {
+		if (v == null) return 'var(--text-dim)';
+		if (v <= 55) return rgb(OK_C);
+		if (v <= 75) return rgb(lerpC(OK_C, WARN_C, (v - 55) / 20));
+		if (v <= 90) return rgb(lerpC(WARN_C, DANGER_C, (v - 75) / 15));
+		return rgb(DANGER_C);
+	}
+
+	// Teplota: světle modrá (chladno) → oranžová (střed) → červená (moc).
+	function colorForTemp(t) {
+		if (t == null) return 'var(--text-dim)';
+		if (t <= 35) return rgb(TEMP_COLD);
+		if (t <= 60) return rgb(lerpC(TEMP_COLD, WARN_C, (t - 35) / 25));
+		if (t <= 80) return rgb(lerpC(WARN_C, DANGER_C, (t - 60) / 20));
+		return rgb(DANGER_C);
+	}
 
 	// ── Tabulka: zmrazené pořadí mezi reordery ──
 	let displayRows = $state([]);
@@ -185,6 +215,14 @@
 			gpu = push(gpu, s.gpu_pct);
 			down = push(down, s.net_rx_bps);
 			up = push(up, s.net_tx_bps);
+
+			// Detail sekce: krátká historie jader + síťové špičky session.
+			coresHist = (s.cores ?? []).map((v, i) => [
+				...(coresHist[i] ?? []).slice(-59),
+				v
+			]);
+			if (s.net_rx_bps > peakDown) peakDown = s.net_rx_bps;
+			if (s.net_tx_bps > peakUp) peakUp = s.net_tx_bps;
 
 			if (!historyLoaded) {
 				historyLoaded = true;
@@ -322,15 +360,146 @@
 		{/if}
 	</section>
 
+	<!-- ── Detail vybrané proměnné (mezi grafem a listem) ── -->
+	<section class="card detail-card">
+		<header class="card-head">
+			<span class="label-tech">// detail / {modes.find((m) => m.id === mode)?.label}</span>
+		</header>
+
+		{#if mode === 'sys'}
+			<!-- Dlaždice všech proměnných, barva podle využití -->
+			<div class="tiles">
+				<div class="tile">
+					<span class="tile-head"><Cpu size={16} strokeWidth={1.75} /> <span class="label-tech">cpu</span></span>
+					<span class="tile-val value-mono" style:color={colorForLoad(system?.cpu_pct)}>{fmtPct(system?.cpu_pct)}</span>
+				</div>
+				<div class="tile">
+					<span class="tile-head"><MemoryStick size={16} strokeWidth={1.75} /> <span class="label-tech">ram</span></span>
+					<span class="tile-val value-mono" style:color={colorForLoad(mem.at(-1))}>{fmtPct(mem.at(-1))}</span>
+				</div>
+				<div class="tile">
+					<span class="tile-head"><Zap size={16} strokeWidth={1.75} /> <span class="label-tech">gpu</span></span>
+					<span class="tile-val value-mono" style:color={colorForLoad(system?.gpu_pct)}>{fmtPct(system?.gpu_pct)}</span>
+				</div>
+				<div class="tile">
+					<span class="tile-head"><ArrowDown size={16} strokeWidth={1.75} /> <span class="label-tech">down</span></span>
+					<span class="tile-val value-mono" style:color="var(--net-down)">{fmtBps(system?.net_rx_bps)}</span>
+				</div>
+				<div class="tile">
+					<span class="tile-head"><ArrowUp size={16} strokeWidth={1.75} /> <span class="label-tech">up</span></span>
+					<span class="tile-val value-mono" style:color="var(--net-up)">{fmtBps(system?.net_tx_bps)}</span>
+				</div>
+			</div>
+		{:else if mode === 'cpu'}
+			<!-- Jádra ve dvou sloupcích s mini grafy -->
+			<div class="cores">
+				{#each system?.cores ?? [] as c, i (i)}
+					<div class="core">
+						<span class="label-tech core-name">C{i}</span>
+						<span class="core-val value-mono" style:color={colorForLoad(c)}>{c.toFixed(0)} %</span>
+						<div class="core-spark">
+							<Sparkline values={coresHist[i] ?? []} color={colorForLoad(c)} height={22} />
+						</div>
+					</div>
+				{:else}
+					<p class="empty-note label-tech">čekám na data jader…</p>
+				{/each}
+			</div>
+		{:else if mode === 'ram'}
+			<!-- Lineární využití + čísla -->
+			{#if system}
+				{@const usedPct = (system.mem_used_mb / Math.max(system.mem_total_mb, 1)) * 100}
+				<div class="ram">
+					<div class="ram-bar">
+						<div
+							class="ram-fill"
+							style:width={`${usedPct}%`}
+							style:background={colorForLoad(usedPct)}
+						></div>
+					</div>
+					<div class="tiles">
+						<div class="tile">
+							<span class="label-tech">použito</span>
+							<span class="tile-val value-mono" style:color={colorForLoad(usedPct)}>{(system.mem_used_mb / 1024).toFixed(1)} GB</span>
+						</div>
+						<div class="tile">
+							<span class="label-tech">volno</span>
+							<span class="tile-val value-mono">{((system.mem_total_mb - system.mem_used_mb) / 1024).toFixed(1)} GB</span>
+						</div>
+						<div class="tile">
+							<span class="label-tech">celkem</span>
+							<span class="tile-val value-mono">{(system.mem_total_mb / 1024).toFixed(1)} GB</span>
+						</div>
+						<div class="tile">
+							<span class="label-tech">využití</span>
+							<span class="tile-val value-mono" style:color={colorForLoad(usedPct)}>{usedPct.toFixed(1)} %</span>
+						</div>
+					</div>
+				</div>
+			{/if}
+		{:else if mode === 'gpu'}
+			{#if system?.gpu}
+				<div class="tiles">
+					<div class="tile">
+						<span class="label-tech">teplota</span>
+						<span class="tile-val value-mono" style:color={colorForTemp(system.gpu.temp_c)}>
+							{system.gpu.temp_c != null ? `${system.gpu.temp_c.toFixed(0)} °C` : '—'}
+						</span>
+					</div>
+					<div class="tile">
+						<span class="label-tech">vram</span>
+						<span class="tile-val value-mono">
+							{system.gpu.vram_used_mb != null
+								? `${(system.gpu.vram_used_mb / 1024).toFixed(1)} / ${((system.gpu.vram_total_mb ?? 0) / 1024).toFixed(0)} GB`
+								: '—'}
+						</span>
+					</div>
+					<div class="tile">
+						<span class="label-tech">takt</span>
+						<span class="tile-val value-mono">{system.gpu.clock_mhz != null ? `${system.gpu.clock_mhz} MHz` : '—'}</span>
+					</div>
+					<div class="tile">
+						<span class="label-tech">spotřeba</span>
+						<span class="tile-val value-mono">{system.gpu.power_w != null ? `${system.gpu.power_w.toFixed(0)} W` : '—'}</span>
+					</div>
+					<div class="tile">
+						<span class="label-tech">využití</span>
+						<span class="tile-val value-mono" style:color={colorForLoad(system.gpu_pct)}>{fmtPct(system.gpu_pct)}</span>
+					</div>
+				</div>
+			{:else}
+				<p class="empty-note label-tech">gpu detail nedostupný — vyžaduje NVIDIA (NVML); AMD/Intel přijde ve v3</p>
+			{/if}
+		{:else}
+			<!-- Síť: aktuální + špičky za session -->
+			<div class="tiles">
+				<div class="tile">
+					<span class="tile-head"><ArrowDown size={16} strokeWidth={1.75} /> <span class="label-tech">aktuálně</span></span>
+					<span class="tile-val value-mono" style:color="var(--net-down)">{fmtBps(system?.net_rx_bps)}</span>
+				</div>
+				<div class="tile">
+					<span class="tile-head"><ArrowUp size={16} strokeWidth={1.75} /> <span class="label-tech">aktuálně</span></span>
+					<span class="tile-val value-mono" style:color="var(--net-up)">{fmtBps(system?.net_tx_bps)}</span>
+				</div>
+				<div class="tile">
+					<span class="tile-head"><ArrowDown size={16} strokeWidth={1.75} /> <span class="label-tech">špička</span></span>
+					<span class="tile-val value-mono" style:color="var(--net-down)">{fmtBps(peakDown)}</span>
+				</div>
+				<div class="tile">
+					<span class="tile-head"><ArrowUp size={16} strokeWidth={1.75} /> <span class="label-tech">špička</span></span>
+					<span class="tile-val value-mono" style:color="var(--net-up)">{fmtBps(peakUp)}</span>
+				</div>
+			</div>
+		{/if}
+	</section>
+
 	<!-- ── Tabulka procesů ── -->
 	<section class="card table-card">
 		<header class="card-head">
 			<span class="label-tech">// processes</span>
 			{#if histProcs}
 				<span class="label-tech past-badge">
-					● stav z {fmtClock(histProcs.ts)} — {pinned != null
-						? 'zámek zrušíš klikem mimo graf'
-						: 'sjeď myší z grafu pro živá data'}
+					● stav z {fmtClock(histProcs.ts)} — zámek zrušíš klikem mimo graf
 				</span>
 			{/if}
 		</header>
@@ -467,6 +636,77 @@
 	}
 	.past-badge {
 		color: var(--warn);
+	}
+
+	/* ── detail sekce ── */
+	.detail-card {
+		flex-shrink: 0;
+	}
+	.tiles {
+		display: flex;
+		gap: 0.7rem;
+		flex-wrap: wrap;
+	}
+	.tile {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		min-width: 128px;
+		padding: 0.6rem 0.85rem;
+		border: 1px dotted var(--border-strong);
+		border-radius: var(--radius);
+	}
+	.tile-head {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		color: var(--text-faint);
+	}
+	.tile-val {
+		font-size: 1.12rem;
+	}
+
+	.cores {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0.25rem 1.6rem;
+		max-height: 190px;
+		overflow-y: auto;
+	}
+	.core {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
+	.core-name {
+		width: 30px;
+		flex-shrink: 0;
+	}
+	.core-val {
+		width: 52px;
+		flex-shrink: 0;
+		text-align: right;
+		font-size: 0.82rem;
+	}
+	.core-spark {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.ram-bar {
+		height: 8px;
+		border-radius: 4px;
+		background: var(--surface-hover);
+		overflow: hidden;
+		margin-bottom: 0.8rem;
+	}
+	.ram-fill {
+		height: 100%;
+		border-radius: 4px;
+	}
+
+	.empty-note {
+		margin: 0.3rem 0;
 	}
 
 	/* ── tabulka (bez CSS přechodů — výkon při 200+ řádcích) ── */

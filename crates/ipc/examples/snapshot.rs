@@ -19,6 +19,12 @@ fn main() {
         sys.net_tx_bps,
         sys.proc_count
     );
+    println!(
+        "jader: {} (C0 {:.0} %)  gpu detail: {:?}",
+        sys.cores.len(),
+        sys.cores.first().copied().unwrap_or(0.0),
+        sys.gpu
+    );
 
     let mut procs = match ipc::client::query_procs() {
         Ok(p) => p,

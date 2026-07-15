@@ -91,7 +91,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             // Plný kanál = zápis nestíhá; vzorek se zahodí
                             // a zaloguje, sampler neblokuje.
                             if let Err(std::sync::mpsc::TrySendError::Full(_)) =
-                                sample_tx.try_send((ts, procs.clone(), system))
+                                sample_tx.try_send((ts, procs.clone(), system.clone()))
                             {
                                 tracing::warn!("zapisovací vlákno nestíhá — vzorek zahozen");
                             }
@@ -140,7 +140,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 Response::Procs(live.read().expect("live lock poisoned").procs.clone())
             }
             Request::QuerySystem => {
-                Response::System(live.read().expect("live lock poisoned").system)
+                Response::System(live.read().expect("live lock poisoned").system.clone())
             }
             // Sebemonitoring (SPEC kap. 2.3): vlastní řádek ze stejného
             // sampleru jako všechny ostatní procesy — žádný speciální kód.
