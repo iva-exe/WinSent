@@ -33,6 +33,7 @@
 	let u;
 	let pinLineEl;
 	let pinDotEl;
+	let pinLabelEl;
 
 	let span = $state(SPAN_DEFAULT);
 	let endTs = $state(null);
@@ -108,22 +109,31 @@
 		positionPin();
 	}
 
-	// Zámek: svislá linka + tečka na křivce v zamčeném čase.
+	// Zámek: svislá linka + tečka na křivce + štítek s časem.
 	function positionPin() {
 		if (!u || !pinLineEl) return;
 		if (pinned == null) {
 			pinLineEl.style.display = 'none';
 			pinDotEl.style.display = 'none';
+			pinLabelEl.style.display = 'none';
 			return;
 		}
 		const x = u.valToPos(pinned, 'x', false);
 		if (x < 0 || x > u.over.clientWidth) {
 			pinLineEl.style.display = 'none';
 			pinDotEl.style.display = 'none';
+			pinLabelEl.style.display = 'none';
 			return;
 		}
 		pinLineEl.style.display = 'block';
 		pinLineEl.style.left = `${x}px`;
+
+		// Štítek s časem zámku — přilepený k lince, u krajů se přetočí.
+		pinLabelEl.style.display = 'block';
+		pinLabelEl.textContent = `⌖ ${new Date(pinned * 1000).toLocaleTimeString('cs-CZ')}`;
+		const flip = x > u.over.clientWidth - 78;
+		pinLabelEl.style.left = `${x}px`;
+		pinLabelEl.style.transform = flip ? 'translateX(calc(-100% - 6px))' : 'translateX(6px)';
 
 		// Tečka na hodnotě primární série (u sítě na downloadu).
 		const i = nearestIdx(pinned);
@@ -219,8 +229,13 @@
 		dragging = false;
 	}
 
-	function onClick() {
-		const i = u?.cursor.idx;
+	function onClick(e) {
+		if (!u) return;
+		// Čas z pozice kliknutí (ne z cursor.idx — ten může být po
+		// aktualizaci dat zastaralý).
+		const rect = u.over.getBoundingClientRect();
+		const t = u.posToVal(e.clientX - rect.left, 'x');
+		const i = nearestIdx(t);
 		if (i != null && ts[i] != null) {
 			onpin(ts[i]);
 		}
@@ -334,8 +349,12 @@
 		pinDotEl = document.createElement('div');
 		pinDotEl.className = 'pin-dot';
 		pinDotEl.style.display = 'none';
+		pinLabelEl = document.createElement('div');
+		pinLabelEl.className = 'pin-label';
+		pinLabelEl.style.display = 'none';
 		u.over.appendChild(pinLineEl);
 		u.over.appendChild(pinDotEl);
+		u.over.appendChild(pinLabelEl);
 		u.over.addEventListener('wheel', onWheel, { passive: false });
 		u.over.addEventListener('click', onClick);
 		u.over.addEventListener('mousedown', onMouseDown);
@@ -370,6 +389,11 @@
 		if (!u) return;
 		u.setData(chartData(), false);
 		applyScale();
+		// Kurzor se sám přepočítává jen při pohybu myši — po posunu dat
+		// pod nehybnou myší ho znovu vyhodnotíme, aby hover nezamrzl.
+		if (u.cursor.left != null && u.cursor.left >= 0) {
+			u.setCursor({ left: u.cursor.left, top: u.cursor.top });
+		}
 	});
 
 	$effect(() => {
@@ -433,6 +457,21 @@
 		width: 0;
 		border-left: 1px solid rgba(255, 255, 255, 0.55);
 		pointer-events: none;
+	}
+	/* Štítek zámku s časem — přilepený k lince. */
+	.chart :global(.pin-label) {
+		position: absolute;
+		top: 4px;
+		padding: 2px 6px;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-sm);
+		background: rgba(20, 21, 26, 0.92);
+		font-family: var(--font-mono);
+		font-size: 10px;
+		letter-spacing: 0.04em;
+		color: var(--text);
+		pointer-events: none;
+		white-space: nowrap;
 	}
 	/* Tečka zámku — plná linka, dutý střed v barvě hodnoty. */
 	.chart :global(.pin-dot) {
