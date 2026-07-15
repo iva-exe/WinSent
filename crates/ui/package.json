@@ -10,7 +10,11 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2"
+    "@fontsource/fira-mono": "^5.2.7",
+    "@fontsource/space-grotesk": "^5.2.10",
+    "@tauri-apps/api": "^2",
+    "lucide-svelte": "^1.0.1",
+    "uplot": "^1.6.32"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3",

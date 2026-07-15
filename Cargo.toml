@@ -78,6 +78,7 @@ win-sys = { path = "crates/win-sys" }
 validate = { path = "crates/validate" }
 store = { path = "crates/store" }
 ipc = { path = "crates/ipc" }
+collector-proc = { path = "crates/collector-proc" }
 
 # externí — verze zamčené přes Cargo.lock, tady jen semver rozsahy
 thiserror = "2"

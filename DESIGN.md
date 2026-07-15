@@ -1,136 +1,149 @@
-# Design zásady — syswatch UI
+# Design zásady — Winsent UI
 
-> Závazný dokument pro veškeré UI. Vychází ze SPEC kap. 9 (9.2 globální
-> prvky, 9.3 grafy, 9.4 vizuální styl) a kap. 13.4 (barevné kódování
-> vynucení). Upřesnění majitele projektu: **akcent je čistě bílá**,
-> barvy se používají **cíleně a účelně podle funkce**, lehká inspirace
-> nativním Windows 11. Tokeny žijí v `crates/ui/src/app.css` — kód
-> nikdy nepoužívá barvy natvrdo, vždy přes CSS proměnné.
+> Závazný dokument pro veškeré UI. **Hlavní návrh rozložení je „Frame 5"**
+> (mock od majitele projektu) — titlebar se stavem, sidebar s Lucide
+> ikonami, obsahový panel. Ostatní reference (PRE-DATA dashboard,
+> industrial mapa, Smart Home) jsou inspirace pro náladu: glow u barev,
+> industrial dotted + frame prvky, čisté karty. Doplňuje SPEC kap. 9
+> (9.2 globální prvky, 9.3 grafy) a 13.4 (barevné kódování vynucení).
+> Tokeny žijí v `crates/ui/src/app.css` — žádné barvy natvrdo v kódu.
 
 ---
 
 ## 1. Charakter
 
-Tech + minimalismus. Nástroj, ne hračka: hustota informací je hodnota,
-ozdoba je dluh. UI je tmavé, klidné a tiché — **pozornost si smí říct
-jen skutečný stav systému** (červená tečka, jantarové varování, badge),
-nikdy dekorace.
+**Tech-industriální, ale clean.** Tmavý režim (jediný). Minimalismus
+s hustotou informací; ozdoba je dluh. Lehký **glow** u významových barev
+(tečky stavu, křivky grafů) — světlo, ne lesk. **Žádné glossy** — nikdy
+plastické odlesky, gumové bublinové tlačítka ani heavy blur.
 
-Inspirace Windows 11 znamená: vrstvené tmavé povrchy (mica/card pocit),
-decentní 1px bordery místo stínů, zaoblení 4–8 px, systémová typografie
-jako fallback, žádné ostré kontrasty mimo funkční barvy.
+Windows 11 pocit: vrstvené tmavé povrchy, decentní 1px bordery,
+radius 6–10 px, klid.
 
-## 2. Barvy
+Industrial vrstva (střídmě, jako koření): tečkované (dotted) linky
+a kroužky, tenké rámové linky s "ticks", technické popisky v mono
+uppercase (`FIRA MONO 10–11 px, letter-spacing 0.08em`), číslované
+sekce. Vždy podřízené čitelnosti.
 
-### 2.1 Základ (neutrály)
+## 2. Gradienty — tvrdé pravidlo
+
+- **Pozadí prvků (karty, panely, tlačítka): NIKDY gradient.** Plné
+  poloprůhledné povrchy.
+- Gradient smí být jen: (1) na **úplně zadním pozadí okna** (velmi
+  jemný, tmavý radiál), (2) **v barvách samotných** — tahy křivek
+  v grafu, barevné přechody indikátorů (např. čára CPU přecházející
+  z bílé do jantarové při throttlingu).
+
+## 3. Barvy
+
+### 3.1 Neutrály (vrstvení průhlednou bílou nad --bg)
 
 | Token | Hodnota | Použití |
 |---|---|---|
-| `--bg` | `#0f0f12` | pozadí aplikace |
-| `--surface` | `rgba(255,255,255,.035)` | karty, hlavička, panely |
-| `--surface-hover` | `rgba(255,255,255,.06)` | hover řádků/karet |
+| `--bg` | `#0e0f12` | zadní pozadí okna (+ jemný radiál) |
+| `--panel` | `#16171c` | sidebar, hlavní obsahový panel (Frame 5) |
+| `--surface` | `rgba(255,255,255,.04)` | karty uvnitř panelu, hover |
+| `--surface-hover` | `rgba(255,255,255,.07)` | hover řádků, aktivní nav |
 | `--border` | `rgba(255,255,255,.08)` | standardní 1px border |
-| `--border-strong` | `rgba(255,255,255,.14)` | fokus, aktivní ohraničení |
-| `--text` | `#ececef` | primární text |
-| `--text-dim` | `#9a9aa1` | sekundární text, popisky |
-| `--text-faint` | `#5c5c63` | terciární text, hinty |
+| `--border-strong` | `rgba(255,255,255,.16)` | fokus, aktivní ohraničení |
+| `--text` | `#ececef` / `--text-dim` `#9a9aa1` / `--text-faint` `#5c5c63` | hierarchie textu |
 
-Vrstvení = průhledná bílá nad `--bg`, ne nové odstíny šedé. Hlubší
-vrstva → nižší alfa. Tím vzniká konzistentní hloubka jako ve Win11.
+### 3.2 Akcent — čistě bílá
 
-### 2.2 Akcent — čistě bílá
+`--accent: #ffffff`. Wordmark, aktivní položka navigace, primární
+hodnoty, primární křivka grafu. Střídmě — jednotky výskytů na obrazovku.
 
-`--accent: #ffffff`. Používá se **střídmě**: název aplikace, aktivní
-položka navigace, primární hodnota v kartě, aktivní stav přepínače.
-Akcent je důraz, ne barva „značky" rozlitá po ploše. Pravidlo: na jedné
-obrazovce má bílý akcent svítit na jednotkách míst, ne desítkách.
-
-### 2.3 Funkční barvy — výhradně podle významu
+### 3.3 Funkční barvy + glow
 
 | Token | Hodnota | Význam — a NIC jiného |
 |---|---|---|
-| `--ok` | `#5dbb63` | **běží / chráněno-vynuceno / zdravé**. Zelená = „OS to vynucuje / stav je ověřen", nikdy „nastaveno" (SPEC 13.4) |
-| `--danger` | `#e5484d` | **neběží / kritické / destruktivní akce** |
-| `--warn` | `#f0b429` | **varování / nevynuceno / degradováno** — typicky „odepřeno, ale Windows to u Win32 nevynucuje", systémové procesy |
+| `--ok` | `#4ade80` | běží / vynuceno / zdravé (zelená NIKDY bez vynucení, SPEC 13.4) |
+| `--danger` | `#ef4444` | neběží / kritické / destruktivní |
+| `--warn` | `#f59e0b` | varování / nevynuceno / degradace |
 
-Tvrdá pravidla:
-- Barva nikdy není dekorace. Když prvek nenese stav, je neutrální.
-- **Zelená nikdy tam, kde vynucení není** (SPEC 13.4) — falešný pocit
-  ochrany je horší než žádný.
-- Významová barva jde vždy s textem/ikonou, nikdy sama (přístupnost,
-  barvoslepost): tečka + „služba běží", ne jen tečka.
-- Ochranné třídy procesů (SPEC 9.4): kritické = šedé + zámek (nikoli
-  červené — nejsou „špatné", jsou nedotknutelné), systémové = jantarová,
-  uživatelské = neutrální.
+Glow = `box-shadow: 0 0 8px color-mix(in srgb, var(--barva) 55%, transparent)`
+u teček a malých prvků; křivky v grafu mají jemný stín stejné barvy.
+Glow je vyhrazen významovým barvám a akcentu — šedé prvky nesvítí.
+Barva vždy s textem/ikonou, nikdy samotná (barvoslepost).
 
-## 3. Typografie
+## 4. Typografie
 
-| Role | Font | Poznámka |
-|---|---|---|
-| Nadpisy (h1–h3, názvy karet) | `Tiempos Headline`, fallback Georgia/serif | serif dává nástroji tvář; než koupíme font, nese to fallback |
-| Text, tabulky, UI | `Inter`, fallback `Segoe UI Variable Text`, `Segoe UI` | Segoe fallback = přirozený Win11 pocit |
-| Čísla v tabulkách/grafech | Inter s `font-variant-numeric: tabular-nums` | sloupce čísel se nesmí klepat |
+| Role | Font |
+|---|---|
+| UI, nadpisy, navigace | **Space Grotesk** (400/500/600) |
+| Čísla, tabulky dat, technické popisky, kód | **Fira Mono** (400/500) |
 
-Základ 14 px / 1.45. Stupnice střídmá: 0.78 / 0.82 / 0.95 / 1.1 rem.
-Hierarchii tvoří primárně **barva textu** (text → dim → faint) a váha,
-ne velikost.
+Oba fonty bundlované lokálně (@fontsource), žádné CDN. Základ 14 px /
+1.45. Datové hodnoty vždy Fira Mono (tabular už z podstaty). Technické
+popisky: Fira Mono, uppercase, 10–11 px, `letter-spacing: .08em`,
+`--text-faint`.
 
-## 4. Geometrie a prostor
+## 5. Rozložení — Frame 5 (závazné)
 
-- Radius: 4 px (malé prvky), 6 px (výchozí), 8 px (karty, dialogy).
-- Odsazení v násobcích 4 px; uvnitř karet 12–20 px.
-- Bordery 1px `--border`; stíny nepoužíváme (tmavý režim je zabíjí),
-  hloubku dělá vrstvení povrchů.
-- Glassmorphism (`backdrop-filter: blur`) jen na **překryvných** prvcích:
-  hlavička, případné dialogy. Ne na statických kartách — je to drahé
-  (WebView2) a bez pohybu pod sklem nemá smysl.
+```
+┌ titlebar ──────────────────────────────────────────────┐
+│ ⛨ Winsent      ● stav služby            —  □  ✕        │
+├──────────┬─────────────────────────────────────────────┤
+│ sidebar  │  obsahový panel (radius 10, border, --panel) │
+│ (panel)  │                                              │
+└──────────┴─────────────────────────────────────────────┘
+```
 
-## 5. Globální prvky (SPEC 9.2)
+- **Titlebar**: vlastní (bez systémových dekorací), drag region.
+  Vlevo logo (Lucide `shield`) + wordmark **Winsent**. Vedle stav
+  démona: tečka s glow + text (zelená „služba běží" / červená
+  „služba neběží"). Vpravo okenní tlačítka — minimalizace, maximalizace,
+  zavřít; ✕ má hover/akcent červený (Frame 5).
+- **Sidebar**: samostatný zaoblený panel. Položky = Lucide ikona
+  (20 px, stroke 1.75) + text. Aktivní: bílý text + `--surface-hover`
+  pozadí; neaktivní `--text-dim`. Settings ukotvené dole.
+- **Sekce navigace** (názvy dle Frame 5): Home, Tasks, Programs, Files,
+  On start, Users, Hardware, Drivers, Connection, Network, Security
+  + dole Settings. (Badge zdraví na položkách dle SPEC 9.2 přijde
+  s daty.)
+- **Obsahový panel**: jeden velký zaoblený rect s borderem; obsah
+  scrolluje uvnitř něj.
 
-- **Indikátor démona** v hlavičce, na každé obrazovce: tečka `--ok` /
-  `--danger` + text „služba běží / neběží". Zdroj pravdy je vždy pipe,
-  nikdy domněnka UI.
-- **Badge zdraví** na položkách navigace: tečka `--warn`/`--danger`
-  u sekce, která volá po pozornosti. Jediný povolený „křiklavý" prvek
-  navigace.
+## 6. Obrazovky — priority
 
-## 6. Komponentový princip (SPEC 15.4)
+- **Tasks je hlavní obrazovka**: nahoře hlavní časový graf (živý,
+  později s přepínačem historie — komponentový princip SPEC 15.4),
+  pod ním tabulka procesů. `/` přesměruje na Tasks.
+- **Home je jen souhrn — odloženo**, neřešit, dokud nejsou data ze
+  sekcí.
+- Prázdné sekce: tichý placeholder (mono popisek + kdy přijde obsah).
 
-Vše o jedné entitě je pohromadě u ní: **nahoře graf (živý i historie
-přes týž přepínač času), pod ním údaje**. Historie není samostatná
-obrazovka. Platí pro hardware, procesy, aplikace i incidenty.
+## 7. Grafy (uPlot)
 
-## 7. Grafy (SPEC 9.3)
-
-- uPlot, nikdy Chart.js.
-- Křivky: neutrální bílá/šedá pro primární metriku; funkční barvy jen
-  když křivka nese význam (teplota v throttlingu = `--warn`).
-- Bez výplňových gradientů „pro krásu"; max jemná (≤ 8 % alfa) výplň
-  pod primární křivkou.
-- Osy a mřížka: `--text-faint` / `--border`, nesmí konkurovat datům.
+- Primární křivka bílá (akcent), sekundární `--text-dim`; významová
+  barva jen když křivka nese význam. Lehký glow tahu.
+- Gradient povolen v tahu křivky (barva→barva), ne ve výplni pozadí;
+  výplň pod křivkou max 6–8 % alfa, jednobarevná.
+- Osy/mřížka: `--text-faint`/`--border`, tečkovaná mřížka (industrial),
+  popisky os Fira Mono 10 px.
+- Nikdy Chart.js.
 
 ## 8. Stavové vzory
 
 | Stav | Vzor |
 |---|---|
-| Načítám | skeleton/`--text-faint` text, žádné spinnery přes celou plochu |
-| Prázdno | tichý text `--text-dim` s vysvětlením, co tu bude |
-| Chyba | text `--danger` + co se stalo + co s tím; chyby se nikdy nepolykají (SPEC 22) |
-| Neznámá hodnota | pomlčka + zdroj („—, senzor nedostupný"), nikdy vymyšlené číslo (SPEC 15.2) |
-| Confidence `guess` | tečkovaný podtrh (SPEC 4.4, 5.2) |
+| Načítám | skeleton / mono „—" , žádné celoplošné spinnery |
+| Prázdno | mono popisek `--text-faint`: co tu bude a od kdy |
+| Chyba | `--danger` text + co se stalo + co s tím; nikdy mlčky (SPEC 22) |
+| Neznámá hodnota | „—" + zdroj; nikdy vymyšlené číslo (SPEC 15.2) |
+| Confidence `guess` | tečkovaný podtrh (SPEC 4.4) |
 
 ## 9. Ikony a pohyb
 
-- Ikony: **Lucide** (outline), 16/20 px, barva dle textu, ne vlastní sady.
-- Animace svižné a účelné: 120–160 ms ease-out na hover/rozbalení;
-  žádné vjezdy obrazovek. `prefers-reduced-motion` respektovat.
-- SPA — žádné přenačítání (SPEC 9.4).
+- **Lucide** outline, přesně sada z Frame 5 pro navigaci; 16–20 px.
+- Animace 120–160 ms ease-out (hover, rozbalení); žádné vjezdy
+  obrazovek; `prefers-reduced-motion` respektovat. SPA bez přenačítání.
 
 ## 10. Do / Don't
 
-**Do:** tmavý klid, data hustě a čitelně, barva = informace, bílý akcent
-vzácně, tabular-nums, vrstvení průhlednou bílou.
+**Do:** tmavý klid, glow jen na významu, dotted/frame detaily střídmě,
+Fira Mono na číslech, vrstvení průhlednou bílou, Frame 5 rozložení.
 
-**Don't:** barevné dekorace, zelená bez vynucení, červená pro „jiné než
-problém", stíny, gradienty, spinnery přes obsah, více než jedna křiklavá
-věc na obrazovce, hardcoded barvy mimo tokeny.
+**Don't:** glossy/plastické povrchy, gradienty na pozadích prvků,
+zelená bez vynucení, dekorativní barvy, stíny místo borderů, více než
+jedna křiklavá věc na obrazovce, hardcoded barvy mimo tokeny.

@@ -26,9 +26,26 @@ fn ping_daemon() -> Result<PingResult, String> {
     }
 }
 
+/// Snapshot procesů pro frontend. Serializace typů z core-types
+/// projde přímo (derive Serialize).
+#[tauri::command]
+fn query_procs() -> Result<Vec<core_types::proc::ProcRow>, String> {
+    ipc::client::query_procs().map_err(|e| e.to_string())
+}
+
+/// Systémové metriky pro hlavní graf v Tasks.
+#[tauri::command]
+fn query_system() -> Result<core_types::proc::SystemSnapshot, String> {
+    ipc::client::query_system().map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![ping_daemon])
+        .invoke_handler(tauri::generate_handler![
+            ping_daemon,
+            query_procs,
+            query_system
+        ])
         .run(tauri::generate_context!())
         .expect("start Tauri selhal");
 }

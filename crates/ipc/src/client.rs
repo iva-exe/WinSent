@@ -8,6 +8,7 @@ use std::io::ErrorKind;
 use std::time::Duration;
 
 use core_types::ipc::{Request, Response, PROTOCOL_VERSION};
+use core_types::proc::{ProcRow, SystemSnapshot};
 
 use crate::{frame, Error, PIPE_NAME};
 
@@ -60,5 +61,32 @@ pub fn ping() -> Result<PongInfo, Error> {
             uptime_s,
         }),
         Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Aktuální snapshot procesů ze sampleru služby.
+pub fn query_procs() -> Result<Vec<ProcRow>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryProcs)? {
+        Response::Procs(rows) => Ok(rows),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Aktuální systémové metriky ze sampleru služby.
+pub fn query_system() -> Result<SystemSnapshot, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QuerySystem)? {
+        Response::System(s) => Ok(s),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
     }
 }

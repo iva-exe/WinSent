@@ -11,12 +11,17 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use windows::core::PCWSTR;
+use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    LocalFree, ERROR_ACCESS_DENIED, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL,
+    CloseHandle, LocalFree, ERROR_ACCESS_DENIED, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL,
 };
-use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
-use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+use windows::Win32::Security::Authorization::{
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+};
+use windows::Win32::Security::{
+    GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY,
+    TOKEN_USER,
+};
 use windows::Win32::Storage::FileSystem::{
     FlushFileBuffers, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
 };
@@ -24,18 +29,63 @@ use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 use core_types::ipc::{Request, Response};
 
 use crate::{frame, Error, MAX_FRAME_LEN, PIPE_NAME};
 
-/// SDDL pro DACL pipe: P = protected (žádná dědičnost), SYSTEM (SY) a
-/// Administrators (BA) plný přístup, interaktivní uživatelé (IU) jen
-/// čtení+zápis BEZ práva FILE_CREATE_PIPE_INSTANCE (0x4) — jinak by si
-/// kdokoli mohl vytvořit vlastní instanci naší pipe a odposlouchávat
-/// požadavky (pipe je útočná plocha, SPEC kap. 21 bod 10).
+/// SDDL šablona DACL pipe: P = protected (žádná dědičnost), SYSTEM (SY)
+/// a Administrators (BA) plný přístup, `{server}` = SID identity, pod
+/// kterou server právě běží (LocalSystem v produkci, vývojář v --console)
+/// — server musí sám sobě dovolit vytvářet další instance. Interaktivní
+/// uživatelé (IU) jen čtení+zápis BEZ práva FILE_CREATE_PIPE_INSTANCE
+/// (0x4) — jinak by si kdokoli mohl vytvořit vlastní instanci naší pipe
+/// a odposlouchávat požadavky (pipe je útočná plocha, SPEC kap. 21 bod 10).
 /// 0x12019b = (FILE_GENERIC_READ | FILE_GENERIC_WRITE) & ~FILE_CREATE_PIPE_INSTANCE
-const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;IU)";
+const PIPE_SDDL_TEMPLATE: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{server})(A;;0x12019b;;;IU)";
+
+/// SID identity aktuálního procesu (string forma pro SDDL).
+fn current_process_sid() -> Result<String, Error> {
+    // SAFETY: standardní sekvence token → TOKEN_USER → SID string;
+    // všechny buffery vlastníme, handle i LocalAlloc řetězec uvolňujeme.
+    unsafe {
+        let mut token = HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).map_err(|source| {
+            Error::Win32 {
+                call: "OpenProcessToken",
+                source,
+            }
+        })?;
+
+        // První volání jen zjistí potřebnou délku.
+        let mut len = 0u32;
+        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
+        let mut buf = vec![0u8; len as usize];
+        let info = GetTokenInformation(
+            token,
+            TokenUser,
+            Some(buf.as_mut_ptr() as *mut _),
+            len,
+            &mut len,
+        );
+        let _ = CloseHandle(token);
+        info.map_err(|source| Error::Win32 {
+            call: "GetTokenInformation(TokenUser)",
+            source,
+        })?;
+
+        let user = &*(buf.as_ptr() as *const TOKEN_USER);
+        let mut sid_str = PWSTR::null();
+        ConvertSidToStringSidW(user.User.Sid, &mut sid_str).map_err(|source| Error::Win32 {
+            call: "ConvertSidToStringSidW",
+            source,
+        })?;
+        let sid = sid_str.to_string().unwrap_or_default();
+        let _ = LocalFree(Some(HLOCAL(sid_str.0 as _)));
+        Ok(sid)
+    }
+}
 
 /// Obsluha jednoho požadavku. Služba dodá funkci, server ji volá pro
 /// každý přijatý Request — server sám protokolu nerozumí.
@@ -63,7 +113,11 @@ impl Drop for PipeSecurity {
 
 /// Přeloží SDDL na security descriptor.
 fn build_pipe_security() -> Result<PipeSecurity, Error> {
-    let sddl: Vec<u16> = PIPE_SDDL.encode_utf16().chain(std::iter::once(0)).collect();
+    let sddl_string = PIPE_SDDL_TEMPLATE.replace("{server}", &current_process_sid()?);
+    let sddl: Vec<u16> = sddl_string
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     // SAFETY: výstupní ukazatel žije po celou dobu volání.
     unsafe {

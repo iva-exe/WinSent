@@ -1,44 +1,44 @@
-/* ═══ Designové tokeny (SPEC kap. 9.4 + preference) ═══
- *
- * Tech + minimalismus, tmavý základ, glassmorphism, jemné bordery.
- * Akcent: čistě bílá — používá se pro aktivní/zvýrazněné prvky.
- * Barvy se používají CÍLENĚ podle funkce, ne dekorativně:
- *   --ok      zeleně = běží / v pořádku (jen skutečný stav, ne „nastaveno“)
- *   --danger  červeně = neběží / problém
- *   --warn    jantarová = varování / nevynucené (kap. 13.4)
- * Inspirace Windows 11: vrstvené tmavé povrchy, decentní 1px bordery,
- * radius 4–8 px, Segoe UI Variable jako fallback za Inter.
+/* ═══ Designové tokeny Winsent — viz DESIGN.md (závazné) ═══
+ * Frame 5 rozložení, tech-industrial ale clean, tmavý režim,
+ * akcent čistě bílá, glow jen u významových barev, žádné glossy,
+ * gradient pouze na zadním pozadí okna a v barvách křivek.
  */
 
 :root {
-	/* povrchy — vrstvení jako Win11 mica/card */
-	--bg: #0f0f12;
-	--surface: rgba(255, 255, 255, 0.035);
-	--surface-hover: rgba(255, 255, 255, 0.06);
+	/* povrchy — vrstvení jako Win11 */
+	--bg: #0e0f12;
+	--panel: #16171c;
+	--surface: rgba(255, 255, 255, 0.04);
+	--surface-hover: rgba(255, 255, 255, 0.07);
 	--border: rgba(255, 255, 255, 0.08);
-	--border-strong: rgba(255, 255, 255, 0.14);
+	--border-strong: rgba(255, 255, 255, 0.16);
 
 	/* text */
 	--text: #ececef;
 	--text-dim: #9a9aa1;
 	--text-faint: #5c5c63;
 
-	/* akcent — čistě bílá, střídmě (aktivní stavy, důraz) */
+	/* akcent — čistě bílá, střídmě */
 	--accent: #ffffff;
 
-	/* funkční barvy — výhradně podle významu */
-	--ok: #5dbb63;
-	--danger: #e5484d;
-	--warn: #f0b429;
+	/* funkční barvy — výhradně podle významu (DESIGN.md 3.3) */
+	--ok: #4ade80;
+	--danger: #ef4444;
+	--warn: #f59e0b;
+
+	/* glow — jen významové barvy a akcent */
+	--glow-ok: 0 0 8px color-mix(in srgb, var(--ok) 55%, transparent);
+	--glow-danger: 0 0 8px color-mix(in srgb, var(--danger) 55%, transparent);
+	--glow-warn: 0 0 8px color-mix(in srgb, var(--warn) 55%, transparent);
 
 	/* geometrie */
 	--radius-sm: 4px;
 	--radius: 6px;
-	--radius-lg: 8px;
+	--radius-lg: 10px;
 
-	/* typografie (SPEC 9.4: Tiempos Headline nadpisy, Inter text) */
-	--font-text: 'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
-	--font-heading: 'Tiempos Headline', 'Georgia', serif;
+	/* typografie */
+	--font-ui: 'Space Grotesk', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+	--font-mono: 'Fira Mono', 'Cascadia Mono', 'Consolas', monospace;
 }
 
 * {
@@ -49,15 +49,43 @@ html,
 body {
 	margin: 0;
 	height: 100%;
-	background: var(--bg);
+	overflow: hidden;
+	/* jediné povolené gradientové pozadí — úplně zadní plocha okna */
+	background: radial-gradient(120% 90% at 20% 0%, #14151a 0%, var(--bg) 55%, #0b0c0f 100%);
 	color: var(--text);
-	font-family: var(--font-text);
+	font-family: var(--font-ui);
 	font-size: 14px;
 	line-height: 1.45;
 	-webkit-font-smoothing: antialiased;
+	user-select: none;
+	cursor: default;
 }
 
-/* Decentní scrollbar ve stylu Win11 */
+/* ── industrial utility ── */
+
+/* technický popisek: mono, uppercase, prostrkané */
+.label-tech {
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--text-faint);
+}
+
+/* tečkovaná dělicí linka */
+.rule-dotted {
+	border: 0;
+	border-top: 1px dotted var(--border-strong);
+	margin: 0;
+}
+
+/* datové hodnoty */
+.value-mono {
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+}
+
+/* ── scrollbar (Win11 decentní) ── */
 ::-webkit-scrollbar {
 	width: 10px;
 	height: 10px;
@@ -73,4 +101,11 @@ body {
 }
 ::-webkit-scrollbar-track {
 	background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	* {
+		transition: none !important;
+		animation: none !important;
+	}
 }

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use core_types::config::Config;
 use core_types::ipc::{Request, Response, PROTOCOL_VERSION};
+use core_types::proc::{ProcRow, SystemSnapshot};
 
 /// Chyby startu démona. Za běhu se chyby logují a jednotlivé části se
 /// restartují/degradují, ale start musí být buď celý, nebo žádný.
@@ -22,6 +23,15 @@ pub enum Error {
     Thread(#[from] std::io::Error),
     #[error("ipc: {0}")]
     Ipc(#[from] ipc::Error),
+    #[error("collector-proc: {0}")]
+    Collector(#[from] collector_proc::Error),
+}
+
+/// Poslední vzorek sampleru sdílený s IPC handlerem.
+#[derive(Default)]
+struct LiveSample {
+    procs: Vec<ProcRow>,
+    system: SystemSnapshot,
 }
 
 /// Spustí démona a blokuje, dokud `stop` nenastaví okolí (SCM handler
@@ -57,12 +67,40 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             .spawn(move || retention_loop(conn, cfg, stop))?
     };
 
+    // Sampler procesů (v1, SPEC kap. 3.1): 1 Hz vlákno plní sdílený
+    // poslední vzorek, ze kterého IPC handler odpovídá bez čekání.
+    let live: Arc<RwLock<LiveSample>> = Arc::new(RwLock::new(LiveSample::default()));
+    let sampler_handle = {
+        let stop = Arc::clone(&stop);
+        let live = Arc::clone(&live);
+        let mut state = collector_proc::init(&cfg.read().expect("config lock poisoned"))?;
+        std::thread::Builder::new()
+            .name("sampler".into())
+            .spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    match collector_proc::tick(&mut state) {
+                        Ok((procs, system)) => {
+                            let mut slot = live.write().expect("live lock poisoned");
+                            slot.procs = procs;
+                            slot.system = system;
+                        }
+                        // Kolektor nesmí shodit službu — chyba se loguje
+                        // a další tick to zkusí znovu (SPEC kap. 22).
+                        Err(e) => tracing::error!(error = %e, "tick sampleru selhal"),
+                    }
+                    wait_or_stop(&stop, Duration::from_millis(1000));
+                }
+                collector_proc::shutdown(state);
+            })?
+    };
+
     // IPC server: navázání na pipe je synchronní — kolize s jinou
     // instancí démona (běžící služba vs. --console) shodí start hned,
     // s jasnou chybou. Akceptační smyčka pak běží ve vlastním vlákně.
     let ipc_bound = ipc::server::bind()?;
     let ipc_handle = {
         let stop = Arc::clone(&stop);
+        let live = Arc::clone(&live);
         let handler: ipc::server::Handler = Arc::new(move |req| match req {
             Request::Ping { protocol_version } => {
                 if protocol_version != PROTOCOL_VERSION {
@@ -76,6 +114,12 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     protocol_version: PROTOCOL_VERSION,
                     uptime_s: started.elapsed().as_secs(),
                 }
+            }
+            Request::QueryProcs => {
+                Response::Procs(live.read().expect("live lock poisoned").procs.clone())
+            }
+            Request::QuerySystem => {
+                Response::System(live.read().expect("live lock poisoned").system)
             }
         });
         std::thread::Builder::new()
@@ -102,6 +146,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     tracing::info!("zastavuji démona");
     ipc::server::wake();
     let _ = ipc_handle.join();
+    let _ = sampler_handle.join();
     let _ = retention_handle.join();
     tracing::info!("démon ukončen čistě");
     Ok(())
