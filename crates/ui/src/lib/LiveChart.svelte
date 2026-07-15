@@ -13,7 +13,7 @@
 	// (dvě série: download --net-down, upload --net-up, dynamická osa).
 	import uPlot from 'uplot';
 	import 'uplot/dist/uPlot.min.css';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 
 	let {
 		ts = [],
@@ -380,25 +380,37 @@
 		};
 	});
 
+	// POZOR na reaktivitu: těla efektů běží v untrack(), aby efekt
+	// závisel JEN na vyjmenovaných hodnotách. Bez toho si build()
+	// přečte i ts/values a graf se přestaví při každém ticku dat —
+	// zmizí kurzor, zámek i rozjetá interakce.
 	$effect(() => {
 		mode;
-		if (u && el) build();
+		untrack(() => {
+			if (u && el) build();
+		});
 	});
 
 	$effect(() => {
-		if (!u) return;
-		u.setData(chartData(), false);
-		applyScale();
-		// Kurzor se sám přepočítává jen při pohybu myši — po posunu dat
-		// pod nehybnou myší ho znovu vyhodnotíme, aby hover nezamrzl.
-		if (u.cursor.left != null && u.cursor.left >= 0) {
-			u.setCursor({ left: u.cursor.left, top: u.cursor.top });
-		}
+		// závislosti: jen data
+		ts;
+		values;
+		values2;
+		untrack(() => {
+			if (!u) return;
+			u.setData(chartData(), false);
+			applyScale();
+			// Kurzor se sám přepočítává jen při pohybu myši — po posunu
+			// dat pod nehybnou myší ho znovu vyhodnotíme, aby nezamrzl.
+			if (u.cursor.left != null && u.cursor.left >= 0) {
+				u.setCursor({ left: u.cursor.left, top: u.cursor.top });
+			}
+		});
 	});
 
 	$effect(() => {
 		pinned;
-		positionPin();
+		untrack(() => positionPin());
 	});
 </script>
 

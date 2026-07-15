@@ -4,6 +4,7 @@
 	import { Tween } from 'svelte/motion';
 	import { cubicOut } from 'svelte/easing';
 	import { flip } from 'svelte/animate';
+	import { untrack } from 'svelte';
 	import { daemon } from '$lib/daemon.svelte.js';
 	import LiveChart from '$lib/LiveChart.svelte';
 	import Sparkline from '$lib/Sparkline.svelte';
@@ -78,24 +79,28 @@
 	let histProcs = $state(null);
 	let histTimer = null;
 
+	// Závislost POUZE na `pinned` (untrack) — jinak by efekt reagoval
+	// i na každý tick dat a stahoval historii pořád dokola.
 	$effect(() => {
 		const t = pinned;
-		clearTimeout(histTimer);
-		if (t == null) {
-			if (histProcs) {
-				histProcs = null;
+		untrack(() => {
+			clearTimeout(histTimer);
+			if (t == null) {
+				if (histProcs) {
+					histProcs = null;
+					refreshTable(true);
+				}
+				return;
+			}
+			histTimer = setTimeout(async () => {
+				try {
+					histProcs = await invoke('query_procs_at', { ts: Math.round(t) });
+				} catch {
+					histProcs = null;
+				}
 				refreshTable(true);
-			}
-			return;
-		}
-		histTimer = setTimeout(async () => {
-			try {
-				histProcs = await invoke('query_procs_at', { ts: Math.round(t) });
-			} catch {
-				histProcs = null;
-			}
-			refreshTable(true);
-		}, 150);
+			}, 150);
+		});
 	});
 
 	// Tweenované readouty.
