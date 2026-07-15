@@ -20,22 +20,35 @@ pub struct ProcRow {
 }
 
 /// Systémové metriky z téhož vzorku.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub struct SystemSnapshot {
     /// Celkové CPU v % (0–100).
     pub cpu_pct: f32,
     pub mem_used_mb: u64,
     pub mem_total_mb: u64,
     pub proc_count: u32,
+    /// Síť: celkový download/upload v bajtech za sekundu (všechna
+    /// fyzická rozhraní kromě loopbacku).
+    pub net_rx_bps: u64,
+    pub net_tx_bps: u64,
 }
 
-impl Default for SystemSnapshot {
-    fn default() -> Self {
-        Self {
-            cpu_pct: 0.0,
-            mem_used_mb: 0,
-            mem_total_mb: 0,
-            proc_count: 0,
-        }
-    }
+/// Jeden bod historie systémových metrik (z tabulky system_1s).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SystemPoint {
+    pub ts: i64,
+    pub cpu_pct: f32,
+    pub mem_used_mb: u64,
+    pub net_rx_bps: u64,
+    pub net_tx_bps: u64,
+}
+
+/// Řádek procesu z historie (tabulky sample_1s + proc_names).
+/// Užší než ProcRow — historie nedrží vlákna ani session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistProcRow {
+    pub pid: u32,
+    pub name: String,
+    pub cpu_pct: f32,
+    pub ws_bytes: u64,
 }

@@ -5,6 +5,7 @@
 //! v0 obsahuje jen ověření Authenticode podpisu a prioritu vlákna.
 
 pub mod caps;
+pub mod net;
 pub mod proc;
 pub mod sysinfo;
 pub mod threading;

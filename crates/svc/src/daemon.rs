@@ -118,6 +118,10 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         let stop = Arc::clone(&stop);
         let live = Arc::clone(&live);
         let self_db_path = db_path.clone();
+        // Read-only spojení pro dotazy historie — čtenář ve WAL režimu
+        // neblokuje zapisovací vlákno. Mutex: handler běží ve více
+        // obslužných vláknech pipe.
+        let read_conn = std::sync::Mutex::new(store::open_readonly(&db_path)?);
         let handler: ipc::server::Handler = Arc::new(move |req| match req {
             Request::Ping { protocol_version } => {
                 if protocol_version != PROTOCOL_VERSION {
@@ -153,6 +157,28 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     },
                     None => Response::Error {
                         message: "vlastní proces zatím není ve vzorku".into(),
+                    },
+                }
+            }
+            // Historie z SQLite (graf do minulosti, stav tasků v čase).
+            Request::QuerySystemHistory { from, to } => {
+                let conn = read_conn.lock().expect("read conn lock poisoned");
+                match store::history::system_history(&conn, from, to) {
+                    Ok(points) => Response::SystemHistory(points),
+                    Err(e) => Response::Error {
+                        message: format!("čtení historie selhalo: {e}"),
+                    },
+                }
+            }
+            Request::QueryProcsAt { ts } => {
+                let conn = read_conn.lock().expect("read conn lock poisoned");
+                match store::history::procs_at(&conn, ts) {
+                    Ok(Some((actual, rows))) => Response::ProcsAt { ts: actual, rows },
+                    Ok(None) => Response::Error {
+                        message: "pro tento čas není vzorek v historii".into(),
+                    },
+                    Err(e) => Response::Error {
+                        message: format!("čtení historie selhalo: {e}"),
                     },
                 }
             }

@@ -15,13 +15,25 @@ pub fn insert_tick(
     let tx = conn.transaction()?;
     {
         tx.execute(
-            "INSERT OR REPLACE INTO system_1s (ts, cpu_pct, mem_used_mb) VALUES (?1, ?2, ?3)",
-            params![ts, sys.cpu_pct as f64, sys.mem_used_mb as i64],
+            "INSERT OR REPLACE INTO system_1s
+                 (ts, cpu_pct, mem_used_mb, net_rx_bps, net_tx_bps)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                ts,
+                sys.cpu_pct as f64,
+                sys.mem_used_mb as i64,
+                sys.net_rx_bps as i64,
+                sys.net_tx_bps as i64
+            ],
         )?;
 
         let mut stmt = tx.prepare_cached(
             "INSERT OR REPLACE INTO sample_1s (ts, proc_id, cpu_pm, ws_kb, priv_kb)
              VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        // Jména pro čtení historie (pid → poslední známé jméno).
+        let mut name_stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO proc_names (pid, name, last_ts) VALUES (?1, ?2, ?3)",
         )?;
         for p in procs {
             stmt.execute(params![
@@ -31,6 +43,7 @@ pub fn insert_tick(
                 (p.ws_bytes / 1024) as i64,
                 (p.priv_bytes / 1024) as i64,
             ])?;
+            name_stmt.execute(params![p.pid as i64, p.name, ts])?;
         }
     }
     tx.commit()

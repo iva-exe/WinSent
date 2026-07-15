@@ -8,7 +8,7 @@ use std::io::ErrorKind;
 use std::time::Duration;
 
 use core_types::ipc::{Request, Response, PROTOCOL_VERSION};
-use core_types::proc::{ProcRow, SystemSnapshot};
+use core_types::proc::{HistProcRow, ProcRow, SystemPoint, SystemSnapshot};
 
 use crate::{frame, Error, PIPE_NAME};
 
@@ -100,6 +100,30 @@ pub fn query_self_usage() -> Result<SelfUsage, Error> {
             ws_bytes,
             db_bytes,
         }),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Historie systémových metrik [from, to] ze system_1s.
+pub fn query_system_history(from: i64, to: i64) -> Result<Vec<SystemPoint>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QuerySystemHistory { from, to })? {
+        Response::SystemHistory(points) => Ok(points),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Stav procesů v čase (nejbližší vzorek ±2 s).
+pub fn query_procs_at(ts: i64) -> Result<(i64, Vec<HistProcRow>), Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryProcsAt { ts })? {
+        Response::ProcsAt { ts, rows } => Ok((ts, rows)),
         Response::Error { message } => Err(Error::Remote { message }),
         other => Err(Error::Remote {
             message: format!("nečekaná odpověď: {other:?}"),

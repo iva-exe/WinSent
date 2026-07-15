@@ -27,6 +27,7 @@ pub struct State {
     prev_cpu: HashMap<(u32, i64), u64>,
     prev_tick: Instant,
     prev_sys: win_sys::sysinfo::SystemTimes,
+    prev_net: win_sys::net::NetTotals,
     /// Počet logických jader — normalizace na % celkové kapacity.
     n_cpus: f64,
 }
@@ -41,6 +42,7 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
         prev_cpu: HashMap::new(),
         prev_tick: Instant::now(),
         prev_sys: win_sys::sysinfo::system_times()?,
+        prev_net: win_sys::net::net_totals()?,
         n_cpus,
     })
 }
@@ -100,11 +102,20 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
 
     let (mem_used_mb, mem_total_mb) = win_sys::sysinfo::memory_status_mb()?;
 
+    // Síť: delta kumulativních bajtů / delta stěny → B/s.
+    let net = win_sys::net::net_totals()?;
+    let wall_s = wall_100ns / 1e7;
+    let net_rx_bps = (net.rx_bytes.saturating_sub(state.prev_net.rx_bytes) as f64 / wall_s) as u64;
+    let net_tx_bps = (net.tx_bytes.saturating_sub(state.prev_net.tx_bytes) as f64 / wall_s) as u64;
+    state.prev_net = net;
+
     let snapshot = SystemSnapshot {
         cpu_pct: cpu_pct.clamp(0.0, 100.0),
         mem_used_mb,
         mem_total_mb,
         proc_count: rows.len() as u32,
+        net_rx_bps,
+        net_tx_bps,
     };
     Ok((rows, snapshot))
 }

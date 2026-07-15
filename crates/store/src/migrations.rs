@@ -40,6 +40,16 @@ const MIGRATIONS: &[&str] = &[
         hard_flt  INTEGER,
         PRIMARY KEY (ts, proc_id)
     ) WITHOUT ROWID;",
+    // → verze 3: síť v system_1s + jména procesů pro čtení historie.
+    // proc_names je dočasný můstek (pid → poslední známé jméno), než
+    // ve v3 vznikne proc_instance se stabilní identitou z ETW.
+    "ALTER TABLE system_1s ADD COLUMN net_rx_bps INTEGER;
+    ALTER TABLE system_1s ADD COLUMN net_tx_bps INTEGER;
+    CREATE TABLE proc_names (
+        pid     INTEGER PRIMARY KEY,
+        name    TEXT NOT NULL,
+        last_ts INTEGER NOT NULL
+    ) WITHOUT ROWID;",
 ];
 
 /// Aplikuje všechny dosud neaplikované migrace. Bezpečné volat při

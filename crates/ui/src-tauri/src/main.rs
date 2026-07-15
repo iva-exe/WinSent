@@ -39,6 +39,26 @@ fn query_system() -> Result<core_types::proc::SystemSnapshot, String> {
     ipc::client::query_system().map_err(|e| e.to_string())
 }
 
+/// Historie systémových metrik pro pan/zoom grafu do minulosti.
+#[tauri::command]
+fn query_system_history(from: i64, to: i64) -> Result<Vec<core_types::proc::SystemPoint>, String> {
+    ipc::client::query_system_history(from, to).map_err(|e| e.to_string())
+}
+
+/// Stav procesů v čase pod kurzorem/zámkem grafu.
+#[derive(Debug, Serialize)]
+struct ProcsAtDto {
+    ts: i64,
+    rows: Vec<core_types::proc::HistProcRow>,
+}
+
+#[tauri::command]
+fn query_procs_at(ts: i64) -> Result<ProcsAtDto, String> {
+    ipc::client::query_procs_at(ts)
+        .map(|(ts, rows)| ProcsAtDto { ts, rows })
+        .map_err(|e| e.to_string())
+}
+
 /// Vlastní spotřeba nástroje pro dlaždici v Settings (SPEC kap. 2.3).
 #[derive(Debug, Serialize)]
 struct SelfUsageDto {
@@ -110,7 +130,9 @@ fn main() {
             ping_daemon,
             query_procs,
             query_system,
-            query_self_usage
+            query_self_usage,
+            query_system_history,
+            query_procs_at
         ])
         .setup(|app| {
             setup_tray(app)?;

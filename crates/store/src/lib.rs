@@ -11,6 +11,7 @@ use std::time::Duration;
 // museli záviset na rusqlite napřímo.
 pub use rusqlite::Connection;
 
+pub mod history;
 pub mod migrations;
 pub mod retention;
 pub mod samples;
@@ -62,6 +63,17 @@ pub fn open(db_path: &Path) -> Result<Connection, Error> {
 /// Cesta k databázi uvnitř datového adresáře.
 pub fn db_path() -> Result<PathBuf, Error> {
     Ok(data_dir()?.join("syswatch.db"))
+}
+
+/// Read-only spojení pro dotazy historie z IPC handleru — WAL dovolí
+/// číst souběžně se zapisovacím vláknem bez zámků.
+pub fn open_readonly(db_path: &Path) -> Result<Connection, Error> {
+    let conn = Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_millis(250))?;
+    Ok(conn)
 }
 
 /// Interval retenční smyčky z konfigurace.
