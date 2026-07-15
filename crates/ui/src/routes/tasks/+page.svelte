@@ -3,6 +3,7 @@
 	import { onMount } from 'svelte';
 	import { Tween } from 'svelte/motion';
 	import { cubicOut } from 'svelte/easing';
+	import { flip } from 'svelte/animate';
 	import { daemon } from '$lib/daemon.svelte.js';
 	import LiveChart from '$lib/LiveChart.svelte';
 
@@ -12,17 +13,26 @@
 	let ts = $state([]);
 	let cpu = $state([]);
 	let mem = $state([]);
+	let comb = $state([]);
 	let system = $state(null);
 	let procs = $state([]);
 	let error = $state('');
 
-	// Režim grafu: jedna proměnná (gradient dle zátěže) / celý systém.
+	// Režim grafu — vždy jedna čára s gradientem podle zátěže.
 	let mode = $state('all');
 	const modes = [
 		{ id: 'cpu', label: 'CPU' },
 		{ id: 'ram', label: 'RAM' },
 		{ id: 'all', label: 'System' }
 	];
+
+	// Kombinovaná zátěž systému: váhu má nejvytíženější komponenta —
+	// CPU 100 % + RAM 20 % ⇒ systém 100 % (nejslabší místo určuje celek).
+	function combined(cpuV, memV) {
+		return Math.max(cpuV ?? 0, memV ?? 0);
+	}
+
+	const chartValues = $derived(mode === 'cpu' ? cpu : mode === 'ram' ? mem : comb);
 
 	// Hodnoty z času pod kurzorem (hover na grafu), jinak živé hodnoty.
 	let hover = $state(null);
@@ -61,9 +71,11 @@
 			cpuT.set(s.cpu_pct);
 			ramT.set(s.mem_used_mb / 1024);
 			const now = Math.floor(Date.now() / 1000);
+			const memPct = (s.mem_used_mb / Math.max(s.mem_total_mb, 1)) * 100;
 			ts = [...ts.slice(-(WINDOW - 1)), now];
 			cpu = [...cpu.slice(-(WINDOW - 1)), s.cpu_pct];
-			mem = [...mem.slice(-(WINDOW - 1)), (s.mem_used_mb / Math.max(s.mem_total_mb, 1)) * 100];
+			mem = [...mem.slice(-(WINDOW - 1)), memPct];
+			comb = [...comb.slice(-(WINDOW - 1)), combined(s.cpu_pct, memPct)];
 		} catch (e) {
 			system = null;
 			error = String(e);
@@ -117,10 +129,11 @@
 			</div>
 			<div class="readouts value-mono">
 				{#if hover}
-					<!-- Hodnoty z času pod kurzorem -->
+					<!-- Hodnoty z času pod kurzorem — drží, dokud se myš nepohne -->
 					<span class="readout"><span class="k">ČAS</span><span class="v">{fmtClock(hover.t)}</span></span>
-					<span class="readout"><span class="k">CPU</span><span class="v accent">{hover.cpu?.toFixed(1) ?? '—'} %</span></span>
-					<span class="readout"><span class="k">RAM</span><span class="v">{hover.mem?.toFixed(1) ?? '—'} %</span></span>
+					<span class="readout"><span class="k">CPU</span><span class="v accent">{cpu[hover.i]?.toFixed(1) ?? '—'} %</span></span>
+					<span class="readout"><span class="k">RAM</span><span class="v">{mem[hover.i]?.toFixed(1) ?? '—'} %</span></span>
+					<span class="readout"><span class="k">SYS</span><span class="v">{comb[hover.i]?.toFixed(1) ?? '—'} %</span></span>
 				{:else if system}
 					<span class="readout"><span class="k">CPU</span><span class="v accent">{cpuT.current.toFixed(1)} %</span></span>
 					<span class="readout"><span class="k">RAM</span><span class="v">{ramT.current.toFixed(1)} / {(system.mem_total_mb / 1024).toFixed(1)} GB</span></span>
@@ -131,7 +144,7 @@
 			</div>
 		</header>
 		{#if daemon.alive || ts.length > 0}
-			<LiveChart {ts} {cpu} {mem} {mode} onhover={(h) => (hover = h)} />
+			<LiveChart {ts} values={chartValues} {mode} onhover={(h) => (hover = h)} />
 		{:else}
 			<p class="err">{error || 'služba neběží — graf čeká na data'}</p>
 		{/if}
@@ -165,7 +178,8 @@
 				</thead>
 				<tbody>
 					{#each sorted as p (p.pid)}
-						<tr>
+						<!-- FLIP: řádky při přeskupení plynule přejíždí -->
+						<tr animate:flip={{ duration: 260 }}>
 							<td class="t-name">{p.name}</td>
 							<td class="t-num value-mono">{p.pid}</td>
 							<td class="t-num value-mono">{p.cpu_pct.toFixed(1)} %</td>

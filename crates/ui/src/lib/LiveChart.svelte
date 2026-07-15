@@ -1,15 +1,17 @@
 <script>
 	// Živý časový graf (uPlot, DESIGN.md kap. 7).
 	//
-	// Režimy: 'cpu' / 'ram' = jedna proměnná s gradientem podle zátěže
-	// (zelená → jantar → červená, gradient v barvě křivky je povolený),
-	// 'all' = kombinovaný graf systému (CPU bílá = akcent, RAM tlumená).
-	// Hover: `onhover` dostává hodnoty z času pod kurzorem, nebo null.
+	// Vždy JEDNA čára s gradientem podle zátěže (zelená → jantar →
+	// červená). Režimy: 'cpu', 'ram', 'all' (kombinovaná zátěž systému —
+	// váhu má nejvytíženější komponenta, viz tasks/+page.svelte).
+	// Cursor: vertikální linka zůstává tam, kde se myš zastavila, a dutá
+	// tečka s borderem v barvě zátěže daného místa; `onhover` hlásí
+	// hodnoty z času pod kurzorem, null po opuštění grafu.
 	import uPlot from 'uplot';
 	import 'uplot/dist/uPlot.min.css';
 	import { onMount } from 'svelte';
 
-	let { ts = [], cpu = [], mem = [], mode = 'all', onhover = () => {} } = $props();
+	let { ts = [], values = [], mode = 'all', onhover = () => {} } = $props();
 
 	let el;
 	let u;
@@ -18,55 +20,47 @@
 		return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 	}
 
-	function hexToRgba(hex, alpha) {
+	function hexToRgb(hex) {
 		const v = hex.replace('#', '');
 		const n = parseInt(v.length === 3 ? v.replace(/./g, (c) => c + c) : v, 16);
-		return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+		return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 	}
 
-	// Gradient podle zátěže přes osu y (0–100 %): do ~55 % zelená,
-	// kolem 75 % jantar, od ~90 % červená.
+	function rgba([r, g, b], a) {
+		return `rgba(${r}, ${g}, ${b}, ${a})`;
+	}
+
+	function lerp(c1, c2, t) {
+		return c1.map((v, i) => Math.round(v + (c2[i] - v) * t));
+	}
+
+	// Barva pro konkrétní hodnotu zátěže (0–100) — stejné zastávky jako
+	// gradient křivky: do 55 zelená, 75 jantar, od 90 červená.
+	function colorForLoad(v) {
+		const ok = hexToRgb(cssVar('--ok') || '#4ade80');
+		const warn = hexToRgb(cssVar('--warn') || '#f59e0b');
+		const danger = hexToRgb(cssVar('--danger') || '#ef4444');
+		if (v == null) return rgba(ok, 1);
+		if (v <= 55) return rgba(ok, 1);
+		if (v <= 75) return rgba(lerp(ok, warn, (v - 55) / 20), 1);
+		if (v <= 90) return rgba(lerp(warn, danger, (v - 75) / 15), 1);
+		return rgba(danger, 1);
+	}
+
+	// Gradient podle zátěže přes osu y (0–100 %).
 	function loadGradient(uu, alpha) {
-		const ok = cssVar('--ok') || '#4ade80';
-		const warn = cssVar('--warn') || '#f59e0b';
-		const danger = cssVar('--danger') || '#ef4444';
+		const ok = hexToRgb(cssVar('--ok') || '#4ade80');
+		const warn = hexToRgb(cssVar('--warn') || '#f59e0b');
+		const danger = hexToRgb(cssVar('--danger') || '#ef4444');
 		const yMin = uu.valToPos(0, 'y', true);
 		const yMax = uu.valToPos(100, 'y', true);
 		const g = uu.ctx.createLinearGradient(0, yMin, 0, yMax);
-		g.addColorStop(0, hexToRgba(ok, alpha));
-		g.addColorStop(0.55, hexToRgba(ok, alpha));
-		g.addColorStop(0.75, hexToRgba(warn, alpha));
-		g.addColorStop(0.9, hexToRgba(danger, alpha));
-		g.addColorStop(1, hexToRgba(danger, alpha));
+		g.addColorStop(0, rgba(ok, alpha));
+		g.addColorStop(0.55, rgba(ok, alpha));
+		g.addColorStop(0.75, rgba(warn, alpha));
+		g.addColorStop(0.9, rgba(danger, alpha));
+		g.addColorStop(1, rgba(danger, alpha));
 		return g;
-	}
-
-	function buildSeries() {
-		const accent = cssVar('--accent') || '#ffffff';
-		const dim = cssVar('--text-dim') || '#9a9aa1';
-		if (mode === 'all') {
-			return [
-				{},
-				{ label: 'CPU', stroke: accent, width: 1.6, fill: 'rgba(255,255,255,0.05)' },
-				{ label: 'RAM', stroke: dim, width: 1.2 }
-			];
-		}
-		// Jedna proměnná — gradient podle zátěže v tahu i jemné výplni.
-		return [
-			{},
-			{
-				label: mode.toUpperCase(),
-				width: 1.8,
-				stroke: (uu) => loadGradient(uu, 1),
-				fill: (uu) => loadGradient(uu, 0.07)
-			}
-		];
-	}
-
-	function chartData() {
-		if (mode === 'cpu') return [ts, cpu];
-		if (mode === 'ram') return [ts, mem];
-		return [ts, cpu, mem];
 	}
 
 	function build() {
@@ -80,8 +74,23 @@
 				padding: [12, 10, 0, 0],
 				legend: { show: false },
 				cursor: {
-					points: { show: true, size: 5 },
-					y: false
+					// Vertikální linka kurzoru — zůstává, dokud se myš
+					// nepohne nebo neopustí graf (výchozí chování uPlot).
+					x: true,
+					y: false,
+					points: {
+						show: true,
+						size: 8,
+						width: 1.6,
+						// Dutá tečka: průhledná výplň, border v barvě
+						// zátěže hodnoty pod kurzorem.
+						fill: () => 'rgba(0,0,0,0)',
+						stroke: (uu, sidx) => {
+							const i = uu.cursor.idx;
+							const v = i != null ? uu.data[sidx]?.[i] : null;
+							return colorForLoad(v);
+						}
+					}
 				},
 				scales: { y: { range: [0, 100] } },
 				axes: [
@@ -100,7 +109,15 @@
 						values: (_u, vals) => vals.map((v) => `${v} %`)
 					}
 				],
-				series: buildSeries(),
+				series: [
+					{},
+					{
+						label: mode.toUpperCase(),
+						width: 1.8,
+						stroke: (uu) => loadGradient(uu, 1),
+						fill: (uu) => loadGradient(uu, 0.07)
+					}
+				],
 				hooks: {
 					setCursor: [
 						(uu) => {
@@ -108,13 +125,13 @@
 							if (i == null || ts[i] == null) {
 								onhover(null);
 							} else {
-								onhover({ t: ts[i], cpu: cpu[i], mem: mem[i] });
+								onhover({ t: ts[i], v: values[i], i });
 							}
 						}
 					]
 				}
 			},
-			chartData(),
+			[ts, values],
 			el
 		);
 	}
@@ -131,7 +148,7 @@
 		};
 	});
 
-	// Změna režimu = jiné série → graf se staví znovu.
+	// Změna režimu = nový popisek série → graf se staví znovu.
 	$effect(() => {
 		mode;
 		if (u && el) build();
@@ -139,7 +156,7 @@
 
 	// Nová data jen doplní body.
 	$effect(() => {
-		if (u) u.setData(chartData());
+		if (u) u.setData([ts, values]);
 	});
 </script>
 
@@ -151,5 +168,9 @@
 	}
 	.chart :global(.u-over) {
 		cursor: crosshair;
+	}
+	/* Vertikální linka kurzoru — jemná, tečkovaná (industrial). */
+	.chart :global(.u-cursor-x) {
+		border-right: 1px dotted var(--border-strong);
 	}
 </style>

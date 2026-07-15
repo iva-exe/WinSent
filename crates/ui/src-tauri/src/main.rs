@@ -58,6 +58,52 @@ fn query_self_usage() -> Result<SelfUsageDto, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Ukáže a vyzdvihne hlavní okno.
+fn show_main_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
+}
+
+/// Tray ikona v oznamovací oblasti Windows. UI proces žije v tray i po
+/// zavření okna (zavřít = schovat) — monitoring (démon) běží dál a
+/// ikona je vidět; „Ukončit“ v menu zavře jen UI, ne službu.
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let show = MenuItem::with_id(app, "show", "Otevřít Winsent", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Ukončit UI", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    TrayIconBuilder::with_id("winsent")
+        .icon(app.default_window_icon().expect("chybí ikona okna").clone())
+        .tooltip("Winsent — systémový monitor")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            // Levý klik = otevřít okno (pravý nechává kontextové menu).
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -66,6 +112,17 @@ fn main() {
             query_system,
             query_self_usage
         ])
+        .setup(|app| {
+            setup_tray(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Zavření okna = schovat do tray, UI běží dál (ikona zůstává).
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("start Tauri selhal");
 }

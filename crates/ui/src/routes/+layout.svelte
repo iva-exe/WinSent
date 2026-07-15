@@ -121,18 +121,15 @@
 		display: flex;
 		flex-direction: column;
 		height: 100vh;
-		/* Zaoblené rohy okna: okno samotné je průhledné, tvar dává tento
-		   kontejner. Poloprůhledné pozadí nechává prosvítat acrylic blur
-		   (jediný povolený gradient — zadní plocha, DESIGN.md kap. 2). */
+		/* Poloprůhledné pozadí nechává prosvítat blur okna (jediný
+		   povolený gradient — zadní plocha, DESIGN.md kap. 2). Rohy
+		   a rám okna nechává systém — žádný vlastní border/radius. */
 		background: radial-gradient(
 			120% 90% at 20% 0%,
-			rgba(20, 21, 26, 0.82) 0%,
-			rgba(14, 15, 18, 0.78) 55%,
-			rgba(11, 12, 15, 0.84) 100%
+			rgba(20, 21, 26, 0.85) 0%,
+			rgba(14, 15, 18, 0.82) 55%,
+			rgba(11, 12, 15, 0.87) 100%
 		);
-		border: 1px solid var(--border);
-		border-radius: 12px;
-		overflow: hidden;
 	}
 
 	/* ── Titlebar ── */

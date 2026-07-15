@@ -20,7 +20,7 @@
         "decorations": false,
         "transparent": true,
         "windowEffects": {
-          "effects": ["acrylic", "blur"],
+          "effects": ["blur"],
           "color": "#0e0f1299"
         }
       }
