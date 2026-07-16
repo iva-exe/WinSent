@@ -50,6 +50,29 @@ const MIGRATIONS: &[&str] = &[
         name    TEXT NOT NULL,
         last_ts INTEGER NOT NULL
     ) WITHOUT ROWID;",
+    // → verze 4: historie detailů proměnných — jádra CPU, disky a GPU
+    // senzory, aby zámek času ukázal i detail sekci z minulosti.
+    "ALTER TABLE system_1s ADD COLUMN gpu_temp_c REAL;
+    ALTER TABLE system_1s ADD COLUMN gpu_vram_mb INTEGER;
+    ALTER TABLE system_1s ADD COLUMN gpu_power_w REAL;
+    ALTER TABLE system_1s ADD COLUMN gpu_clock_mhz INTEGER;
+    CREATE TABLE core_1s (
+        ts   INTEGER NOT NULL,
+        core INTEGER NOT NULL,
+        pct  REAL,
+        PRIMARY KEY (ts, core)
+    ) WITHOUT ROWID;
+    CREATE TABLE disk_1s (
+        ts    INTEGER NOT NULL,
+        disk  INTEGER NOT NULL,
+        r_bps INTEGER,
+        w_bps INTEGER,
+        PRIMARY KEY (ts, disk)
+    ) WITHOUT ROWID;
+    CREATE TABLE disk_names (
+        disk INTEGER PRIMARY KEY,
+        name TEXT NOT NULL
+    ) WITHOUT ROWID;",
 ];
 
 /// Aplikuje všechny dosud neaplikované migrace. Bezpečné volat při

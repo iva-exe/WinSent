@@ -32,6 +32,7 @@ type FnTemperature = unsafe extern "C" fn(*mut c_void, u32, *mut u32) -> i32;
 type FnMemoryInfo = unsafe extern "C" fn(*mut c_void, *mut NvmlMemory) -> i32;
 type FnPower = unsafe extern "C" fn(*mut c_void, *mut u32) -> i32;
 type FnClock = unsafe extern "C" fn(*mut c_void, u32, *mut u32) -> i32;
+type FnName = unsafe extern "C" fn(*mut c_void, *mut u8, u32) -> i32;
 
 /// Doplňkové údaje GPU pro detail sekci.
 #[derive(Debug, Clone, Copy, Default)]
@@ -53,6 +54,7 @@ pub struct Nvml {
     get_memory: Option<FnMemoryInfo>,
     get_power: Option<FnPower>,
     get_clock: Option<FnClock>,
+    get_name: Option<FnName>,
 }
 
 // SAFETY: NVML je vláknově bezpečné (dokumentované), handle je opaque
@@ -92,6 +94,8 @@ impl Nvml {
                     .map(|f| std::mem::transmute::<_, FnPower>(f)),
                 get_clock: load(lib, s!("nvmlDeviceGetClockInfo"))
                     .map(|f| std::mem::transmute::<_, FnClock>(f)),
+                get_name: load(lib, s!("nvmlDeviceGetName"))
+                    .map(|f| std::mem::transmute::<_, FnName>(f)),
             })
         }
     }
@@ -102,6 +106,19 @@ impl Nvml {
         // SAFETY: device i výstupní struktura jsou platné po dobu volání.
         let rc = unsafe { (self.get_utilization)(self.device, &mut util) };
         (rc == 0).then_some(util.gpu.min(100) as f32)
+    }
+
+    /// Název GPU (např. "NVIDIA GeForce RTX 3070").
+    pub fn name(&self) -> Option<String> {
+        let f = self.get_name?;
+        let mut buf = [0u8; 96];
+        // SAFETY: buffer má velikost předanou API.
+        let rc = unsafe { f(self.device, buf.as_mut_ptr(), buf.len() as u32) };
+        if rc != 0 {
+            return None;
+        }
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        Some(String::from_utf8_lossy(&buf[..end]).trim().to_string())
     }
 
     /// Doplňkové údaje (teplota, VRAM, spotřeba, takt) — co ovladač dá.

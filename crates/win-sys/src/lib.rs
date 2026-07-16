@@ -5,9 +5,12 @@
 //! v0 obsahuje jen ověření Authenticode podpisu a prioritu vlákna.
 
 pub mod caps;
+pub mod cpuinfo;
+pub mod disk;
 pub mod gpu;
 pub mod net;
 pub mod proc;
+pub mod smbios;
 pub mod sysinfo;
 pub mod threading;
 pub mod trust;

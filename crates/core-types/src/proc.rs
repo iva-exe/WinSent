@@ -53,6 +53,59 @@ pub struct SystemSnapshot {
     pub cores: Vec<f32>,
     /// Doplňkové GPU údaje (teplota, VRAM…), když je NVML.
     pub gpu: Option<GpuInfo>,
+    /// Rychlosti fyzických disků (čtení/zápis B/s).
+    pub disks: Vec<DiskRate>,
+    /// Takt CPU: aktuální průměr a maximum (MHz).
+    pub cpu_clock_mhz: u32,
+    pub cpu_clock_max_mhz: u32,
+    /// Uptime systému v sekundách.
+    pub uptime_s: u64,
+    /// Součty přes všechny procesy (parita se Správcem úloh).
+    pub threads_total: u32,
+    pub handles_total: u32,
+}
+
+/// Rychlost jednoho fyzického disku v aktuálním vzorku.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DiskRate {
+    pub index: u32,
+    pub r_bps: u64,
+    pub w_bps: u64,
+}
+
+/// Jeden RAM modul (SMBIOS Type 17).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RamModuleInfo {
+    pub size_mb: u64,
+    pub speed_mts: u32,
+    pub configured_mts: u32,
+    pub slot: String,
+    pub manufacturer: String,
+    pub part_number: String,
+}
+
+/// Popis fyzického disku.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiskDesc {
+    pub index: u32,
+    pub model: String,
+}
+
+/// Statické informace o komponentách — zjišťují se jednou při startu
+/// služby (SPEC kap. 15.1), UI si je vyžádá přes QuerySysInfo.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct StaticInfo {
+    pub cpu_name: String,
+    pub cpu_base_mhz: u32,
+    pub physical_cores: u32,
+    pub logical_cores: u32,
+    pub l1_kb: u32,
+    pub l2_kb: u32,
+    pub l3_kb: u32,
+    pub ram_modules: Vec<RamModuleInfo>,
+    pub ram_slots: u32,
+    pub gpu_name: Option<String>,
+    pub disks: Vec<DiskDesc>,
 }
 
 /// Jeden bod historie systémových metrik (z tabulky system_1s).

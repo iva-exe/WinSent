@@ -60,6 +60,15 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     let conn = store::open(&db_path)?;
     tracing::info!(db = %db_path.display(), "databáze otevřena, schéma zmigrováno");
 
+    // Sampler se inicializuje před store vláknem — statické info
+    // komponent (SPEC 15.1) vzniká jednou a názvy disků se zapíšou
+    // hlavním spojením, dokud ho máme.
+    let sampler_state = collector_proc::init(&cfg.read().expect("config lock poisoned"))?;
+    let statics = collector_proc::static_info(&sampler_state);
+    if let Err(e) = store::samples::upsert_disk_names(&conn, &statics.disks) {
+        tracing::warn!(error = %e, "zápis názvů disků selhal");
+    }
+
     // Kanál sampler → zapisovací vlákno. Bounded: když zápis nestíhá
     // (disk saturovaný), vzorky se zahazují — sampler NIKDY nesmí
     // blokovat na I/O (SPEC kap. 3.4).
@@ -80,7 +89,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     let sampler_handle = {
         let stop = Arc::clone(&stop);
         let live = Arc::clone(&live);
-        let mut state = collector_proc::init(&cfg.read().expect("config lock poisoned"))?;
+        let mut state = sampler_state;
         std::thread::Builder::new()
             .name("sampler".into())
             .spawn(move || {
@@ -122,7 +131,35 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         // neblokuje zapisovací vlákno. Mutex: handler běží ve více
         // obslužných vláknech pipe.
         let read_conn = std::sync::Mutex::new(store::open_readonly(&db_path)?);
+        let statics = statics.clone();
         let handler: ipc::server::Handler = Arc::new(move |req| match req {
+            Request::QuerySysInfo => Response::SysInfo(statics.clone()),
+            Request::QueryDetailAt { ts } => {
+                let conn = read_conn.lock().expect("read conn lock poisoned");
+                match store::history::detail_at(&conn, ts) {
+                    Ok(Some((ts, cores, disks, gpu))) => Response::DetailAt {
+                        ts,
+                        cores,
+                        disks,
+                        gpu,
+                    },
+                    Ok(None) => Response::Error {
+                        message: "pro tento čas není vzorek v historii".into(),
+                    },
+                    Err(e) => Response::Error {
+                        message: format!("čtení historie selhalo: {e}"),
+                    },
+                }
+            }
+            Request::QueryDiskHistory { from, to } => {
+                let conn = read_conn.lock().expect("read conn lock poisoned");
+                match store::history::disk_history(&conn, from, to) {
+                    Ok(points) => Response::DiskHistory(points),
+                    Err(e) => Response::Error {
+                        message: format!("čtení historie selhalo: {e}"),
+                    },
+                }
+            }
             Request::Ping { protocol_version } => {
                 if protocol_version != PROTOCOL_VERSION {
                     tracing::warn!(

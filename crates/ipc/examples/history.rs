@@ -39,4 +39,23 @@ fn main() {
             std::process::exit(1);
         }
     }
+
+    match ipc::client::query_detail_at(now - 5) {
+        Ok((ts, cores, disks, gpu)) => println!(
+            "detail_at: ts {} jader {} disků {:?} gpu {:?}",
+            ts,
+            cores.len(),
+            disks,
+            gpu.map(|g| g.temp_c)
+        ),
+        Err(e) => eprintln!("query_detail_at selhal: {e}"),
+    }
+    match ipc::client::query_disk_history(now - 30, now) {
+        Ok(pts) => println!(
+            "disk_history: {} bodů, poslední {:?}",
+            pts.len(),
+            pts.last()
+        ),
+        Err(e) => eprintln!("query_disk_history selhal: {e}"),
+    }
 }

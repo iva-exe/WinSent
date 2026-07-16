@@ -1,14 +1,19 @@
 <script>
 	// Mini graf zátěže (canvas, bez knihovny) — pro jádra CPU v detail
-	// sekci. Škála pevně 0–100 %.
-	let { values = [], color = '#ffffff', height = 26 } = $props();
+	// sekci. Škála pevně 0–100 %. Barva čáry = stejný vertikální
+	// gradient podle zátěže jako hlavní graf (zelená dole → červená
+	// nahoře), takže výška bodu odpovídá jeho barvě.
+	let { values = [], height = 26 } = $props();
 
 	let canvas;
 
+	function cssVar(name) {
+		return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+	}
+
 	$effect(() => {
-		// závislosti: values, color
+		// závislost: values
 		values;
-		color;
 		if (!canvas) return;
 		const dpr = window.devicePixelRatio || 1;
 		const w = canvas.clientWidth;
@@ -20,6 +25,15 @@
 		ctx.scale(dpr, dpr);
 		ctx.clearRect(0, 0, w, h);
 		if (values.length < 2) return;
+
+		// Gradient odspoda (0 %) nahoru (100 %) — zastávky jako hlavní graf.
+		const g = ctx.createLinearGradient(0, h, 0, 0);
+		g.addColorStop(0, cssVar('--ok') || '#4ade80');
+		g.addColorStop(0.55, cssVar('--ok') || '#4ade80');
+		g.addColorStop(0.75, cssVar('--warn') || '#f59e0b');
+		g.addColorStop(0.9, cssVar('--danger') || '#ef4444');
+		g.addColorStop(1, cssVar('--danger') || '#ef4444');
+
 		ctx.beginPath();
 		const n = values.length;
 		for (let i = 0; i < n; i++) {
@@ -28,7 +42,7 @@
 			if (i === 0) ctx.moveTo(x, y);
 			else ctx.lineTo(x, y);
 		}
-		ctx.strokeStyle = color;
+		ctx.strokeStyle = g;
 		ctx.lineWidth = 1.4;
 		ctx.stroke();
 	});

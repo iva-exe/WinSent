@@ -25,6 +25,33 @@ fn main() {
         sys.cores.first().copied().unwrap_or(0.0),
         sys.gpu
     );
+    println!(
+        "disky: {:?}  takt {}/{} MHz  uptime {} s  vláken {}  handlů {}",
+        sys.disks,
+        sys.cpu_clock_mhz,
+        sys.cpu_clock_max_mhz,
+        sys.uptime_s,
+        sys.threads_total,
+        sys.handles_total
+    );
+    match ipc::client::query_sys_info() {
+        Ok(info) => println!(
+            "sysinfo: {} | base {} MHz | {}C/{}T | L1 {} L2 {} L3 {} kB | RAM {} modulů/{} slotů {:?} | GPU {:?} | disky {:?}",
+            info.cpu_name,
+            info.cpu_base_mhz,
+            info.physical_cores,
+            info.logical_cores,
+            info.l1_kb,
+            info.l2_kb,
+            info.l3_kb,
+            info.ram_modules.len(),
+            info.ram_slots,
+            info.ram_modules.iter().map(|m| (m.size_mb, m.configured_mts, m.slot.clone())).collect::<Vec<_>>(),
+            info.gpu_name,
+            info.disks
+        ),
+        Err(e) => eprintln!("query_sys_info selhal: {e}"),
+    }
 
     let mut procs = match ipc::client::query_procs() {
         Ok(p) => p,

@@ -7,7 +7,7 @@
 	import LiveChart from '$lib/LiveChart.svelte';
 	import Sparkline from '$lib/Sparkline.svelte';
 	import Num from '$lib/Num.svelte';
-	import { Cpu, MemoryStick, Zap, ArrowDown, ArrowUp } from 'lucide-svelte';
+	import { Cpu, MemoryStick, Zap, ArrowDown, ArrowUp, HardDrive } from 'lucide-svelte';
 
 	// Buffery na celou dostupnou historii (1 h retence surových vzorků).
 	const CAP = 3600;
@@ -28,19 +28,35 @@
 	let error = $state('');
 	let historyLoaded = false;
 
-	// Metrika grafu — procentní režimy mají gradient, Síť dvě série.
+	// Metrika grafu — procentní režimy mají gradient, Síť/Disk dvě série.
 	let mode = $state('sys');
 	const modes = [
 		{ id: 'sys', label: 'System' },
 		{ id: 'cpu', label: 'CPU' },
 		{ id: 'ram', label: 'RAM' },
 		{ id: 'gpu', label: 'GPU' },
+		{ id: 'disk', label: 'Disk' },
 		{ id: 'net', label: 'Síť' }
 	];
 	const chartValues = $derived(
 		mode === 'cpu' ? cpu : mode === 'ram' ? mem : mode === 'gpu' ? gpu : mode === 'net' ? down : sys
 	);
 	const chartValues2 = $derived(mode === 'net' ? up : null);
+
+	// Statické info komponent (názvy, RAM moduly…) — jednou ze služby.
+	let statics = $state(null);
+	async function loadStatics() {
+		try {
+			statics = await invoke('query_sys_info');
+		} catch {
+			setTimeout(loadStatics, 3000);
+		}
+	}
+
+	// Per-disk série pro záložku Disk: index → {ts, r, w}.
+	let diskSeries = $state({});
+	// Součet disků (pro readout a dlaždici System).
+	let diskTot = $state([]);
 
 	// Zátěž systému: průměr komponent tažený k maximu podle výše maxima
 	// (CPU 100 + RAM 20 ⇒ 100; CPU 20 + RAM 60 ⇒ ~52). GPU se počítá,
@@ -73,9 +89,10 @@
 		return lo;
 	}
 
-	// Stav tasků z minulosti — VÝHRADNĚ pro zámek (klik do grafu).
-	// Hover ukazuje jen hodnoty v hlavičce, list nechává živý.
+	// Stav tasků a detailů z minulosti — VÝHRADNĚ pro zámek (klik do
+	// grafu). Hover ukazuje jen hodnoty v hlavičce, list nechává živý.
 	let histProcs = $state(null);
+	let histDetail = $state(null);
 	let histTimer = null;
 
 	// Závislost POUZE na `pinned` (untrack) — jinak by efekt reagoval
@@ -85,8 +102,9 @@
 		untrack(() => {
 			clearTimeout(histTimer);
 			if (t == null) {
-				if (histProcs) {
+				if (histProcs || histDetail) {
 					histProcs = null;
+					histDetail = null;
 					refreshTable(true);
 				}
 				return;
@@ -97,10 +115,56 @@
 				} catch {
 					histProcs = null;
 				}
+				try {
+					histDetail = await invoke('query_detail_at', { ts: Math.round(t) });
+				} catch {
+					histDetail = null;
+				}
 				refreshTable(true);
 			}, 150);
 		});
 	});
+
+	// Zdroje detail sekce: při zámku data z historie, jinak živá.
+	const dCores = $derived(pinned != null && histDetail ? histDetail.cores : (system?.cores ?? []));
+	const dDisks = $derived(pinned != null && histDetail ? histDetail.disks : (system?.disks ?? []));
+	const dGpu = $derived(
+		pinned != null && histDetail
+			? histDetail.gpu && {
+					...histDetail.gpu,
+					vram_total_mb: system?.gpu?.vram_total_mb ?? null
+				}
+			: system?.gpu
+	);
+	// Hodnoty dlaždic System/RAM/Síť při zámku z hlavních bufferů.
+	const dIdx = $derived(pinned != null ? focusIdx : null);
+	const dCpuPct = $derived(dIdx != null ? cpu[dIdx] : system?.cpu_pct);
+	const dMemPct = $derived(dIdx != null ? mem[dIdx] : mem.at(-1));
+	const dGpuPct = $derived(dIdx != null ? gpu[dIdx] : system?.gpu_pct);
+	const dDown = $derived(dIdx != null ? down[dIdx] : system?.net_rx_bps);
+	const dUp = $derived(dIdx != null ? up[dIdx] : system?.net_tx_bps);
+	const dDiskTot = $derived(dIdx != null ? diskTot[dIdx] : diskTot.at(-1));
+
+	// Název komponenty do hlavičky detailu (SPEC 15.4 — vše o komponentě
+	// pohromadě u ní).
+	const ramSummary = $derived.by(() => {
+		const mods = statics?.ram_modules ?? [];
+		if (!mods.length) return '';
+		const totalGb = mods.reduce((a, m) => a + m.size_mb, 0) / 1024;
+		const speed = mods[0]?.configured_mts || mods[0]?.speed_mts || 0;
+		return `${totalGb.toFixed(0)} GB (${mods.length}×) @ ${speed} MT/s`;
+	});
+	const detailName = $derived(
+		mode === 'cpu'
+			? (statics?.cpu_name ?? '')
+			: mode === 'gpu'
+				? (statics?.gpu_name ?? '')
+				: mode === 'ram'
+					? ramSummary
+					: mode === 'disk'
+						? `${statics?.disks?.length ?? 0} fyzických`
+						: ''
+	);
 
 	// ── Detail sekce: historie jader (sparklines) + síťové špičky ──
 	let coresHist = $state([]);
@@ -221,6 +285,21 @@
 			if (s.net_rx_bps > peakDown) peakDown = s.net_rx_bps;
 			if (s.net_tx_bps > peakUp) peakUp = s.net_tx_bps;
 
+			// Disky: per-disk série + celkový součet.
+			let tot = 0;
+			const nextSeries = { ...diskSeries };
+			for (const d of s.disks ?? []) {
+				tot += d.r_bps + d.w_bps;
+				const cur = nextSeries[d.index] ?? { ts: [], r: [], w: [] };
+				nextSeries[d.index] = {
+					ts: push(cur.ts, now),
+					r: push(cur.r, d.r_bps),
+					w: push(cur.w, d.w_bps)
+				};
+			}
+			diskSeries = nextSeries;
+			diskTot = push(diskTot, tot);
+
 			if (!historyLoaded) {
 				historyLoaded = true;
 				loadHistory(s, now);
@@ -256,6 +335,36 @@
 			gpu = [...hGpu.slice(0, end), ...gpu];
 			down = [...hDown.slice(0, end), ...down];
 			up = [...hUp.slice(0, end), ...up];
+			// diskTot zarovnáme s hlavní osou: součty z disk historie per ts.
+			const totByTs = new Map();
+			try {
+				const dpts = await invoke('query_disk_history', { from: now - CAP, to: now - 1 });
+				const series = {};
+				for (const [t, idx, r, w] of dpts) {
+					totByTs.set(t, (totByTs.get(t) ?? 0) + r + w);
+					const cur = series[idx] ?? { ts: [], r: [], w: [] };
+					cur.ts.push(t);
+					cur.r.push(r);
+					cur.w.push(w);
+					series[idx] = cur;
+				}
+				// Prepend před živé body per disk.
+				const merged = { ...diskSeries };
+				for (const [idx, h] of Object.entries(series)) {
+					const live = merged[idx] ?? { ts: [], r: [], w: [] };
+					const c = live.ts.length ? h.ts.findIndex((t) => t >= live.ts[0]) : -1;
+					const e = c === -1 ? h.ts.length : c;
+					merged[idx] = {
+						ts: [...h.ts.slice(0, e), ...live.ts],
+						r: [...h.r.slice(0, e), ...live.r],
+						w: [...h.w.slice(0, e), ...live.w]
+					};
+				}
+				diskSeries = merged;
+			} catch {
+				// disk historie není fatální
+			}
+			diskTot = [...hTs.slice(0, end).map((t) => totByTs.get(t) ?? 0), ...diskTot];
 		} catch {
 			// historie není fatální
 		}
@@ -297,6 +406,7 @@
 	}
 
 	onMount(() => {
+		loadStatics();
 		pollSystem();
 		pollProcs();
 		const t = setInterval(() => {
@@ -332,6 +442,7 @@
 					<span class="readout" class:sel={mode === 'cpu'}><span class="k">CPU</span><span class="v"><Num value={cpu[focusIdx]} suffix=" %" /></span></span>
 					<span class="readout" class:sel={mode === 'ram'}><span class="k">RAM</span><span class="v"><Num value={mem[focusIdx]} suffix=" %" /></span></span>
 					<span class="readout" class:sel={mode === 'gpu'}><span class="k">GPU</span><span class="v"><Num value={gpu[focusIdx]} suffix=" %" /></span></span>
+					<span class="readout" class:sel={mode === 'disk'}><span class="k">DISK</span><span class="v"><Num value={diskTot[focusIdx]} format={fmtBps} /></span></span>
 					<span class="readout" class:sel={mode === 'net'}><span class="k">↓</span><span class="v net-down"><Num value={down[focusIdx]} format={fmtBps} /></span></span>
 					<span class="readout" class:sel={mode === 'net'}><span class="k">↑</span><span class="v net-up"><Num value={up[focusIdx]} format={fmtBps} /></span></span>
 				{:else if system}
@@ -339,6 +450,7 @@
 					<span class="readout" class:sel={mode === 'cpu'}><span class="k">CPU</span><span class="v"><Num value={system.cpu_pct} suffix=" %" /></span></span>
 					<span class="readout" class:sel={mode === 'ram'}><span class="k">RAM</span><span class="v"><Num value={system.mem_used_mb / 1024} suffix=" GB" /> / {(system.mem_total_mb / 1024).toFixed(1)} GB</span></span>
 					<span class="readout" class:sel={mode === 'gpu'}><span class="k">GPU</span><span class="v"><Num value={system.gpu_pct} suffix=" %" /></span></span>
+					<span class="readout" class:sel={mode === 'disk'}><span class="k">DISK</span><span class="v"><Num value={diskTot.at(-1)} format={fmtBps} /></span></span>
 					<span class="readout" class:sel={mode === 'net'}><span class="k">↓</span><span class="v net-down"><Num value={system.net_rx_bps} format={fmtBps} /></span></span>
 					<span class="readout" class:sel={mode === 'net'}><span class="k">↑</span><span class="v net-up"><Num value={system.net_tx_bps} format={fmtBps} /></span></span>
 					<span class="readout" title="Počet běžících procesů"><span class="k">PROCESY</span><span class="v"><Num value={system.proc_count} decimals={0} /></span></span>
@@ -347,7 +459,33 @@
 				{/if}
 			</div>
 		</header>
-		{#if daemon.alive || ts.length > 0}
+		{#if mode === 'disk'}
+			<!-- Per-disk grafy: read/write jako u sítě, každý disk zvlášť -->
+			{#each statics?.disks ?? [] as d, di (d.index)}
+				{@const s = diskSeries[d.index] ?? { ts: [], r: [], w: [] }}
+				<div class="disk-block" class:first={di === 0}>
+					<div class="disk-head">
+						<span class="label-tech">disk {d.index} — {d.model}</span>
+						<span class="value-mono disk-rates">
+							<span class="net-down"><Num value={s.r.at(-1) ?? 0} format={fmtBps} /></span>
+							<span class="net-up"><Num value={s.w.at(-1) ?? 0} format={fmtBps} /></span>
+						</span>
+					</div>
+					<LiveChart
+						ts={s.ts}
+						values={s.r}
+						values2={s.w}
+						mode="net"
+						labels={['čtení', 'zápis']}
+						{pinned}
+						onhover={(h) => (hover = h)}
+						onpin={(t) => (pinned = t)}
+					/>
+				</div>
+			{:else}
+				<p class="err">{statics ? 'žádné disky' : 'čekám na info o discích…'}</p>
+			{/each}
+		{:else if daemon.alive || ts.length > 0}
 			<LiveChart
 				{ts}
 				values={chartValues}
@@ -365,7 +503,14 @@
 	<!-- ── Detail vybrané proměnné (mezi grafem a listem) ── -->
 	<section class="card detail-card">
 		<header class="card-head">
-			<span class="label-tech">// detail / {modes.find((m) => m.id === mode)?.label}</span>
+			<span class="label-tech">
+				// detail / {modes.find((m) => m.id === mode)?.label}{detailName
+					? ` — ${detailName}`
+					: ''}
+			</span>
+			{#if pinned != null}
+				<span class="label-tech past-badge">⌖ {fmtClock(pinned)}</span>
+			{/if}
 		</header>
 
 		{#if mode === 'sys'}
@@ -373,44 +518,84 @@
 			<div class="tiles">
 				<div class="tile">
 					<span class="tile-head"><Cpu size={16} strokeWidth={1.75} /> <span class="label-tech">cpu</span></span>
-					<span class="tile-val value-mono" style:color={colorForLoad(system?.cpu_pct)}><Num value={system?.cpu_pct} suffix=" %" /></span>
+					<span class="tile-val value-mono" style:color={colorForLoad(dCpuPct)}><Num value={dCpuPct} suffix=" %" /></span>
 				</div>
 				<div class="tile">
 					<span class="tile-head"><MemoryStick size={16} strokeWidth={1.75} /> <span class="label-tech">ram</span></span>
-					<span class="tile-val value-mono" style:color={colorForLoad(mem.at(-1))}><Num value={mem.at(-1)} suffix=" %" /></span>
+					<span class="tile-val value-mono" style:color={colorForLoad(dMemPct)}><Num value={dMemPct} suffix=" %" /></span>
 				</div>
 				<div class="tile">
 					<span class="tile-head"><Zap size={16} strokeWidth={1.75} /> <span class="label-tech">gpu</span></span>
-					<span class="tile-val value-mono" style:color={colorForLoad(system?.gpu_pct)}><Num value={system?.gpu_pct} suffix=" %" /></span>
+					<span class="tile-val value-mono" style:color={colorForLoad(dGpuPct)}><Num value={dGpuPct} suffix=" %" /></span>
+				</div>
+				<div class="tile">
+					<span class="tile-head"><HardDrive size={16} strokeWidth={1.75} /> <span class="label-tech">disk</span></span>
+					<span class="tile-val value-mono"><Num value={dDiskTot} format={fmtBps} /></span>
 				</div>
 				<div class="tile">
 					<span class="tile-head"><ArrowDown size={16} strokeWidth={1.75} /> <span class="label-tech">down</span></span>
-					<span class="tile-val value-mono" style:color="var(--net-down)"><Num value={system?.net_rx_bps} format={fmtBps} /></span>
+					<span class="tile-val value-mono" style:color="var(--net-down)"><Num value={dDown} format={fmtBps} /></span>
 				</div>
 				<div class="tile">
 					<span class="tile-head"><ArrowUp size={16} strokeWidth={1.75} /> <span class="label-tech">up</span></span>
-					<span class="tile-val value-mono" style:color="var(--net-up)"><Num value={system?.net_tx_bps} format={fmtBps} /></span>
+					<span class="tile-val value-mono" style:color="var(--net-up)"><Num value={dUp} format={fmtBps} /></span>
 				</div>
 			</div>
 		{:else if mode === 'cpu'}
 			<!-- Jádra ve dvou sloupcích s mini grafy -->
 			<div class="cores">
-				{#each system?.cores ?? [] as c, i (i)}
+				{#each dCores as c, i (i)}
 					<div class="core">
 						<span class="label-tech core-name">C{i}</span>
 						<span class="core-val value-mono" style:color={colorForLoad(c)}><Num value={c} decimals={0} suffix=" %" /></span>
 						<div class="core-spark">
-							<Sparkline values={coresHist[i] ?? []} color={colorForLoad(c)} height={22} />
+							<Sparkline values={coresHist[i] ?? []} height={22} />
 						</div>
 					</div>
 				{:else}
 					<p class="empty-note label-tech">čekám na data jader…</p>
 				{/each}
 			</div>
+			<!-- Doplňkové údaje (parita se Správcem úloh) -->
+			<div class="tiles info-row">
+				<div class="tile">
+					<span class="label-tech">takt</span>
+					<span class="tile-val value-mono"><Num value={system?.cpu_clock_mhz} decimals={0} suffix=" MHz" /></span>
+				</div>
+				<div class="tile">
+					<span class="label-tech">základní takt</span>
+					<span class="tile-val value-mono">{statics?.cpu_base_mhz ? `${statics.cpu_base_mhz} MHz` : '—'}</span>
+				</div>
+				<div class="tile">
+					<span class="label-tech">jádra / vlákna</span>
+					<span class="tile-val value-mono">{statics ? `${statics.physical_cores} / ${statics.logical_cores}` : '—'}</span>
+				</div>
+				<div class="tile">
+					<span class="label-tech">cache L1/L2/L3</span>
+					<span class="tile-val value-mono">
+						{statics
+							? `${(statics.l1_kb / 1024).toFixed(1)} / ${(statics.l2_kb / 1024).toFixed(0)} / ${(statics.l3_kb / 1024).toFixed(0)} MB`
+							: '—'}
+					</span>
+				</div>
+				<div class="tile">
+					<span class="label-tech">vlákna celkem</span>
+					<span class="tile-val value-mono"><Num value={system?.threads_total} decimals={0} /></span>
+				</div>
+				<div class="tile">
+					<span class="label-tech">handly</span>
+					<span class="tile-val value-mono"><Num value={system?.handles_total} decimals={0} /></span>
+				</div>
+				<div class="tile">
+					<span class="label-tech">procesy</span>
+					<span class="tile-val value-mono"><Num value={system?.proc_count} decimals={0} /></span>
+				</div>
+			</div>
 		{:else if mode === 'ram'}
-			<!-- Lineární využití + čísla -->
+			<!-- Lineární využití + čísla + osazení modulů -->
 			{#if system}
-				{@const usedPct = (system.mem_used_mb / Math.max(system.mem_total_mb, 1)) * 100}
+				{@const usedPct = dMemPct ?? 0}
+				{@const usedGb = ((usedPct / 100) * system.mem_total_mb) / 1024}
 				<div class="ram">
 					<div class="ram-bar">
 						<div
@@ -422,11 +607,11 @@
 					<div class="tiles">
 						<div class="tile">
 							<span class="label-tech">použito</span>
-							<span class="tile-val value-mono" style:color={colorForLoad(usedPct)}><Num value={system.mem_used_mb / 1024} suffix=" GB" /></span>
+							<span class="tile-val value-mono" style:color={colorForLoad(usedPct)}><Num value={usedGb} suffix=" GB" /></span>
 						</div>
 						<div class="tile">
 							<span class="label-tech">volno</span>
-							<span class="tile-val value-mono"><Num value={(system.mem_total_mb - system.mem_used_mb) / 1024} suffix=" GB" /></span>
+							<span class="tile-val value-mono"><Num value={system.mem_total_mb / 1024 - usedGb} suffix=" GB" /></span>
 						</div>
 						<div class="tile">
 							<span class="label-tech">celkem</span>
@@ -436,52 +621,89 @@
 							<span class="label-tech">využití</span>
 							<span class="tile-val value-mono" style:color={colorForLoad(usedPct)}><Num value={usedPct} suffix=" %" /></span>
 						</div>
+						<div class="tile">
+							<span class="label-tech">sloty</span>
+							<span class="tile-val value-mono">
+								{statics ? `${statics.ram_modules.length} / ${statics.ram_slots || '?'}` : '—'}
+							</span>
+						</div>
 					</div>
+					{#if statics?.ram_modules?.length}
+						<div class="tiles info-row">
+							{#each statics.ram_modules as m (m.slot)}
+								<div class="tile">
+									<span class="label-tech">{m.slot || 'slot'}</span>
+									<span class="tile-val value-mono">{(m.size_mb / 1024).toFixed(0)} GB</span>
+									<span class="mod-sub label-tech">
+										{m.configured_mts || m.speed_mts || '?'} MT/s
+										{m.manufacturer ? ` · ${m.manufacturer}` : ''}
+									</span>
+								</div>
+							{/each}
+						</div>
+					{/if}
 				</div>
 			{/if}
 		{:else if mode === 'gpu'}
-			{#if system?.gpu}
+			{#if dGpu}
 				<div class="tiles">
 					<div class="tile">
 						<span class="label-tech">teplota</span>
-						<span class="tile-val value-mono" style:color={colorForTemp(system.gpu.temp_c)}>
-							<Num value={system.gpu.temp_c} decimals={0} suffix=" °C" />
+						<span class="tile-val value-mono" style:color={colorForTemp(dGpu.temp_c)}>
+							<Num value={dGpu.temp_c} decimals={0} suffix=" °C" />
 						</span>
 					</div>
 					<div class="tile">
 						<span class="label-tech">vram</span>
 						<span class="tile-val value-mono">
-							{#if system.gpu.vram_used_mb != null}
-								<Num value={system.gpu.vram_used_mb / 1024} suffix=" GB" /> / {((system.gpu.vram_total_mb ?? 0) / 1024).toFixed(0)} GB
+							{#if dGpu.vram_used_mb != null}
+								<Num value={dGpu.vram_used_mb / 1024} suffix=" GB" /> / {((dGpu.vram_total_mb ?? system?.gpu?.vram_total_mb ?? 0) / 1024).toFixed(0)} GB
 							{:else}—{/if}
 						</span>
 					</div>
 					<div class="tile">
 						<span class="label-tech">takt</span>
-						<span class="tile-val value-mono"><Num value={system.gpu.clock_mhz} decimals={0} suffix=" MHz" /></span>
+						<span class="tile-val value-mono"><Num value={dGpu.clock_mhz} decimals={0} suffix=" MHz" /></span>
 					</div>
 					<div class="tile">
 						<span class="label-tech">spotřeba</span>
-						<span class="tile-val value-mono"><Num value={system.gpu.power_w} decimals={0} suffix=" W" /></span>
+						<span class="tile-val value-mono"><Num value={dGpu.power_w} decimals={0} suffix=" W" /></span>
 					</div>
 					<div class="tile">
 						<span class="label-tech">využití</span>
-						<span class="tile-val value-mono" style:color={colorForLoad(system.gpu_pct)}><Num value={system.gpu_pct} suffix=" %" /></span>
+						<span class="tile-val value-mono" style:color={colorForLoad(dGpuPct)}><Num value={dGpuPct} suffix=" %" /></span>
 					</div>
 				</div>
 			{:else}
 				<p class="empty-note label-tech">gpu detail nedostupný — vyžaduje NVIDIA (NVML); AMD/Intel přijde ve v3</p>
 			{/if}
+		{:else if mode === 'disk'}
+			<!-- Per-disk rychlosti (při zámku z historie) -->
+			<div class="tiles">
+				{#each dDisks as d (d.index)}
+					{@const model = statics?.disks?.find((x) => x.index === d.index)?.model}
+					<div class="tile">
+						<span class="label-tech">disk {d.index}{model ? ` · ${model}` : ''}</span>
+						<span class="tile-val value-mono">
+							<span class="net-down"><Num value={d.r_bps} format={fmtBps} /></span>
+							<span class="tile-sep">/</span>
+							<span class="net-up"><Num value={d.w_bps} format={fmtBps} /></span>
+						</span>
+					</div>
+				{:else}
+					<p class="empty-note label-tech">žádná data disků…</p>
+				{/each}
+			</div>
 		{:else}
 			<!-- Síť: aktuální + špičky za session -->
 			<div class="tiles">
 				<div class="tile">
 					<span class="tile-head"><ArrowDown size={16} strokeWidth={1.75} /> <span class="label-tech">aktuálně</span></span>
-					<span class="tile-val value-mono" style:color="var(--net-down)"><Num value={system?.net_rx_bps} format={fmtBps} /></span>
+					<span class="tile-val value-mono" style:color="var(--net-down)"><Num value={dDown} format={fmtBps} /></span>
 				</div>
 				<div class="tile">
 					<span class="tile-head"><ArrowUp size={16} strokeWidth={1.75} /> <span class="label-tech">aktuálně</span></span>
-					<span class="tile-val value-mono" style:color="var(--net-up)"><Num value={system?.net_tx_bps} format={fmtBps} /></span>
+					<span class="tile-val value-mono" style:color="var(--net-up)"><Num value={dUp} format={fmtBps} /></span>
 				</div>
 				<div class="tile">
 					<span class="tile-head"><ArrowDown size={16} strokeWidth={1.75} /> <span class="label-tech">špička</span></span>
@@ -738,6 +960,48 @@
 	.empty-note {
 		margin: 0.3rem 0;
 	}
+	.info-row {
+		margin-top: 0.8rem;
+		padding-top: 0.8rem;
+		border-top: 1px dotted var(--border-strong);
+	}
+	.mod-sub {
+		text-transform: none;
+		letter-spacing: 0.02em;
+	}
+	.tile-sep {
+		color: var(--text-faint);
+		margin: 0 0.2rem;
+	}
+	.net-down {
+		color: var(--net-down);
+	}
+	.net-up {
+		color: var(--net-up);
+	}
+
+	/* ── per-disk grafy (režim Disk) ── */
+	.disk-block {
+		margin-top: 0.9rem;
+		padding-top: 0.7rem;
+		border-top: 1px dotted var(--border-strong);
+	}
+	.disk-block.first {
+		margin-top: 0;
+		padding-top: 0;
+		border-top: 0;
+	}
+	.disk-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		margin-bottom: 0.4rem;
+	}
+	.disk-rates {
+		display: flex;
+		gap: 0.9rem;
+		font-size: 12px;
+	}
 
 	/* ── tabulka (bez CSS přechodů — výkon při 200+ řádcích) ── */
 	.table-card {
@@ -755,7 +1019,10 @@
 	}
 	table {
 		width: 100%;
-		border-collapse: collapse;
+		/* separate: bordery drží u buněk i při sticky hlavičce — jinak
+		   se tečkovaná linka při scrollu na místech ztrácela */
+		border-collapse: separate;
+		border-spacing: 0;
 		font-size: 0.86rem;
 	}
 	thead th {

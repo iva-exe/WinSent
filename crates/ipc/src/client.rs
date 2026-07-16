@@ -8,7 +8,9 @@ use std::io::ErrorKind;
 use std::time::Duration;
 
 use core_types::ipc::{Request, Response, PROTOCOL_VERSION};
-use core_types::proc::{HistProcRow, ProcRow, SystemPoint, SystemSnapshot};
+use core_types::proc::{
+    DiskRate, GpuInfo, HistProcRow, ProcRow, StaticInfo, SystemPoint, SystemSnapshot,
+};
 
 use crate::{frame, Error, PIPE_NAME};
 
@@ -124,6 +126,48 @@ pub fn query_procs_at(ts: i64) -> Result<(i64, Vec<HistProcRow>), Error> {
     let mut stream = connect()?;
     match request(&mut stream, &Request::QueryProcsAt { ts })? {
         Response::ProcsAt { ts, rows } => Ok((ts, rows)),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Statické informace o komponentách.
+pub fn query_sys_info() -> Result<StaticInfo, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QuerySysInfo)? {
+        Response::SysInfo(info) => Ok(info),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Detaily proměnných v čase (jádra, disky, GPU).
+#[allow(clippy::type_complexity)]
+pub fn query_detail_at(ts: i64) -> Result<(i64, Vec<f32>, Vec<DiskRate>, Option<GpuInfo>), Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryDetailAt { ts })? {
+        Response::DetailAt {
+            ts,
+            cores,
+            disks,
+            gpu,
+        } => Ok((ts, cores, disks, gpu)),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Historie disků [from, to].
+pub fn query_disk_history(from: i64, to: i64) -> Result<Vec<(i64, u32, u64, u64)>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryDiskHistory { from, to })? {
+        Response::DiskHistory(points) => Ok(points),
         Response::Error { message } => Err(Error::Remote { message }),
         other => Err(Error::Remote {
             message: format!("nečekaná odpověď: {other:?}"),

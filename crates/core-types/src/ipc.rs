@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -26,6 +26,12 @@ pub enum Request {
     QuerySystemHistory { from: i64, to: i64 },
     /// Stav procesů v konkrétním čase (nejbližší vzorek ±2 s).
     QueryProcsAt { ts: i64 },
+    /// Statické informace o komponentách (CPU/RAM/GPU/disky).
+    QuerySysInfo,
+    /// Detaily proměnných v čase (jádra, disky, GPU) — pro zámek grafu.
+    QueryDetailAt { ts: i64 },
+    /// Historie disků pro per-disk grafy.
+    QueryDiskHistory { from: i64, to: i64 },
 }
 
 /// Odpověď služba → UI.
@@ -50,6 +56,16 @@ pub enum Response {
         ts: i64,
         rows: Vec<crate::proc::HistProcRow>,
     },
+    SysInfo(crate::proc::StaticInfo),
+    /// Detaily v čase: jádra, disky, GPU (co historie má).
+    DetailAt {
+        ts: i64,
+        cores: Vec<f32>,
+        disks: Vec<crate::proc::DiskRate>,
+        gpu: Option<crate::proc::GpuInfo>,
+    },
+    /// Body historie disků: (ts, index, r_bps, w_bps).
+    DiskHistory(Vec<(i64, u32, u64, u64)>),
     /// Chyba zpracování požadavku. Nic neselhává mlčky (SPEC kap. 22).
     Error {
         message: String,

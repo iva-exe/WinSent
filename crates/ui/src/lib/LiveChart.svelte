@@ -21,6 +21,7 @@
 		values2 = null,
 		mode = 'sys',
 		pinned = null,
+		labels = ['download', 'upload'],
 		onhover = () => {},
 		onpin = () => {}
 	} = $props();
@@ -419,8 +420,8 @@
 
 	{#if isNet}
 		<div class="legend label-tech">
-			<span><i class="sw down"></i> download</span>
-			<span><i class="sw up"></i> upload</span>
+			<span><i class="sw down"></i> {labels[0]}</span>
+			<span><i class="sw up"></i> {labels[1]}</span>
 		</div>
 	{/if}
 

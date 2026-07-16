@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use core_types::config::Config;
-use core_types::proc::{ProcRow, SystemSnapshot};
+use core_types::proc::{DiskDesc, DiskRate, ProcRow, StaticInfo, SystemSnapshot};
 
 /// Chyby sampleru.
 #[derive(Debug, thiserror::Error)]
@@ -39,8 +39,18 @@ pub struct State {
     prev_cores: Vec<win_sys::sysinfo::CoreTimes>,
     /// NVML kontext; None = GPU metrika nedostupná (bez NVIDIA).
     gpu: Option<win_sys::gpu::Nvml>,
+    /// Otevřené fyzické disky + minulé čítače (pro delty).
+    disks: Vec<win_sys::disk::Disk>,
+    prev_disks: Vec<win_sys::disk::DiskCounters>,
+    /// Statické info komponent — zjištěno jednou při init.
+    statics: StaticInfo,
     /// Počet logických jader — normalizace na % celkové kapacity.
     n_cpus: f64,
+}
+
+/// Statické informace o komponentách (pro QuerySysInfo).
+pub fn static_info(state: &State) -> StaticInfo {
+    state.statics.clone()
 }
 
 /// Inicializace sampleru.
@@ -52,6 +62,47 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
     if gpu.is_none() {
         tracing::info!("NVML nedostupné — GPU metrika bude hlášena jako nedostupná");
     }
+
+    // Disky: otevřít jednou, čítače se pak čtou 1×/s.
+    let disks = win_sys::disk::open_disks();
+    let prev_disks = disks
+        .iter()
+        .map(|d| win_sys::disk::counters(d).unwrap_or_default())
+        .collect();
+
+    // Statické info komponent — jednou při startu (SPEC kap. 15.1).
+    let cpu = win_sys::cpuinfo::cpu_static();
+    let (ram_modules, ram_slots) = win_sys::smbios::ram_modules();
+    let statics = StaticInfo {
+        cpu_name: cpu.name,
+        cpu_base_mhz: cpu.base_mhz,
+        physical_cores: cpu.physical_cores,
+        logical_cores: cpu.logical_cores,
+        l1_kb: cpu.l1_kb,
+        l2_kb: cpu.l2_kb,
+        l3_kb: cpu.l3_kb,
+        ram_modules: ram_modules
+            .into_iter()
+            .map(|m| core_types::proc::RamModuleInfo {
+                size_mb: m.size_mb,
+                speed_mts: m.speed_mts,
+                configured_mts: m.configured_mts,
+                slot: m.slot,
+                manufacturer: m.manufacturer,
+                part_number: m.part_number,
+            })
+            .collect(),
+        ram_slots,
+        gpu_name: gpu.as_ref().and_then(|g| g.name()),
+        disks: disks
+            .iter()
+            .map(|d| DiskDesc {
+                index: d.index,
+                model: d.model.clone(),
+            })
+            .collect(),
+    };
+
     Ok(State {
         buf: Vec::new(),
         prev_cpu: HashMap::new(),
@@ -60,6 +111,9 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
         prev_net: win_sys::net::net_totals()?,
         prev_cores: win_sys::sysinfo::core_times(n_cpus as usize)?,
         gpu,
+        disks,
+        prev_disks,
+        statics,
         n_cpus,
     })
 }
@@ -156,6 +210,30 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
         .collect();
     state.prev_cores = cores_now;
 
+    // Disky: delty kumulativních bajtů → B/s per disk.
+    let mut disk_rates = Vec::with_capacity(state.disks.len());
+    for (i, d) in state.disks.iter().enumerate() {
+        match win_sys::disk::counters(d) {
+            Ok(now) => {
+                let prev = state.prev_disks.get(i).copied().unwrap_or_default();
+                disk_rates.push(DiskRate {
+                    index: d.index,
+                    r_bps: (now.read_bytes.saturating_sub(prev.read_bytes) as f64 / wall_s) as u64,
+                    w_bps: (now.write_bytes.saturating_sub(prev.write_bytes) as f64 / wall_s)
+                        as u64,
+                });
+                state.prev_disks[i] = now;
+            }
+            Err(e) => tracing::debug!(disk = d.index, error = %e, "čtení čítačů disku selhalo"),
+        }
+    }
+
+    // Takty CPU (stupeň 3 kaskády, SPEC 15.2) + uptime + součty.
+    let (cpu_clock_mhz, cpu_clock_max_mhz) =
+        win_sys::sysinfo::cpu_clocks(state.n_cpus as usize).unwrap_or((0, 0));
+    let threads_total: u32 = raw.iter().map(|p| p.threads).sum();
+    let handles_total: u32 = raw.iter().map(|p| p.handles).sum();
+
     let gpu_detail = state.gpu.as_ref().map(|g| {
         let d = g.details();
         core_types::proc::GpuInfo {
@@ -177,6 +255,12 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
         gpu_pct: state.gpu.as_ref().and_then(|g| g.utilization_pct()),
         cores,
         gpu: gpu_detail,
+        disks: disk_rates,
+        cpu_clock_mhz,
+        cpu_clock_max_mhz,
+        uptime_s: win_sys::sysinfo::system_uptime_s(),
+        threads_total,
+        handles_total,
     };
     Ok((rows, snapshot))
 }

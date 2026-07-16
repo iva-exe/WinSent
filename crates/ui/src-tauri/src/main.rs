@@ -59,6 +59,39 @@ fn query_procs_at(ts: i64) -> Result<ProcsAtDto, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Statické informace o komponentách (CPU/RAM/GPU/disky).
+#[tauri::command]
+fn query_sys_info() -> Result<core_types::proc::StaticInfo, String> {
+    ipc::client::query_sys_info().map_err(|e| e.to_string())
+}
+
+/// Detaily proměnných v čase pro zámek grafu.
+#[derive(Debug, Serialize)]
+struct DetailAtDto {
+    ts: i64,
+    cores: Vec<f32>,
+    disks: Vec<core_types::proc::DiskRate>,
+    gpu: Option<core_types::proc::GpuInfo>,
+}
+
+#[tauri::command]
+fn query_detail_at(ts: i64) -> Result<DetailAtDto, String> {
+    ipc::client::query_detail_at(ts)
+        .map(|(ts, cores, disks, gpu)| DetailAtDto {
+            ts,
+            cores,
+            disks,
+            gpu,
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Historie disků pro per-disk grafy.
+#[tauri::command]
+fn query_disk_history(from: i64, to: i64) -> Result<Vec<(i64, u32, u64, u64)>, String> {
+    ipc::client::query_disk_history(from, to).map_err(|e| e.to_string())
+}
+
 /// Vlastní spotřeba nástroje pro dlaždici v Settings (SPEC kap. 2.3).
 #[derive(Debug, Serialize)]
 struct SelfUsageDto {
@@ -132,7 +165,10 @@ fn main() {
             query_system,
             query_self_usage,
             query_system_history,
-            query_procs_at
+            query_procs_at,
+            query_sys_info,
+            query_detail_at,
+            query_disk_history
         ])
         .setup(|app| {
             setup_tray(app)?;

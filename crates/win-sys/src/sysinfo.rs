@@ -2,10 +2,45 @@
 //! Levná dokumentovaná API — GetSystemTimes + GlobalMemoryStatusEx.
 
 use windows::Win32::Foundation::FILETIME;
-use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+use windows::Win32::System::Power::{CallNtPowerInformation, PROCESSOR_POWER_INFORMATION};
+use windows::Win32::System::SystemInformation::{
+    GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX,
+};
 use windows::Win32::System::Threading::GetSystemTimes;
 
 use crate::Error;
+
+/// Uptime systému v sekundách (od bootu).
+pub fn system_uptime_s() -> u64 {
+    // SAFETY: čisté čtení čítače.
+    unsafe { GetTickCount64() / 1000 }
+}
+
+/// Takty CPU: (aktuální průměr MHz, max MHz) přes CallNtPowerInformation
+/// (SPEC kap. 15.2 stupeň 3 — dostupné na 100 % strojů).
+pub fn cpu_clocks(n_cpus: usize) -> Result<(u32, u32), Error> {
+    let mut info = vec![PROCESSOR_POWER_INFORMATION::default(); n_cpus];
+    // SAFETY: výstupní pole má přesnou velikost dle kontraktu API.
+    let status = unsafe {
+        CallNtPowerInformation(
+            windows::Win32::System::Power::ProcessorInformation,
+            None,
+            0,
+            Some(info.as_mut_ptr() as *mut _),
+            (info.len() * std::mem::size_of::<PROCESSOR_POWER_INFORMATION>()) as u32,
+        )
+    };
+    if status.0 != 0 {
+        return Err(Error::Win32 {
+            call: "CallNtPowerInformation(ProcessorInformation)",
+            code: status.0,
+        });
+    }
+    let cur =
+        (info.iter().map(|p| p.CurrentMhz as u64).sum::<u64>() / info.len().max(1) as u64) as u32;
+    let max = info.iter().map(|p| p.MaxMhz).max().unwrap_or(0);
+    Ok((cur, max))
+}
 
 /// Kumulativní systémové časy v jednotkách 100 ns (od bootu).
 /// `kernel` ZAHRNUJE `idle` — busy = (kernel - idle) + user.

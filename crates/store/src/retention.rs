@@ -15,8 +15,16 @@ pub fn tick(conn: &Connection) -> Result<(), rusqlite::Error> {
     let cutoff = chrono_now_unix() - SAMPLE_1S_KEEP_S;
     let a = conn.execute("DELETE FROM sample_1s WHERE ts < ?1", params![cutoff])?;
     let b = conn.execute("DELETE FROM system_1s WHERE ts < ?1", params![cutoff])?;
-    if a + b > 0 {
-        tracing::debug!(sample_1s = a, system_1s = b, "retence smazala staré vzorky");
+    let c = conn.execute("DELETE FROM core_1s WHERE ts < ?1", params![cutoff])?;
+    let d = conn.execute("DELETE FROM disk_1s WHERE ts < ?1", params![cutoff])?;
+    if a + b + c + d > 0 {
+        tracing::debug!(
+            sample_1s = a,
+            system_1s = b,
+            core_1s = c,
+            disk_1s = d,
+            "retence smazala staré vzorky"
+        );
     }
     Ok(())
 }

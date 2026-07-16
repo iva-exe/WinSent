@@ -2,8 +2,90 @@
 //! Volá se z read-only spojení v IPC handleru (WAL: čtenáři neblokují
 //! zapisovací vlákno).
 
-use core_types::proc::{HistProcRow, SystemPoint};
+use core_types::proc::{DiskRate, GpuInfo, HistProcRow, SystemPoint};
 use rusqlite::{params, Connection};
+
+/// Detaily proměnných v čase `ts` (nejbližší vzorek ±2 s): jádra CPU,
+/// disky a GPU senzory. Pro detail sekci při zámku grafu.
+#[allow(clippy::type_complexity)]
+pub fn detail_at(
+    conn: &Connection,
+    ts: i64,
+) -> Result<Option<(i64, Vec<f32>, Vec<DiskRate>, Option<GpuInfo>)>, rusqlite::Error> {
+    let actual: Option<i64> = conn
+        .query_row(
+            "SELECT ts FROM system_1s WHERE ts BETWEEN ?1 - 2 AND ?1 + 2
+             ORDER BY ABS(ts - ?1) LIMIT 1",
+            params![ts],
+            |r| r.get(0),
+        )
+        .map(Some)
+        .unwrap_or(None);
+    let Some(actual) = actual else {
+        return Ok(None);
+    };
+
+    let mut stmt = conn.prepare_cached("SELECT pct FROM core_1s WHERE ts = ?1 ORDER BY core")?;
+    let cores: Vec<f32> = stmt
+        .query_map(params![actual], |r| {
+            Ok(r.get::<_, Option<f64>>(0)?.unwrap_or(0.0) as f32)
+        })?
+        .collect::<Result<_, _>>()?;
+
+    let mut stmt =
+        conn.prepare_cached("SELECT disk, r_bps, w_bps FROM disk_1s WHERE ts = ?1 ORDER BY disk")?;
+    let disks: Vec<DiskRate> = stmt
+        .query_map(params![actual], |r| {
+            Ok(DiskRate {
+                index: r.get::<_, i64>(0)? as u32,
+                r_bps: r.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64,
+                w_bps: r.get::<_, Option<i64>>(2)?.unwrap_or(0).max(0) as u64,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+
+    // GPU senzory z system_1s (NULL = tehdy nedostupné).
+    let gpu = conn
+        .query_row(
+            "SELECT gpu_temp_c, gpu_vram_mb, gpu_power_w, gpu_clock_mhz
+             FROM system_1s WHERE ts = ?1",
+            params![actual],
+            |r| {
+                Ok(GpuInfo {
+                    temp_c: r.get::<_, Option<f64>>(0)?.map(|v| v as f32),
+                    vram_used_mb: r.get::<_, Option<i64>>(1)?.map(|v| v.max(0) as u64),
+                    vram_total_mb: None,
+                    power_w: r.get::<_, Option<f64>>(2)?.map(|v| v as f32),
+                    clock_mhz: r.get::<_, Option<i64>>(3)?.map(|v| v.max(0) as u32),
+                })
+            },
+        )
+        .ok()
+        .filter(|g: &GpuInfo| g.temp_c.is_some() || g.vram_used_mb.is_some());
+
+    Ok(Some((actual, cores, disks, gpu)))
+}
+
+/// Historie disků [from, to]: (ts, disk, r_bps, w_bps).
+pub fn disk_history(
+    conn: &Connection,
+    from: i64,
+    to: i64,
+) -> Result<Vec<(i64, u32, u64, u64)>, rusqlite::Error> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT ts, disk, r_bps, w_bps FROM disk_1s
+         WHERE ts BETWEEN ?1 AND ?2 ORDER BY ts, disk",
+    )?;
+    let rows = stmt.query_map(params![from, to], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)? as u32,
+            r.get::<_, Option<i64>>(2)?.unwrap_or(0).max(0) as u64,
+            r.get::<_, Option<i64>>(3)?.unwrap_or(0).max(0) as u64,
+        ))
+    })?;
+    rows.collect()
+}
 
 /// Systémové body v rozsahu [from, to] (unix s, včetně).
 pub fn system_history(

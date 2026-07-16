@@ -86,6 +86,7 @@ pub struct RawProc {
     pub threads: u32,
     pub session_id: u32,
     pub hard_faults: u32,
+    pub handles: u32,
     /// Kumulativní přenesené bajty I/O (čtení/zápis) — delty počítá
     /// kolektor stejně jako u CPU.
     pub io_read_bytes: u64,
@@ -163,6 +164,7 @@ pub fn snapshot_processes(buf: &mut Vec<u8>) -> Result<Vec<RawProc>, Error> {
             threads: p.number_of_threads,
             session_id: p.session_id,
             hard_faults: p.hard_fault_count,
+            handles: p.handle_count,
             io_read_bytes: p.read_transfer_count.max(0) as u64,
             io_write_bytes: p.write_transfer_count.max(0) as u64,
         });

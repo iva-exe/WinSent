@@ -9,6 +9,7 @@
 	import { onMount } from 'svelte';
 	import { fade } from 'svelte/transition';
 	import { page } from '$app/state';
+	import { invoke } from '@tauri-apps/api/core';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { daemon, startDaemonPolling } from '$lib/daemon.svelte.js';
 	import {
@@ -55,7 +56,31 @@
 		}
 	}
 
-	onMount(() => startDaemonPolling());
+	// Uptime systému (z démona, GetTickCount64) — poll 1×/5 s.
+	let sysUptime = $state(null);
+
+	function fmtUp(s) {
+		if (s == null) return '—';
+		const d = Math.floor(s / 86400);
+		const h = Math.floor((s % 86400) / 3600);
+		const m = Math.floor((s % 3600) / 60);
+		return d > 0 ? `${d} d ${h} h` : h > 0 ? `${h} h ${m} m` : `${m} m`;
+	}
+
+	onMount(() => {
+		startDaemonPolling();
+		async function pollUptime() {
+			try {
+				const s = await invoke('query_system');
+				sysUptime = s.uptime_s;
+			} catch {
+				sysUptime = null;
+			}
+		}
+		pollUptime();
+		const t = setInterval(pollUptime, 5000);
+		return () => clearInterval(t);
+	});
 </script>
 
 <div class="app">
@@ -69,6 +94,13 @@
 		<div class="daemon" title={daemon.detail} data-tauri-drag-region>
 			<span class="dot" class:alive={daemon.alive}></span>
 			<span class="daemon-label">{daemon.alive ? 'služba běží' : 'služba neběží'}</span>
+		</div>
+
+		<!-- Uptime systému a démona -->
+		<div class="uptimes label-tech" data-tauri-drag-region>
+			<span title="Uptime systému">sys {fmtUp(sysUptime)}</span>
+			<span class="sep">·</span>
+			<span title="Uptime démona">daemon {daemon.alive ? fmtUp(daemon.uptime_s) : '—'}</span>
 		</div>
 
 		<div class="win-controls">
@@ -173,6 +205,13 @@
 		font-size: 11px;
 		letter-spacing: 0.04em;
 		color: var(--text-dim);
+	}
+	.uptimes {
+		display: flex;
+		gap: 0.5rem;
+	}
+	.uptimes .sep {
+		color: var(--text-faint);
 	}
 	.win-controls {
 		margin-left: auto;
