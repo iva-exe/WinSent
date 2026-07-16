@@ -19,12 +19,20 @@ pub enum Error {
     WinSys(#[from] win_sys::Error),
 }
 
+/// Kumulativní čítače procesu z minulého ticku (pro delty).
+#[derive(Clone, Copy)]
+struct PrevProc {
+    cpu_100ns: u64,
+    io_read: u64,
+    io_write: u64,
+}
+
 /// Stav sampleru mezi ticky.
 pub struct State {
     /// Znovupoužívaný buffer pro NtQuerySystemInformation.
     buf: Vec<u8>,
-    /// Kumulativní CPU čas z minulého ticku: (pid, create_time) → 100ns.
-    prev_cpu: HashMap<(u32, i64), u64>,
+    /// Čítače z minulého ticku: klíč (pid, create_time).
+    prev_cpu: HashMap<(u32, i64), PrevProc>,
     prev_tick: Instant,
     prev_sys: win_sys::sysinfo::SystemTimes,
     prev_net: win_sys::net::NetTotals,
@@ -64,19 +72,30 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
     let wall_100ns = (now.duration_since(state.prev_tick).as_nanos() / 100).max(1) as f64;
     state.prev_tick = now;
 
-    // CPU % per proces z delty; nový proces (nebo recyklovaný PID) začíná
-    // od nuly — bez minulého vzorku deltu nemá.
+    // Delty per proces (CPU %, disk B/s); nový proces (nebo recyklovaný
+    // PID) začíná od nuly — bez minulého vzorku deltu nemá.
+    let wall_s = wall_100ns / 1e7;
     let mut next_cpu = HashMap::with_capacity(raw.len());
     let mut rows = Vec::with_capacity(raw.len());
     for p in &raw {
         let key = (p.pid, p.create_time);
-        let cpu_pct = match state.prev_cpu.get(&key) {
-            Some(prev) if p.cpu_time_100ns >= *prev => {
-                ((p.cpu_time_100ns - prev) as f64 / (wall_100ns * state.n_cpus) * 100.0) as f32
-            }
-            _ => 0.0,
+        let (cpu_pct, disk_r_bps, disk_w_bps) = match state.prev_cpu.get(&key) {
+            Some(prev) if p.cpu_time_100ns >= prev.cpu_100ns => (
+                ((p.cpu_time_100ns - prev.cpu_100ns) as f64 / (wall_100ns * state.n_cpus) * 100.0)
+                    as f32,
+                (p.io_read_bytes.saturating_sub(prev.io_read) as f64 / wall_s) as u64,
+                (p.io_write_bytes.saturating_sub(prev.io_write) as f64 / wall_s) as u64,
+            ),
+            _ => (0.0, 0, 0),
         };
-        next_cpu.insert(key, p.cpu_time_100ns);
+        next_cpu.insert(
+            key,
+            PrevProc {
+                cpu_100ns: p.cpu_time_100ns,
+                io_read: p.io_read_bytes,
+                io_write: p.io_write_bytes,
+            },
+        );
 
         // pid 0 (Idle) do tabulky nepatří — je to účetnictví nečinnosti,
         // ne proces; systémové CPU % ho už zohledňuje.
@@ -92,6 +111,8 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
             priv_bytes: p.priv_bytes,
             threads: p.threads,
             session_id: p.session_id,
+            disk_r_bps,
+            disk_w_bps,
         });
     }
     state.prev_cpu = next_cpu;
@@ -113,7 +134,6 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
 
     // Síť: delta kumulativních bajtů / delta stěny → B/s.
     let net = win_sys::net::net_totals()?;
-    let wall_s = wall_100ns / 1e7;
     let net_rx_bps = (net.rx_bytes.saturating_sub(state.prev_net.rx_bytes) as f64 / wall_s) as u64;
     let net_tx_bps = (net.tx_bytes.saturating_sub(state.prev_net.tx_bytes) as f64 / wall_s) as u64;
     state.prev_net = net;

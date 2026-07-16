@@ -36,10 +36,11 @@ fn main() {
     procs.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct));
     for p in procs.iter().take(10) {
         println!(
-            "{:>7}  {:5.1} %  {:>9.1} MB  {}",
+            "{:>7}  {:5.1} %  {:>9.1} MB  disk {:>8} B/s  {}",
             p.pid,
             p.cpu_pct,
             p.ws_bytes as f64 / 1048576.0,
+            p.disk_r_bps + p.disk_w_bps,
             p.name
         );
     }

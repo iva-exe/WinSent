@@ -4,6 +4,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
 	import { daemon } from '$lib/daemon.svelte.js';
+	import Num from '$lib/Num.svelte';
 
 	let usage = $state(null);
 	let error = $state('');
@@ -44,18 +45,18 @@
 				<div class="tile">
 					<span class="label-tech">cpu</span>
 					<span class="val value-mono" class:over={usage.cpu_pct > 0.5}>
-						{usage.cpu_pct.toFixed(2)} %
+						<Num value={usage.cpu_pct} decimals={2} suffix=" %" />
 					</span>
 				</div>
 				<div class="tile">
 					<span class="label-tech">ram</span>
 					<span class="val value-mono" class:over={usage.ws_bytes > 50 * 1024 * 1024}>
-						{fmtBytes(usage.ws_bytes)}
+						<Num value={usage.ws_bytes} format={fmtBytes} />
 					</span>
 				</div>
 				<div class="tile">
 					<span class="label-tech">databáze</span>
-					<span class="val value-mono">{fmtBytes(usage.db_bytes)}</span>
+					<span class="val value-mono"><Num value={usage.db_bytes} format={fmtBytes} /></span>
 				</div>
 			</div>
 		{:else}

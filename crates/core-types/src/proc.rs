@@ -17,6 +17,10 @@ pub struct ProcRow {
     pub priv_bytes: u64,
     pub threads: u32,
     pub session_id: u32,
+    /// Disk I/O v bajtech za sekundu (čtení + zápis zvlášť), z delty
+    /// kumulativních čítačů mezi vzorky.
+    pub disk_r_bps: u64,
+    pub disk_w_bps: u64,
 }
 
 /// Doplňkové údaje GPU (NVML) pro detail sekci — jen živý pohled,
@@ -70,4 +74,6 @@ pub struct HistProcRow {
     pub name: String,
     pub cpu_pct: f32,
     pub ws_bytes: u64,
+    pub disk_r_bps: u64,
+    pub disk_w_bps: u64,
 }

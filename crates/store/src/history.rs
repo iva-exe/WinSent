@@ -50,7 +50,7 @@ pub fn procs_at(
 
     let mut stmt = conn.prepare_cached(
         "SELECT s.proc_id, COALESCE(n.name, '(pid ' || s.proc_id || ')'),
-                s.cpu_pm, s.ws_kb
+                s.cpu_pm, s.ws_kb, s.io_r, s.io_w
          FROM sample_1s s LEFT JOIN proc_names n ON n.pid = s.proc_id
          WHERE s.ts = ?1",
     )?;
@@ -61,6 +61,8 @@ pub fn procs_at(
                 name: r.get(1)?,
                 cpu_pct: r.get::<_, Option<i64>>(2)?.unwrap_or(0) as f32 / 10.0,
                 ws_bytes: r.get::<_, Option<i64>>(3)?.unwrap_or(0).max(0) as u64 * 1024,
+                disk_r_bps: r.get::<_, Option<i64>>(4)?.unwrap_or(0).max(0) as u64,
+                disk_w_bps: r.get::<_, Option<i64>>(5)?.unwrap_or(0).max(0) as u64,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
