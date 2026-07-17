@@ -91,7 +91,7 @@ pub fn open_disks() -> Vec<Disk> {
             )
         };
         let Ok(handle) = handle else { continue };
-        let model = query_model(handle).unwrap_or_else(|| format!("Disk {index}"));
+        let model = query_model(handle, index).unwrap_or_else(|| format!("Disk {index}"));
         disks.push(Disk {
             index,
             model,
@@ -128,8 +128,18 @@ pub fn counters(disk: &Disk) -> Result<DiskCounters, Error> {
     })
 }
 
-/// Model disku (ProductId) přes StorageDeviceProperty.
-fn query_model(handle: HANDLE) -> Option<String> {
+/// Model disku: Vendor+Product ze StorageDeviceProperty; NVMe disky
+/// tam často nic nedají → fallback na registry
+/// `SYSTEM\CurrentControlSet\Services\disk\Enum` (Prod_… segment).
+fn query_model(handle: HANDLE, index: u32) -> Option<String> {
+    let from_ioctl = query_model_ioctl(handle);
+    if from_ioctl.is_some() {
+        return from_ioctl;
+    }
+    query_model_registry(index)
+}
+
+fn query_model_ioctl(handle: HANDLE) -> Option<String> {
     let query = StoragePropertyQuery {
         property_id: 0, // StorageDeviceProperty
         query_type: 0,  // PropertyStandardQuery
@@ -153,14 +163,75 @@ fn query_model(handle: HANDLE) -> Option<String> {
     if ok.is_err() {
         return None;
     }
-    // STORAGE_DEVICE_DESCRIPTOR: ProductIdOffset je u32 na offsetu 12.
-    let product_off = u32::from_le_bytes(buf[12..16].try_into().ok()?) as usize;
-    if product_off == 0 || product_off >= buf.len() {
-        return None;
-    }
-    let end = buf[product_off..].iter().position(|&b| b == 0)? + product_off;
-    let s = String::from_utf8_lossy(&buf[product_off..end])
-        .trim()
-        .to_string();
+    // STORAGE_DEVICE_DESCRIPTOR: VendorIdOffset @8, ProductIdOffset @12.
+    let read_str = |off_pos: usize| -> String {
+        let Ok(bytes) = buf[off_pos..off_pos + 4].try_into() else {
+            return String::new();
+        };
+        let off = u32::from_le_bytes(bytes) as usize;
+        if off == 0 || off >= buf.len() {
+            return String::new();
+        }
+        let end = buf[off..]
+            .iter()
+            .position(|&b| b == 0)
+            .map(|p| p + off)
+            .unwrap_or(buf.len());
+        String::from_utf8_lossy(&buf[off..end]).trim().to_string()
+    };
+    let vendor = read_str(8);
+    let product = read_str(12);
+    let s = format!("{vendor} {product}").trim().to_string();
     (!s.is_empty()).then_some(s)
+}
+
+/// Fallback: friendly název z `Services\disk\Enum\{index}` — hodnota
+/// obsahuje device instance id se segmentem `Prod_<model>`.
+fn query_model_registry(index: u32) -> Option<String> {
+    use windows::core::HSTRING;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+
+    let subkey = HSTRING::from(r"SYSTEM\CurrentControlSet\Services\disk\Enum");
+    let value = HSTRING::from(index.to_string());
+    let mut len = 0u32;
+    // SAFETY: dvoufázové čtení dle kontraktu RegGetValueW.
+    unsafe {
+        if RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            &subkey,
+            &value,
+            RRF_RT_REG_SZ,
+            None,
+            None,
+            Some(&mut len),
+        )
+        .is_err()
+        {
+            return None;
+        }
+        let mut buf = vec![0u16; (len as usize).div_ceil(2)];
+        if RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            &subkey,
+            &value,
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut len),
+        )
+        .is_err()
+        {
+            return None;
+        }
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        let id = String::from_utf16_lossy(&buf[..end]);
+        // Např. "SCSI\Disk&Ven_NVMe&Prod_Samsung SSD 970\4&..."
+        let model = id
+            .split("Prod_")
+            .nth(1)
+            .map(|rest| rest.split('\\').next().unwrap_or(rest))
+            .map(|s| s.replace('_', " ").trim().to_string())
+            .filter(|s| !s.is_empty());
+        model
+    }
 }

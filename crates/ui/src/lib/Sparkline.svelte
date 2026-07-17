@@ -3,7 +3,9 @@
 	// sekci. Škála pevně 0–100 %. Barva čáry = stejný vertikální
 	// gradient podle zátěže jako hlavní graf (zelená dole → červená
 	// nahoře), takže výška bodu odpovídá jeho barvě.
-	let { values = [], height = 26 } = $props();
+	// `marker` = index bodu, na kterém se vykreslí svislá linka (zámek
+	// času) — okno dat se předává tak, aby byl bod uprostřed.
+	let { values = [], height = 26, marker = null } = $props();
 
 	let canvas;
 
@@ -12,8 +14,9 @@
 	}
 
 	$effect(() => {
-		// závislost: values
+		// závislosti: values, marker
 		values;
+		marker;
 		if (!canvas) return;
 		const dpr = window.devicePixelRatio || 1;
 		const w = canvas.clientWidth;
@@ -45,6 +48,17 @@
 		ctx.strokeStyle = g;
 		ctx.lineWidth = 1.4;
 		ctx.stroke();
+
+		// Linka zámku času.
+		if (marker != null && marker >= 0 && marker < n) {
+			const mx = (marker / (n - 1)) * w;
+			ctx.beginPath();
+			ctx.moveTo(mx, 0);
+			ctx.lineTo(mx, h);
+			ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+			ctx.lineWidth = 1;
+			ctx.stroke();
+		}
 	});
 </script>
 

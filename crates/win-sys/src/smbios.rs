@@ -78,11 +78,22 @@ fn parse_type17(data: &[u8]) -> (Vec<RamModule>, u32) {
                 } else {
                     size_raw as u64
                 };
+                // DeviceLocator; když je prázdný nebo generický, doplní
+                // ho BankLocator (desky často hlásí obojí různě).
+                let device = get_string(strings, body.get(0x10).copied().unwrap_or(0));
+                let bank = get_string(strings, body.get(0x11).copied().unwrap_or(0));
+                let slot = if device.is_empty() {
+                    bank
+                } else if !bank.is_empty() && bank != device {
+                    format!("{device} ({bank})")
+                } else {
+                    device
+                };
                 modules.push(RamModule {
                     size_mb,
                     speed_mts: get_u16(body, 0x15) as u32,
                     configured_mts: get_u16(body, 0x20) as u32,
-                    slot: get_string(strings, body.get(0x10).copied().unwrap_or(0)),
+                    slot,
                     manufacturer: get_string(strings, body.get(0x17).copied().unwrap_or(0)),
                     part_number: get_string(strings, body.get(0x1A).copied().unwrap_or(0)),
                 });

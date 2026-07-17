@@ -66,6 +66,26 @@ pub fn detail_at(
     Ok(Some((actual, cores, disks, gpu)))
 }
 
+/// Historie jader [from, to]: (ts, jádro, pct).
+pub fn core_history(
+    conn: &Connection,
+    from: i64,
+    to: i64,
+) -> Result<Vec<(i64, u32, f32)>, rusqlite::Error> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT ts, core, pct FROM core_1s
+         WHERE ts BETWEEN ?1 AND ?2 ORDER BY ts, core",
+    )?;
+    let rows = stmt.query_map(params![from, to], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)? as u32,
+            r.get::<_, Option<f64>>(2)?.unwrap_or(0.0) as f32,
+        ))
+    })?;
+    rows.collect()
+}
+
 /// Historie disků [from, to]: (ts, disk, r_bps, w_bps).
 pub fn disk_history(
     conn: &Connection,

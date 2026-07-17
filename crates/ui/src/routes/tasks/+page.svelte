@@ -93,6 +93,8 @@
 	// grafu). Hover ukazuje jen hodnoty v hlavičce, list nechává živý.
 	let histProcs = $state(null);
 	let histDetail = $state(null);
+	// Okno historie jader kolem zámku (±30 s) pro mini grafy s linkou.
+	let pinnedCores = $state(null); // { byCore: number[][], marker: number }
 	let histTimer = null;
 
 	// Závislost POUZE na `pinned` (untrack) — jinak by efekt reagoval
@@ -102,23 +104,41 @@
 		untrack(() => {
 			clearTimeout(histTimer);
 			if (t == null) {
-				if (histProcs || histDetail) {
+				if (histProcs || histDetail || pinnedCores) {
 					histProcs = null;
 					histDetail = null;
+					pinnedCores = null;
 					refreshTable(true);
 				}
 				return;
 			}
 			histTimer = setTimeout(async () => {
+				const ts0 = Math.round(t);
 				try {
-					histProcs = await invoke('query_procs_at', { ts: Math.round(t) });
+					histProcs = await invoke('query_procs_at', { ts: ts0 });
 				} catch {
 					histProcs = null;
 				}
 				try {
-					histDetail = await invoke('query_detail_at', { ts: Math.round(t) });
+					histDetail = await invoke('query_detail_at', { ts: ts0 });
 				} catch {
 					histDetail = null;
+				}
+				// Okno jader ±30 s — zamčený bod vyjde doprostřed mini grafů.
+				try {
+					const pts = await invoke('query_core_history', { from: ts0 - 30, to: ts0 + 30 });
+					const tsSet = [...new Set(pts.map((p) => p[0]))].sort((a, b) => a - b);
+					const tsIdx = new Map(tsSet.map((v, i) => [v, i]));
+					const byCore = [];
+					for (const [pt, core, pct] of pts) {
+						(byCore[core] ??= new Array(tsSet.length).fill(null))[tsIdx.get(pt)] = pct;
+					}
+					const target = histDetail?.ts ?? ts0;
+					let marker = tsSet.findIndex((v) => v >= target);
+					if (marker === -1) marker = tsSet.length - 1;
+					pinnedCores = { byCore, marker };
+				} catch {
+					pinnedCores = null;
 				}
 				refreshTable(true);
 			}, 150);
@@ -437,23 +457,23 @@
 			</div>
 			<div class="readouts value-mono">
 				{#if focusIdx != null}
-					<span class="readout"><span class="k">{pinned != null ? '⌖ ČAS' : 'ČAS'}</span><span class="v accent">{fmtClock(ts[focusIdx])}</span></span>
-					<span class="readout" class:sel={mode === 'sys'}><span class="k">SYS</span><span class="v"><Num value={sys[focusIdx]} suffix=" %" /></span></span>
-					<span class="readout" class:sel={mode === 'cpu'}><span class="k">CPU</span><span class="v"><Num value={cpu[focusIdx]} suffix=" %" /></span></span>
-					<span class="readout" class:sel={mode === 'ram'}><span class="k">RAM</span><span class="v"><Num value={mem[focusIdx]} suffix=" %" /></span></span>
-					<span class="readout" class:sel={mode === 'gpu'}><span class="k">GPU</span><span class="v"><Num value={gpu[focusIdx]} suffix=" %" /></span></span>
-					<span class="readout" class:sel={mode === 'disk'}><span class="k">DISK</span><span class="v"><Num value={diskTot[focusIdx]} format={fmtBps} /></span></span>
-					<span class="readout" class:sel={mode === 'net'}><span class="k">↓</span><span class="v net-down"><Num value={down[focusIdx]} format={fmtBps} /></span></span>
-					<span class="readout" class:sel={mode === 'net'}><span class="k">↑</span><span class="v net-up"><Num value={up[focusIdx]} format={fmtBps} /></span></span>
+					<span class="readout"><span class="k">{pinned != null ? '⌖ ČAS' : 'ČAS'}</span><span class="v accent w-time">{fmtClock(ts[focusIdx])}</span></span>
+					<span class="readout" class:sel={mode === 'sys'}><span class="k">SYS</span><span class="v w-pct"><Num value={sys[focusIdx]} suffix=" %" /></span></span>
+					<span class="readout" class:sel={mode === 'cpu'}><span class="k">CPU</span><span class="v w-pct"><Num value={cpu[focusIdx]} suffix=" %" /></span></span>
+					<span class="readout" class:sel={mode === 'ram'}><span class="k">RAM</span><span class="v w-pct"><Num value={mem[focusIdx]} suffix=" %" /></span></span>
+					<span class="readout" class:sel={mode === 'gpu'}><span class="k">GPU</span><span class="v w-pct"><Num value={gpu[focusIdx]} suffix=" %" /></span></span>
+					<span class="readout" class:sel={mode === 'disk'}><span class="k">DISK</span><span class="v w-bps"><Num value={diskTot[focusIdx]} format={fmtBps} /></span></span>
+					<span class="readout" class:sel={mode === 'net'}><span class="k">↓</span><span class="v net-down w-bps"><Num value={down[focusIdx]} format={fmtBps} /></span></span>
+					<span class="readout" class:sel={mode === 'net'}><span class="k">↑</span><span class="v net-up w-bps"><Num value={up[focusIdx]} format={fmtBps} /></span></span>
 				{:else if system}
-					<span class="readout" class:sel={mode === 'sys'}><span class="k">SYS</span><span class="v"><Num value={sys.at(-1)} suffix=" %" /></span></span>
-					<span class="readout" class:sel={mode === 'cpu'}><span class="k">CPU</span><span class="v"><Num value={system.cpu_pct} suffix=" %" /></span></span>
-					<span class="readout" class:sel={mode === 'ram'}><span class="k">RAM</span><span class="v"><Num value={system.mem_used_mb / 1024} suffix=" GB" /> / {(system.mem_total_mb / 1024).toFixed(1)} GB</span></span>
-					<span class="readout" class:sel={mode === 'gpu'}><span class="k">GPU</span><span class="v"><Num value={system.gpu_pct} suffix=" %" /></span></span>
-					<span class="readout" class:sel={mode === 'disk'}><span class="k">DISK</span><span class="v"><Num value={diskTot.at(-1)} format={fmtBps} /></span></span>
-					<span class="readout" class:sel={mode === 'net'}><span class="k">↓</span><span class="v net-down"><Num value={system.net_rx_bps} format={fmtBps} /></span></span>
-					<span class="readout" class:sel={mode === 'net'}><span class="k">↑</span><span class="v net-up"><Num value={system.net_tx_bps} format={fmtBps} /></span></span>
-					<span class="readout" title="Počet běžících procesů"><span class="k">PROCESY</span><span class="v"><Num value={system.proc_count} decimals={0} /></span></span>
+					<span class="readout" class:sel={mode === 'sys'}><span class="k">SYS</span><span class="v w-pct"><Num value={sys.at(-1)} suffix=" %" /></span></span>
+					<span class="readout" class:sel={mode === 'cpu'}><span class="k">CPU</span><span class="v w-pct"><Num value={system.cpu_pct} suffix=" %" /></span></span>
+					<span class="readout" class:sel={mode === 'ram'}><span class="k">RAM</span><span class="v w-ram"><Num value={system.mem_used_mb / 1024} suffix=" GB" /> / {(system.mem_total_mb / 1024).toFixed(1)} GB</span></span>
+					<span class="readout" class:sel={mode === 'gpu'}><span class="k">GPU</span><span class="v w-pct"><Num value={system.gpu_pct} suffix=" %" /></span></span>
+					<span class="readout" class:sel={mode === 'disk'}><span class="k">DISK</span><span class="v w-bps"><Num value={diskTot.at(-1)} format={fmtBps} /></span></span>
+					<span class="readout" class:sel={mode === 'net'}><span class="k">↓</span><span class="v net-down w-bps"><Num value={system.net_rx_bps} format={fmtBps} /></span></span>
+					<span class="readout" class:sel={mode === 'net'}><span class="k">↑</span><span class="v net-up w-bps"><Num value={system.net_tx_bps} format={fmtBps} /></span></span>
+					<span class="readout" title="Počet běžících procesů"><span class="k">PROCESY</span><span class="v w-cnt"><Num value={system.proc_count} decimals={0} /></span></span>
 				{:else}
 					<span class="readout"><span class="k">—</span></span>
 				{/if}
@@ -549,7 +569,13 @@
 						<span class="label-tech core-name">C{i}</span>
 						<span class="core-val value-mono" style:color={colorForLoad(c)}><Num value={c} decimals={0} suffix=" %" /></span>
 						<div class="core-spark">
-							<Sparkline values={coresHist[i] ?? []} height={22} />
+							<Sparkline
+								values={pinned != null && pinnedCores
+									? (pinnedCores.byCore[i] ?? [])
+									: (coresHist[i] ?? [])}
+								marker={pinned != null && pinnedCores ? pinnedCores.marker : null}
+								height={22}
+							/>
 						</div>
 					</div>
 				{:else}
@@ -630,9 +656,11 @@
 					</div>
 					{#if statics?.ram_modules?.length}
 						<div class="tiles info-row">
-							{#each statics.ram_modules as m (m.slot)}
+							<!-- Klíč = index: desky občas hlásí stejný slot u více modulů
+							     a duplicitní klíč by shodil celý render. -->
+							{#each statics.ram_modules as m, mi (mi)}
 								<div class="tile">
-									<span class="label-tech">{m.slot || 'slot'}</span>
+									<span class="label-tech">{m.slot || `slot ${mi + 1}`}</span>
 									<span class="tile-val value-mono">{(m.size_mb / 1024).toFixed(0)} GB</span>
 									<span class="mod-sub label-tech">
 										{m.configured_mts || m.speed_mts || '?'} MT/s
@@ -791,8 +819,13 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1rem;
-		height: 100%;
-		min-height: 0;
+		/* min-height místo height: v režimu Disk je grafů víc a stránka
+		   se poscrolluje — list procesů nesmí zkolabovat na nulu. */
+		min-height: 100%;
+	}
+	.chart-card,
+	.detail-card {
+		flex-shrink: 0;
 	}
 
 	.card {
@@ -859,6 +892,24 @@
 	}
 	.readout .v {
 		color: var(--text-dim);
+		display: inline-block;
+		text-align: right;
+	}
+	/* Zamčené šířky — hodnoty nemění pozici podle délky textu. */
+	.v.w-pct {
+		min-width: 4.4em;
+	}
+	.v.w-bps {
+		min-width: 6.4em;
+	}
+	.v.w-ram {
+		min-width: 9.5em;
+	}
+	.v.w-time {
+		min-width: 5.2em;
+	}
+	.v.w-cnt {
+		min-width: 2.6em;
 	}
 	/* Zvýraznění právě zobrazované proměnné grafu */
 	.readout.sel {
@@ -997,6 +1048,11 @@
 		justify-content: space-between;
 		margin-bottom: 0.4rem;
 	}
+	/* Název disku jako nadpis — bílý text. */
+	.disk-head > .label-tech {
+		color: var(--text);
+		font-size: 11.5px;
+	}
 	.disk-rates {
 		display: flex;
 		gap: 0.9rem;
@@ -1008,7 +1064,8 @@
 		flex: 1;
 		display: flex;
 		flex-direction: column;
-		min-height: 0;
+		/* Vždy viditelný — i pod více disk grafy. */
+		min-height: 280px;
 		padding-bottom: 0;
 	}
 	.table-wrap {
@@ -1037,7 +1094,6 @@
 		font-weight: 400;
 		color: var(--text-faint);
 		padding: 0.45rem 1rem;
-		border-bottom: 1px dotted var(--border-strong);
 		white-space: nowrap;
 	}
 	thead th:hover {

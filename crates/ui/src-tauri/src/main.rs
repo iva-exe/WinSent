@@ -92,6 +92,12 @@ fn query_disk_history(from: i64, to: i64) -> Result<Vec<(i64, u32, u64, u64)>, S
     ipc::client::query_disk_history(from, to).map_err(|e| e.to_string())
 }
 
+/// Historie jader CPU pro mini grafy při zámku času.
+#[tauri::command]
+fn query_core_history(from: i64, to: i64) -> Result<Vec<(i64, u32, f32)>, String> {
+    ipc::client::query_core_history(from, to).map_err(|e| e.to_string())
+}
+
 /// Vlastní spotřeba nástroje pro dlaždici v Settings (SPEC kap. 2.3).
 #[derive(Debug, Serialize)]
 struct SelfUsageDto {
@@ -168,7 +174,8 @@ fn main() {
             query_procs_at,
             query_sys_info,
             query_detail_at,
-            query_disk_history
+            query_disk_history,
+            query_core_history
         ])
         .setup(|app| {
             setup_tray(app)?;

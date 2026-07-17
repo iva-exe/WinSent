@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -32,6 +32,8 @@ pub enum Request {
     QueryDetailAt { ts: i64 },
     /// Historie disků pro per-disk grafy.
     QueryDiskHistory { from: i64, to: i64 },
+    /// Historie jader CPU (mini grafy při zámku času).
+    QueryCoreHistory { from: i64, to: i64 },
 }
 
 /// Odpověď služba → UI.
@@ -66,6 +68,8 @@ pub enum Response {
     },
     /// Body historie disků: (ts, index, r_bps, w_bps).
     DiskHistory(Vec<(i64, u32, u64, u64)>),
+    /// Body historie jader: (ts, jádro, pct).
+    CoreHistory(Vec<(i64, u32, f32)>),
     /// Chyba zpracování požadavku. Nic neselhává mlčky (SPEC kap. 22).
     Error {
         message: String,

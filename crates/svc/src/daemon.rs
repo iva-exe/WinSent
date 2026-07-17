@@ -160,6 +160,15 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     },
                 }
             }
+            Request::QueryCoreHistory { from, to } => {
+                let conn = read_conn.lock().expect("read conn lock poisoned");
+                match store::history::core_history(&conn, from, to) {
+                    Ok(points) => Response::CoreHistory(points),
+                    Err(e) => Response::Error {
+                        message: format!("čtení historie selhalo: {e}"),
+                    },
+                }
+            }
             Request::Ping { protocol_version } => {
                 if protocol_version != PROTOCOL_VERSION {
                     tracing::warn!(

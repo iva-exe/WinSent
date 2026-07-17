@@ -163,6 +163,18 @@ pub fn query_detail_at(ts: i64) -> Result<(i64, Vec<f32>, Vec<DiskRate>, Option<
     }
 }
 
+/// Historie jader CPU [from, to].
+pub fn query_core_history(from: i64, to: i64) -> Result<Vec<(i64, u32, f32)>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryCoreHistory { from, to })? {
+        Response::CoreHistory(points) => Ok(points),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Historie disků [from, to].
 pub fn query_disk_history(from: i64, to: i64) -> Result<Vec<(i64, u32, u64, u64)>, Error> {
     let mut stream = connect()?;
