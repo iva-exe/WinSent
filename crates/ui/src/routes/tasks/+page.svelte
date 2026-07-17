@@ -221,7 +221,17 @@
 	let displayRows = $state([]);
 	let sortKey = $state('sys_pct');
 	let sortDir = $state(-1);
+	// Filtr (v1 DoD: řazení + filtr) — jméno nebo PID.
+	let filter = $state('');
 	let lastOrderAt = 0;
+
+	const visibleRows = $derived.by(() => {
+		const q = filter.trim().toLowerCase();
+		if (!q) return displayRows;
+		return displayRows.filter(
+			(r) => r.name.toLowerCase().includes(q) || String(r.pid).includes(q)
+		);
+	});
 
 	function buildRows() {
 		const total = (system?.mem_total_mb ?? 0) * 1024 * 1024;
@@ -630,6 +640,7 @@
 							style:background={colorForLoad(usedPct)}
 						></div>
 					</div>
+					<!-- Vše v jednom řádku elementů (zalamuje se, nedělí se sekcemi) -->
 					<div class="tiles">
 						<div class="tile">
 							<span class="label-tech">použito</span>
@@ -653,23 +664,19 @@
 								{statics ? `${statics.ram_modules.length} / ${statics.ram_slots || '?'}` : '—'}
 							</span>
 						</div>
+						<!-- Klíč = index: desky občas hlásí stejný slot u více modulů
+						     a duplicitní klíč by shodil celý render. -->
+						{#each statics?.ram_modules ?? [] as m, mi (mi)}
+							<div class="tile">
+								<span class="label-tech">{m.slot || `slot ${mi + 1}`}</span>
+								<span class="tile-val value-mono">{(m.size_mb / 1024).toFixed(0)} GB</span>
+								<span class="mod-sub label-tech">
+									{m.configured_mts || m.speed_mts || '?'} MT/s
+									{m.manufacturer ? ` · ${m.manufacturer}` : ''}
+								</span>
+							</div>
+						{/each}
 					</div>
-					{#if statics?.ram_modules?.length}
-						<div class="tiles info-row">
-							<!-- Klíč = index: desky občas hlásí stejný slot u více modulů
-							     a duplicitní klíč by shodil celý render. -->
-							{#each statics.ram_modules as m, mi (mi)}
-								<div class="tile">
-									<span class="label-tech">{m.slot || `slot ${mi + 1}`}</span>
-									<span class="tile-val value-mono">{(m.size_mb / 1024).toFixed(0)} GB</span>
-									<span class="mod-sub label-tech">
-										{m.configured_mts || m.speed_mts || '?'} MT/s
-										{m.manufacturer ? ` · ${m.manufacturer}` : ''}
-									</span>
-								</div>
-							{/each}
-						</div>
-					{/if}
 				</div>
 			{/if}
 		{:else if mode === 'gpu'}
@@ -749,14 +756,33 @@
 	<section class="card table-card">
 		<header class="card-head">
 			<span class="label-tech">// processes</span>
-			{#if histProcs}
-				<span class="label-tech past-badge">
-					● stav z {fmtClock(histProcs.ts)} — zámek zrušíš klikem mimo graf
-				</span>
-			{/if}
+			<div class="table-tools">
+				{#if histProcs}
+					<span class="label-tech past-badge">
+						● stav z {fmtClock(histProcs.ts)} — zámek zrušíš klikem mimo graf
+					</span>
+				{/if}
+				<input
+					class="filter value-mono"
+					type="text"
+					placeholder="filtr (název / PID)…"
+					bind:value={filter}
+				/>
+			</div>
 		</header>
 		<div class="table-wrap">
 			<table>
+				<!-- Pevné šířky sloupců — hodnoty se neposouvají podle textu. -->
+				<colgroup>
+					<col style="width: 26px" />
+					<col />
+					<col style="width: 74px" />
+					<col style="width: 84px" />
+					<col style="width: 84px" />
+					<col style="width: 100px" />
+					<col style="width: 104px" />
+					<col style="width: 72px" />
+				</colgroup>
 				<thead>
 					<tr>
 						<th class="t-dot" onclick={() => setSort('sys_pct')} title="Zátěž systému"></th>
@@ -775,8 +801,12 @@
 						<th class="t-num" onclick={() => setSort('ws_bytes')}>
 							Paměť {#if sortKey === 'ws_bytes'}{arrow}{/if}
 						</th>
-						<th class="t-num" onclick={() => setSort('disk_bps')}>
-							Disk {#if sortKey === 'disk_bps'}{arrow}{/if}
+						<th
+							class="t-num"
+							onclick={() => setSort('disk_bps')}
+							title="Veškeré I/O procesu (disk, pipe, zařízení) — jako Správce úloh v detailech"
+						>
+							I/O {#if sortKey === 'disk_bps'}{arrow}{/if}
 						</th>
 						<th class="t-num" onclick={() => setSort('threads')}>
 							Vlákna {#if sortKey === 'threads'}{arrow}{/if}
@@ -784,7 +814,7 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each displayRows as p (p.pid)}
+					{#each visibleRows as p (p.pid)}
 						<tr animate:flip={{ duration: 300 }}>
 							<td class="t-dot">
 								<span
@@ -940,6 +970,27 @@
 	.past-badge {
 		color: var(--warn);
 	}
+	.table-tools {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+	}
+	.filter {
+		width: 190px;
+		padding: 0.28rem 0.6rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--surface);
+		color: var(--text);
+		font-size: 11.5px;
+		outline: none;
+	}
+	.filter:focus {
+		border-color: var(--border-strong);
+	}
+	.filter::placeholder {
+		color: var(--text-faint);
+	}
 
 	/* ── detail sekce ── */
 	.detail-card {
@@ -1080,6 +1131,8 @@
 		   se tečkovaná linka při scrollu na místech ztrácela */
 		border-collapse: separate;
 		border-spacing: 0;
+		/* fixed + colgroup: šířky sloupců se nemění podle obsahu */
+		table-layout: fixed;
 		font-size: 0.86rem;
 	}
 	thead th {
