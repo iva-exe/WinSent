@@ -89,3 +89,134 @@ pub fn verify_authenticode(path: &Path) -> Result<SignatureStatus, crate::Error>
         s => SignatureStatus::Invalid { code: s },
     })
 }
+
+/// Výsledek zjištění podpisu pro identitu (SPEC kap. 4.1 krok 4).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SignerInfo {
+    /// Subject CN z podpisového certifikátu (např. „Google LLC“).
+    /// None = bez embedded podpisu (typicky katalogově podepsané
+    /// systémové soubory — ty identita pozná podle cesty %SystemRoot%).
+    pub subject: Option<String>,
+    /// Podpis existuje a řetěz důvěry je platný.
+    pub valid: bool,
+}
+
+/// Zjistí podepisujícího binárky: subject CN embedded podpisu
+/// (CryptQueryObject) + zda je řetěz platný (WinVerifyTrust). Katalogově
+/// podepsané systémové soubory nemají embedded podpis a vrací
+/// `subject: None` — identita je zařadí větví „os:windows“ podle cesty.
+/// Blokující (jednotky až desítky ms) — jen z background vlákna
+/// identity, NIKDY v samplovacím cyklu (SPEC kap. 4.2).
+pub fn signer_subject(path: &Path) -> SignerInfo {
+    let valid = matches!(verify_authenticode(path), Ok(SignatureStatus::Valid));
+    SignerInfo {
+        subject: signer::embedded_subject(path),
+        valid,
+    }
+}
+
+/// Extrakce subjektu embedded Authenticode podpisu přes CryptQueryObject.
+mod signer {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use windows::Win32::Security::Cryptography::{
+        CertCloseStore, CertFindCertificateInStore, CertFreeCertificateContext, CertGetNameStringW,
+        CryptMsgClose, CryptMsgGetParam, CryptQueryObject, CERT_FIND_SUBJECT_CERT,
+        CERT_NAME_SIMPLE_DISPLAY_TYPE, CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
+        CERT_QUERY_FORMAT_FLAG_BINARY, CERT_QUERY_OBJECT_FILE, CMSG_SIGNER_CERT_INFO_PARAM,
+        HCERTSTORE, PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
+    };
+
+    /// Subject CN prvního signera embedded podpisu; None když soubor
+    /// nemá embedded podpis (nebo se nedá přečíst).
+    pub fn embedded_subject(path: &Path) -> Option<String> {
+        let w: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        // SAFETY: store i msg handle uvolňujeme; buffer signer info žije
+        // po dobu, kdy z něj čteme certifikát.
+        unsafe {
+            let mut store = HCERTSTORE::default();
+            let mut msg: *mut core::ffi::c_void = std::ptr::null_mut();
+            CryptQueryObject(
+                CERT_QUERY_OBJECT_FILE,
+                w.as_ptr() as *const core::ffi::c_void,
+                CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
+                CERT_QUERY_FORMAT_FLAG_BINARY,
+                0,
+                None,
+                None,
+                None,
+                Some(&mut store),
+                Some(&mut msg),
+                None,
+            )
+            .ok()?;
+
+            let result = subject_from_msg(msg, store);
+
+            if !msg.is_null() {
+                let _ = CryptMsgClose(Some(msg));
+            }
+            if !store.is_invalid() {
+                let _ = CertCloseStore(Some(store), 0);
+            }
+            result
+        }
+    }
+
+    /// SAFETY: msg a store jsou platné handly z CryptQueryObject.
+    unsafe fn subject_from_msg(msg: *mut core::ffi::c_void, store: HCERTSTORE) -> Option<String> {
+        // Velikost CERT_INFO signera.
+        let mut size = 0u32;
+        CryptMsgGetParam(msg, CMSG_SIGNER_CERT_INFO_PARAM, 0, None, &mut size).ok()?;
+        if size == 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; size as usize];
+        CryptMsgGetParam(
+            msg,
+            CMSG_SIGNER_CERT_INFO_PARAM,
+            0,
+            Some(buf.as_mut_ptr() as *mut core::ffi::c_void),
+            &mut size,
+        )
+        .ok()?;
+
+        // Najdi certifikát signera ve store dle vráceného CERT_INFO.
+        let cert = CertFindCertificateInStore(
+            store,
+            X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+            0,
+            CERT_FIND_SUBJECT_CERT,
+            Some(buf.as_ptr() as *const core::ffi::c_void),
+            None,
+        );
+        if cert.is_null() {
+            return None;
+        }
+        // Subject jako čitelný display name.
+        let len = CertGetNameStringW(cert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, None, None);
+        let subject = if len > 1 {
+            let mut name = vec![0u16; len as usize];
+            CertGetNameStringW(
+                cert,
+                CERT_NAME_SIMPLE_DISPLAY_TYPE,
+                0,
+                None,
+                Some(&mut name),
+            );
+            let end = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+            let s = String::from_utf16_lossy(&name[..end]).trim().to_string();
+            (!s.is_empty()).then_some(s)
+        } else {
+            None
+        };
+        let _ = CertFreeCertificateContext(Some(cert));
+        subject
+    }
+}

@@ -1,7 +1,6 @@
 <script>
 	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
-	import { flip } from 'svelte/animate';
 	import { untrack } from 'svelte';
 	import { daemon } from '$lib/daemon.svelte.js';
 	import LiveChart from '$lib/LiveChart.svelte';
@@ -243,8 +242,65 @@
 			ws_bytes: p.ws_bytes,
 			threads: p.threads ?? null,
 			disk_bps: (p.disk_r_bps ?? 0) + (p.disk_w_bps ?? 0),
-			sys_pct: sysLoad([p.cpu_pct, total > 0 ? (p.ws_bytes / total) * 100 : null])
+			sys_pct: sysLoad([p.cpu_pct, total > 0 ? (p.ws_bytes / total) * 100 : null]),
+			// Identita aplikace (v2). Historie ji nemá → fallback na jméno.
+			identity_key: p.identity_key ?? `name:${p.name}`,
+			app_name: p.app_name ?? p.name,
+			publisher: p.publisher ?? null,
+			protection: p.protection ?? 'user',
+			confidence: p.confidence ?? 'exact'
 		}));
+	}
+
+	// Rozbalené skupiny (strom aplikace → procesy).
+	let expanded = $state(new Set());
+	function toggleGroup(key) {
+		const s = new Set(expanded);
+		if (s.has(key)) s.delete(key);
+		else s.add(key);
+		expanded = s;
+	}
+
+	// Skupiny odvozené z displayRows (pořadí i přeskupení už throttlované).
+	// Pořadí skupin = první výskyt člena → stabilní stejně jako list.
+	const groups = $derived.by(() => {
+		const map = new Map();
+		for (const p of visibleRows) {
+			let g = map.get(p.identity_key);
+			if (!g) {
+				g = {
+					key: p.identity_key,
+					app_name: p.app_name,
+					publisher: p.publisher,
+					// Nejpřísnější třída ve skupině (pro ikonu zámku).
+					protection: p.protection,
+					confidence: p.confidence,
+					children: [],
+					cpu_pct: 0,
+					ws_bytes: 0,
+					disk_bps: 0,
+					sys_pct: 0
+				};
+				map.set(p.identity_key, g);
+			}
+			g.children.push(p);
+			g.cpu_pct += p.cpu_pct;
+			g.ws_bytes += p.ws_bytes;
+			g.disk_bps += p.disk_bps;
+			if (protRank(p.protection) < protRank(g.protection)) g.protection = p.protection;
+			if (p.confidence === 'guess') g.confidence = 'guess';
+		}
+		// Sys zátěž skupiny ze součtu CPU + podílu RAM.
+		const total = (system?.mem_total_mb ?? 0) * 1024 * 1024;
+		for (const g of map.values()) {
+			g.sys_pct = sysLoad([g.cpu_pct, total > 0 ? (g.ws_bytes / total) * 100 : null]);
+		}
+		return [...map.values()];
+	});
+
+	// Pořadí přísnosti pro výběr ikony skupiny.
+	function protRank(p) {
+		return { critical: 0, protected: 1, system: 2, user: 3 }[p] ?? 3;
 	}
 
 	function sortRows(rows) {
@@ -787,7 +843,7 @@
 					<tr>
 						<th class="t-dot" onclick={() => setSort('sys_pct')} title="Zátěž systému"></th>
 						<th class="t-name" onclick={() => setSort('name')}>
-							Proces {#if sortKey === 'name'}{arrow}{/if}
+							Aplikace / proces {#if sortKey === 'name'}{arrow}{/if}
 						</th>
 						<th class="t-num" onclick={() => setSort('pid')}>
 							PID {#if sortKey === 'pid'}{arrow}{/if}
@@ -814,23 +870,47 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each visibleRows as p (p.pid)}
-						<tr animate:flip={{ duration: 300 }}>
+					{#each groups as g (g.key)}
+						{@const single = g.children.length === 1}
+						{@const open = expanded.has(g.key)}
+						<tr class="grp" class:clickable={!single} onclick={() => !single && toggleGroup(g.key)}>
 							<td class="t-dot">
 								<span
 									class="load-dot"
-									style:background={colorForLoad(p.sys_pct)}
-									style:box-shadow={`0 0 5px ${colorForLoad(p.sys_pct)}`}
+									style:background={colorForLoad(g.sys_pct)}
+									style:box-shadow={`0 0 5px ${colorForLoad(g.sys_pct)}`}
 								></span>
 							</td>
-							<td class="t-name">{p.name}</td>
-							<td class="t-num value-mono">{p.pid}</td>
-							<td class="t-num value-mono">{p.sys_pct.toFixed(1)} %</td>
-							<td class="t-num value-mono">{p.cpu_pct.toFixed(1)} %</td>
-							<td class="t-num value-mono">{fmtMem(p.ws_bytes)}</td>
-							<td class="t-num value-mono">{p.disk_bps > 0 ? fmtBps(p.disk_bps) : '—'}</td>
-							<td class="t-num value-mono">{p.threads ?? '—'}</td>
+							<td class="t-name">
+								<span class="tw">
+									{#if !single}<span class="caret" class:open>▸</span>{/if}
+									<span class="app-name" class:guess={g.confidence === 'guess'}>{g.app_name}</span>
+									{#if g.protection === 'critical'}<span class="lock" title="Kritický systémový proces — nelze ukončit">🔒</span>{/if}
+									{#if !single}<span class="count label-tech">{g.children.length}×</span>{/if}
+									{#if g.publisher}<span class="pub label-tech" title={g.publisher}>{g.publisher}</span>{/if}
+								</span>
+							</td>
+							<td class="t-num value-mono">{single ? g.children[0].pid : ''}</td>
+							<td class="t-num value-mono">{g.sys_pct.toFixed(1)} %</td>
+							<td class="t-num value-mono">{g.cpu_pct.toFixed(1)} %</td>
+							<td class="t-num value-mono">{fmtMem(g.ws_bytes)}</td>
+							<td class="t-num value-mono">{g.disk_bps > 0 ? fmtBps(g.disk_bps) : '—'}</td>
+							<td class="t-num value-mono">{single ? (g.children[0].threads ?? '—') : ''}</td>
 						</tr>
+						{#if !single && open}
+							{#each g.children as p (p.pid)}
+								<tr class="child" class:crit={p.protection === 'critical'}>
+									<td class="t-dot"></td>
+									<td class="t-name child-name">{p.name}</td>
+									<td class="t-num value-mono">{p.pid}</td>
+									<td class="t-num value-mono">{p.sys_pct.toFixed(1)} %</td>
+									<td class="t-num value-mono">{p.cpu_pct.toFixed(1)} %</td>
+									<td class="t-num value-mono">{fmtMem(p.ws_bytes)}</td>
+									<td class="t-num value-mono">{p.disk_bps > 0 ? fmtBps(p.disk_bps) : '—'}</td>
+									<td class="t-num value-mono">{p.threads ?? '—'}</td>
+								</tr>
+							{/each}
+						{/if}
 					{:else}
 						<tr>
 							<td colspan="8" class="empty label-tech">
@@ -1165,6 +1245,73 @@
 	.t-dot {
 		width: 26px;
 		padding-right: 0 !important;
+	}
+
+	/* ── strom aplikace → procesy (v2) ── */
+	.grp.clickable {
+		cursor: pointer;
+	}
+	.grp td.t-name {
+		color: var(--text);
+	}
+	.tw {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		min-width: 0;
+	}
+	.caret {
+		display: inline-block;
+		width: 10px;
+		color: var(--text-faint);
+		transition: transform 130ms ease-out;
+		font-size: 0.7rem;
+	}
+	.caret.open {
+		transform: rotate(90deg);
+	}
+	.app-name {
+		font-weight: 500;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	/* Guess/path identita — tečkovaný podtrh (SPEC 4.4). */
+	.app-name.guess {
+		text-decoration: underline dotted var(--text-faint);
+		text-underline-offset: 3px;
+	}
+	.count {
+		color: var(--text-faint);
+		flex-shrink: 0;
+	}
+	.pub {
+		color: var(--text-faint);
+		text-transform: none;
+		letter-spacing: 0.01em;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		opacity: 0.75;
+	}
+	.lock {
+		font-size: 0.7rem;
+		filter: grayscale(1);
+		opacity: 0.7;
+	}
+	/* Kritické procesy: šedě (SPEC 9.4). */
+	.grp .app-name,
+	.child.crit td {
+		color: var(--text);
+	}
+	tr.child td {
+		background: rgba(255, 255, 255, 0.012);
+	}
+	.child-name {
+		padding-left: 2.2rem !important;
+		color: var(--text-dim) !important;
+	}
+	.child.crit .child-name {
+		color: var(--text-faint) !important;
 	}
 	.load-dot {
 		display: inline-block;

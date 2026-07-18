@@ -44,6 +44,8 @@ pub struct State {
     prev_disks: Vec<win_sys::disk::DiskCounters>,
     /// Statické info komponent — zjištěno jednou při init.
     statics: StaticInfo,
+    /// Engine identity aplikací (v2, SPEC kap. 4) — cache + background.
+    identity: identity::Engine,
     /// Počet logických jader — normalizace na % celkové kapacity.
     n_cpus: f64,
 }
@@ -114,6 +116,7 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
         disks,
         prev_disks,
         statics,
+        identity: identity::Engine::new(identity::load_tables()),
         n_cpus,
     })
 }
@@ -156,6 +159,9 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
         if p.pid == 0 {
             continue;
         }
+        // Identita (v2): jen lookup v cache; nováček dostane provisional
+        // a dořeší se na pozadí (SPEC kap. 4.2 — nic drahého v cyklu).
+        let (id, prot) = state.identity.identify(p.pid, &p.name);
         rows.push(ProcRow {
             pid: p.pid,
             parent_pid: p.parent_pid,
@@ -167,9 +173,18 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
             session_id: p.session_id,
             disk_r_bps,
             disk_w_bps,
+            identity_key: id.identity_key,
+            app_name: id.app_name,
+            publisher: id.publisher,
+            protection: prot,
+            confidence: id.confidence,
         });
     }
     state.prev_cpu = next_cpu;
+
+    // Úklid identity cache od zaniklých procesů (levné, jednou za tick).
+    let live: std::collections::HashSet<u32> = raw.iter().map(|p| p.pid).collect();
+    state.identity.retain_pids(&live);
 
     // Systém: busy = (kernel - idle) + user z delty GetSystemTimes.
     let sys = win_sys::sysinfo::system_times()?;

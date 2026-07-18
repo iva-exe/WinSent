@@ -63,12 +63,29 @@ fn main() {
     procs.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct));
     for p in procs.iter().take(10) {
         println!(
-            "{:>7}  {:5.1} %  {:>9.1} MB  disk {:>8} B/s  {}",
+            "{:>7}  {:5.1} %  {:>9.1} MB  [{:?}/{:?}] app={} pub={:?}  ({})",
             p.pid,
             p.cpu_pct,
             p.ws_bytes as f64 / 1048576.0,
-            p.disk_r_bps + p.disk_w_bps,
+            p.protection,
+            p.confidence,
+            p.app_name,
+            p.publisher,
             p.name
         );
+    }
+    // Seskupení podle aplikace (jako v UI stromu).
+    use std::collections::BTreeMap;
+    let mut by_app: BTreeMap<String, (usize, f32)> = BTreeMap::new();
+    for p in &procs {
+        let e = by_app.entry(p.app_name.clone()).or_default();
+        e.0 += 1;
+        e.1 += p.cpu_pct;
+    }
+    println!("\n--- seskupení aplikace → procesy ---");
+    let mut groups: Vec<_> = by_app.into_iter().collect();
+    groups.sort_by(|a, b| b.1 .1.total_cmp(&a.1 .1));
+    for (app, (n, cpu)) in groups.iter().take(12) {
+        println!("  {n:>3}×  {cpu:5.1} %  {app}");
     }
 }

@@ -9,3 +9,4 @@ publish.workspace = true
 core-types = { workspace = true }
 win-sys = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }

@@ -10,10 +10,13 @@ pub mod disk;
 pub mod gpu;
 pub mod net;
 pub mod proc;
+pub mod procinfo;
+pub mod registry;
 pub mod smbios;
 pub mod sysinfo;
 pub mod threading;
 pub mod trust;
+pub mod verinfo;
 
 /// Chyby win-sys vrstvy. Každé selhání Win32 volání nese kód, nic
 /// neselhává mlčky (SPEC kap. 22).

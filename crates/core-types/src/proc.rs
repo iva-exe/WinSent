@@ -21,6 +21,43 @@ pub struct ProcRow {
     /// kumulativních čítačů mezi vzorky.
     pub disk_r_bps: u64,
     pub disk_w_bps: u64,
+    /// Identita aplikace, pod kterou proces patří (v2, SPEC kap. 4).
+    pub identity_key: String,
+    /// Zobrazované jméno aplikace (např. „Google Chrome“, „Windows“).
+    pub app_name: String,
+    /// Vydavatel z podpisu/VERSIONINFO, když je znám.
+    pub publisher: Option<String>,
+    /// Ochranná třída procesu (SPEC kap. 4.3).
+    pub protection: Protection,
+    /// Jak jistá je identita (SPEC kap. 4.4) — `guess`/`path` se v UI
+    /// odliší tečkovaným podtrhem.
+    pub confidence: Confidence,
+}
+
+/// Ochranná třída procesu (SPEC kap. 4.3) — zatím jen pro zobrazení.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Protection {
+    /// Kill = BSOD. Šedě + zámek, bez tlačítka.
+    Critical,
+    /// PPL — kill nemožný.
+    Protected,
+    /// SYSTEM/SERVICE — kill za potvrzením.
+    System,
+    #[default]
+    /// Běžný uživatelský proces.
+    User,
+}
+
+/// Jistota identity (SPEC kap. 4.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    /// Override, MSIX, OS, uninstall záznam nebo platný podpis.
+    #[default]
+    Exact,
+    /// Jen podle adresáře binárky — nespolehlivé, vizuálně odlišené.
+    Guess,
 }
 
 /// Doplňkové údaje GPU (NVML) pro detail sekci — jen živý pohled,

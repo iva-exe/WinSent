@@ -474,6 +474,7 @@ name = "collector-proc"
 version = "0.1.0"
 dependencies = [
  "core-types",
+ "identity",
  "thiserror 2.0.18",
  "tracing",
  "win-sys",
@@ -1722,6 +1723,7 @@ version = "0.1.0"
 dependencies = [
  "core-types",
  "thiserror 2.0.18",
+ "tracing",
  "win-sys",
 ]
 

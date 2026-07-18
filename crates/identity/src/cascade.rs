@@ -1,0 +1,112 @@
+//! Rozhodovací kaskáda identity (SPEC kap. 4.1). Běží na background
+//! vlákně — smí volat drahá API (podpis, VERSIONINFO). První shoda
+//! vyhrává; krok 0 (uživatelský override) přijde s persistencí později.
+
+use core_types::proc::Confidence;
+
+use crate::{parent_dir, under_system_root, Identity, Tables};
+
+/// Vyhodnotí kaskádu pro jeden proces (běží na background vlákně).
+pub fn resolve(pid: u32, image_name: &str, path: Option<&str>, tables: &Tables) -> Identity {
+    // 1. MSIX/AppX — PackageFamilyName.
+    if let Some(family) = win_sys::procinfo::package_family(pid) {
+        return Identity {
+            app_name: msix_display(&family),
+            identity_key: format!("msix:{family}"),
+            publisher: None,
+            confidence: Confidence::Exact,
+        };
+    }
+
+    let Some(path) = path else {
+        // Bez cesty (chráněný proces) — jen provisional dle jména.
+        return Identity {
+            identity_key: format!("name:{}", image_name.to_ascii_lowercase()),
+            app_name: image_name.trim_end_matches(".exe").to_string(),
+            publisher: None,
+            confidence: Confidence::Guess,
+        };
+    };
+
+    // Podpis (potřebný pro krok 2 i 4) — zjistíme jednou.
+    let signer = win_sys::trust::signer_subject(std::path::Path::new(path));
+
+    // 2. Windows OS — cesta pod %SystemRoot% a Microsoft podpis.
+    //    Edge/Office jsou v Program Files (mimo SystemRoot) → sem nespadnou.
+    if under_system_root(path) {
+        let is_ms = signer
+            .subject
+            .as_deref()
+            .map(|s| s.contains("Microsoft"))
+            .unwrap_or(signer.valid || signer.subject.is_none());
+        if is_ms {
+            return Identity {
+                identity_key: "os:windows".into(),
+                app_name: "Windows".into(),
+                publisher: Some("Microsoft Windows".into()),
+                confidence: Confidence::Exact,
+            };
+        }
+    }
+
+    // 3. Uninstall — nejdelší InstallLocation, který je prefixem cesty.
+    let path_lc = path.to_ascii_lowercase();
+    if let Some((_, name)) = tables
+        .uninstall
+        .iter()
+        .find(|(loc, _)| path_lc.starts_with(loc.as_str()))
+    {
+        return Identity {
+            identity_key: format!("app:{}", name.to_ascii_lowercase()),
+            app_name: name.clone(),
+            publisher: signer.subject.clone(),
+            confidence: Confidence::Exact,
+        };
+    }
+
+    // 4. Podpis — subject CN + ProductName z VERSIONINFO.
+    if let Some(subject) = signer.subject.clone() {
+        let ver = win_sys::verinfo::version_strings(path);
+        let app_name = ver
+            .product_name
+            .clone()
+            .unwrap_or_else(|| clean_subject(&subject));
+        return Identity {
+            identity_key: format!("sig:{}", subject.to_ascii_lowercase()),
+            app_name,
+            publisher: Some(subject),
+            confidence: Confidence::Exact,
+        };
+    }
+
+    // 5. Fallback — adresář binárky (nespolehlivé, confidence guess).
+    let dir = parent_dir(path);
+    let app_name = std::path::Path::new(&dir)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(image_name)
+        .to_string();
+    Identity {
+        identity_key: format!("path:{}", dir.to_ascii_lowercase()),
+        app_name,
+        publisher: None,
+        confidence: Confidence::Guess,
+    }
+}
+
+/// Zpřehlední MSIX PackageFamilyName na čitelné jméno (část před `_`).
+fn msix_display(family: &str) -> String {
+    family.split('_').next().unwrap_or(family).to_string()
+}
+
+/// Odstraní právní přípony ze subject CN pro hezčí app_name.
+fn clean_subject(subject: &str) -> String {
+    subject
+        .trim_end_matches(", Inc.")
+        .trim_end_matches(" Inc.")
+        .trim_end_matches(", LLC")
+        .trim_end_matches(" LLC")
+        .trim_end_matches(" Corporation")
+        .trim()
+        .to_string()
+}
