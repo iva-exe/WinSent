@@ -21,6 +21,9 @@ pub struct ProcRow {
     /// kumulativních čítačů mezi vzorky.
     pub disk_r_bps: u64,
     pub disk_w_bps: u64,
+    /// Využití GPU procesem v % (PDH GPU Engine, součet přes enginy).
+    /// Jako Správce úloh; 0 když PDH counter není.
+    pub gpu_pct: f32,
     /// Identita aplikace, pod kterou proces patří (v2, SPEC kap. 4).
     pub identity_key: String,
     /// Zobrazované jméno aplikace (např. „Google Chrome“, „Windows“).

@@ -74,6 +74,13 @@ fn main() {
             p.name
         );
     }
+    // Top 8 podle GPU % (per-proces, PDH GPU Engine).
+    let mut by_gpu = procs.clone();
+    by_gpu.sort_by(|a, b| b.gpu_pct.total_cmp(&a.gpu_pct));
+    println!("--- GPU per proces (top 8) ---");
+    for p in by_gpu.iter().take(8) {
+        println!("  GPU {:5.1} %  {:>7}  {}", p.gpu_pct, p.pid, p.name);
+    }
     // Seskupení podle aplikace (jako v UI stromu).
     use std::collections::BTreeMap;
     let mut by_app: BTreeMap<String, (usize, f32)> = BTreeMap::new();

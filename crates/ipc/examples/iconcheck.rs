@@ -15,14 +15,22 @@ fn main() {
             Ok(Some(ic)) => {
                 ok += 1;
                 if ok <= 8 {
-                    println!("IKONA {}x{}  {}  ({})", ic.w, ic.h, p.app_name, p.identity_key);
+                    println!(
+                        "IKONA {}x{}  {}  ({})",
+                        ic.w, ic.h, p.app_name, p.identity_key
+                    );
                 }
             }
             Ok(None) => {}
-            Err(e) => { eprintln!("chyba: {e}"); return; }
+            Err(e) => {
+                eprintln!("chyba: {e}");
+                return;
+            }
         }
         tried += 1;
-        if tried >= 40 { break; }
+        if tried >= 40 {
+            break;
+        }
     }
     println!("--- ikon získáno: {ok} z {tried} unikátních klíčů ---");
 }

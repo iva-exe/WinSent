@@ -253,6 +253,7 @@
 			ws_bytes: p.ws_bytes,
 			threads: p.threads ?? null,
 			disk_bps: (p.disk_r_bps ?? 0) + (p.disk_w_bps ?? 0),
+			gpu_pct: p.gpu_pct ?? 0,
 			sys_pct: sysLoad([p.cpu_pct, total > 0 ? (p.ws_bytes / total) * 100 : null]),
 			// Identita aplikace (v2). Historie ji nemá → fallback na jméno.
 			identity_key: p.identity_key ?? `name:${p.name}`,
@@ -290,6 +291,7 @@
 					cpu_pct: 0,
 					ws_bytes: 0,
 					disk_bps: 0,
+					gpu_pct: 0,
 					sys_pct: 0
 				};
 				map.set(p.identity_key, g);
@@ -298,6 +300,7 @@
 			g.cpu_pct += p.cpu_pct;
 			g.ws_bytes += p.ws_bytes;
 			g.disk_bps += p.disk_bps;
+			g.gpu_pct += p.gpu_pct;
 			if (protRank(p.protection) < protRank(g.protection)) g.protection = p.protection;
 			if (p.confidence === 'guess') g.confidence = 'guess';
 		}
@@ -892,16 +895,19 @@
 		<div class="table-wrap">
 			<table>
 				<!-- Pevné šířky sloupců — hodnoty se neposouvají podle textu. -->
+				<!-- name pevná, vydavatel jediný pružný (flex) → přisedne
+				     blíž k názvu a má prostor i pro delší podpisy. -->
 				<colgroup>
 					<col style="width: 26px" />
+					<col style="width: 240px" />
 					<col />
-					<col style="width: 180px" />
-					<col style="width: 74px" />
-					<col style="width: 74px" />
-					<col style="width: 74px" />
-					<col style="width: 100px" />
-					<col style="width: 104px" />
-					<col style="width: 72px" />
+					<col style="width: 66px" />
+					<col style="width: 62px" />
+					<col style="width: 62px" />
+					<col style="width: 62px" />
+					<col style="width: 92px" />
+					<col style="width: 96px" />
+					<col style="width: 62px" />
 				</colgroup>
 				<thead>
 					<tr>
@@ -918,6 +924,9 @@
 						</th>
 						<th class="t-num" onclick={() => setSort('cpu_pct')}>
 							CPU {#if sortKey === 'cpu_pct'}{arrow}{/if}
+						</th>
+						<th class="t-num" onclick={() => setSort('gpu_pct')} title="Využití GPU procesem (PDH GPU Engine)">
+							GPU {#if sortKey === 'gpu_pct'}{arrow}{/if}
 						</th>
 						<th class="t-num" onclick={() => setSort('ws_bytes')}>
 							Paměť {#if sortKey === 'ws_bytes'}{arrow}{/if}
@@ -970,6 +979,7 @@
 								<td class="t-num value-mono">{single ? g.children[0].pid : ''}</td>
 								<td class="t-num value-mono">{g.sys_pct.toFixed(1)} %</td>
 								<td class="t-num value-mono">{g.cpu_pct.toFixed(1)} %</td>
+								<td class="t-num value-mono">{g.gpu_pct > 0.05 ? `${g.gpu_pct.toFixed(1)} %` : '—'}</td>
 								<td class="t-num value-mono">{fmtMem(g.ws_bytes)}</td>
 								<td class="t-num value-mono">{g.disk_bps > 0 ? fmtBps(g.disk_bps) : '—'}</td>
 								<td class="t-num value-mono">{single ? (g.children[0].threads ?? '—') : ''}</td>
@@ -983,6 +993,7 @@
 										<td class="t-num value-mono">{p.pid}</td>
 										<td class="t-num value-mono">{p.sys_pct.toFixed(1)} %</td>
 										<td class="t-num value-mono">{p.cpu_pct.toFixed(1)} %</td>
+										<td class="t-num value-mono">{p.gpu_pct > 0.05 ? `${p.gpu_pct.toFixed(1)} %` : '—'}</td>
 										<td class="t-num value-mono">{fmtMem(p.ws_bytes)}</td>
 										<td class="t-num value-mono">{p.disk_bps > 0 ? fmtBps(p.disk_bps) : '—'}</td>
 										<td class="t-num value-mono">{p.threads ?? '—'}</td>
@@ -1026,6 +1037,7 @@
 								<td class="t-num value-mono">{p.pid}</td>
 								<td class="t-num value-mono">{p.sys_pct.toFixed(1)} %</td>
 								<td class="t-num value-mono">{p.cpu_pct.toFixed(1)} %</td>
+								<td class="t-num value-mono">{p.gpu_pct > 0.05 ? `${p.gpu_pct.toFixed(1)} %` : '—'}</td>
 								<td class="t-num value-mono">{fmtMem(p.ws_bytes)}</td>
 								<td class="t-num value-mono">{p.disk_bps > 0 ? fmtBps(p.disk_bps) : '—'}</td>
 								<td class="t-num value-mono">{p.threads ?? '—'}</td>
@@ -1398,6 +1410,14 @@
 		flex-shrink: 0;
 		object-fit: contain;
 		image-rendering: -webkit-optimize-contrast;
+	}
+	/* Řádek aplikace (jen seskupený) — o něco větší ikona i název. */
+	.grp .app-icon {
+		width: 22px;
+		height: 22px;
+	}
+	.grp .app-name {
+		font-size: 1.02rem;
 	}
 	.app-icon.placeholder {
 		border-radius: 3px;

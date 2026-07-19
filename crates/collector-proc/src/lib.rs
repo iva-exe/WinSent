@@ -42,6 +42,8 @@ pub struct State {
     /// Otevřené fyzické disky + minulé čítače (pro delty).
     disks: Vec<win_sys::disk::Disk>,
     prev_disks: Vec<win_sys::disk::DiskCounters>,
+    /// Per-proces GPU přes PDH (SPEC kap. 3.1); None = counter není.
+    gpu_proc: Option<win_sys::gpuproc::GpuPerProc>,
     /// Statické info komponent — zjištěno jednou při init.
     statics: StaticInfo,
     /// Engine identity aplikací (v2, SPEC kap. 4) — cache + background.
@@ -120,6 +122,7 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
         gpu,
         disks,
         prev_disks,
+        gpu_proc: win_sys::gpuproc::GpuPerProc::init(),
         statics,
         identity: identity::Engine::new(identity::load_tables()),
         n_cpus,
@@ -133,6 +136,13 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
     // Delta stěny v jednotkách 100 ns; klamp proti dělení nulou.
     let wall_100ns = (now.duration_since(state.prev_tick).as_nanos() / 100).max(1) as f64;
     state.prev_tick = now;
+
+    // Per-proces GPU % (PDH GPU Engine, součet přes enginy daného PID).
+    let gpu_by_pid = state
+        .gpu_proc
+        .as_mut()
+        .map(|g| g.sample())
+        .unwrap_or_default();
 
     // Delty per proces (CPU %, disk B/s); nový proces (nebo recyklovaný
     // PID) začíná od nuly — bez minulého vzorku deltu nemá.
@@ -178,6 +188,7 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
             session_id: p.session_id,
             disk_r_bps,
             disk_w_bps,
+            gpu_pct: gpu_by_pid.get(&p.pid).copied().unwrap_or(0.0).min(100.0),
             identity_key: id.identity_key,
             app_name: id.app_name,
             publisher: id.publisher,
