@@ -8,6 +8,7 @@ pub mod caps;
 pub mod cpuinfo;
 pub mod disk;
 pub mod gpu;
+pub mod icon;
 pub mod net;
 pub mod proc;
 pub mod procinfo;

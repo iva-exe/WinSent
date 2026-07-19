@@ -6,7 +6,16 @@
 	import LiveChart from '$lib/LiveChart.svelte';
 	import Sparkline from '$lib/Sparkline.svelte';
 	import Num from '$lib/Num.svelte';
-	import { Cpu, MemoryStick, Zap, ArrowDown, ArrowUp, HardDrive } from 'lucide-svelte';
+	import {
+		Cpu,
+		MemoryStick,
+		Zap,
+		ArrowDown,
+		ArrowUp,
+		HardDrive,
+		Lock,
+		ChevronRight
+	} from 'lucide-svelte';
 
 	// Buffery na celou dostupnou historii (1 h retence surových vzorků).
 	const CAP = 3600;
@@ -222,6 +231,8 @@
 	let sortDir = $state(-1);
 	// Filtr (v1 DoD: řazení + filtr) — jméno nebo PID.
 	let filter = $state('');
+	// Pohled: seskupené aplikace (default, v2) / plochý seznam procesů.
+	let viewMode = $state('apps');
 	let lastOrderAt = 0;
 
 	const visibleRows = $derived.by(() => {
@@ -463,6 +474,49 @@
 			procs = [];
 		}
 		if (!histProcs) refreshTable();
+		refreshIcons();
+	}
+
+	// ── Ikony aplikací (v2) ──
+	// Cache identity_key → data URL. Ikonu extrahuje služba z .exe na
+	// background vlákně; UI si ji vyžádá jednou a vykreslí na canvas.
+	let iconUrls = $state({});
+	const iconState = new Map(); // key → 'pending' | 'done' | počet neúspěchů
+
+	function rgbaToUrl(icon) {
+		const canvas = document.createElement('canvas');
+		canvas.width = icon.w;
+		canvas.height = icon.h;
+		const ctx = canvas.getContext('2d');
+		const img = ctx.createImageData(icon.w, icon.h);
+		img.data.set(icon.rgba);
+		ctx.putImageData(img, 0, 0);
+		return canvas.toDataURL('image/png');
+	}
+
+	async function fetchIcon(key) {
+		const st = iconState.get(key);
+		if (st === 'pending' || st === 'done') return;
+		if (typeof st === 'number' && st >= 6) return; // vzdáno po 6 pokusech
+		iconState.set(key, 'pending');
+		try {
+			const icon = await invoke('query_icon', { identityKey: key });
+			if (icon) {
+				iconUrls = { ...iconUrls, [key]: rgbaToUrl(icon) };
+				iconState.set(key, 'done');
+			} else {
+				// worker ji ještě nedodělal → povolit další pokus
+				iconState.set(key, (typeof st === 'number' ? st : 0) + 1);
+			}
+		} catch {
+			iconState.set(key, (typeof st === 'number' ? st : 0) + 1);
+		}
+	}
+
+	function refreshIcons() {
+		const keys = new Set();
+		for (const p of procs) keys.add(p.identity_key ?? `name:${p.name}`);
+		for (const k of keys) if (!iconUrls[k]) fetchIcon(k);
 	}
 
 	function fmtMem(bytes) {
@@ -824,6 +878,15 @@
 					placeholder="filtr (název / PID)…"
 					bind:value={filter}
 				/>
+				<!-- Přepínač: seskupené aplikace / plochý seznam procesů -->
+				<div class="seg">
+					<button class:active={viewMode === 'apps'} onclick={() => (viewMode = 'apps')}>
+						Aplikace
+					</button>
+					<button class:active={viewMode === 'procs'} onclick={() => (viewMode = 'procs')}>
+						Procesy
+					</button>
+				</div>
 			</div>
 		</header>
 		<div class="table-wrap">
@@ -832,9 +895,10 @@
 				<colgroup>
 					<col style="width: 26px" />
 					<col />
+					<col style="width: 180px" />
 					<col style="width: 74px" />
-					<col style="width: 84px" />
-					<col style="width: 84px" />
+					<col style="width: 74px" />
+					<col style="width: 74px" />
 					<col style="width: 100px" />
 					<col style="width: 104px" />
 					<col style="width: 72px" />
@@ -843,8 +907,9 @@
 					<tr>
 						<th class="t-dot" onclick={() => setSort('sys_pct')} title="Zátěž systému"></th>
 						<th class="t-name" onclick={() => setSort('name')}>
-							Aplikace / proces {#if sortKey === 'name'}{arrow}{/if}
+							{viewMode === 'apps' ? 'Aplikace' : 'Proces'} {#if sortKey === 'name'}{arrow}{/if}
 						</th>
+						<th class="t-pub">Vydavatel</th>
 						<th class="t-num" onclick={() => setSort('pid')}>
 							PID {#if sortKey === 'pid'}{arrow}{/if}
 						</th>
@@ -870,54 +935,109 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each groups as g (g.key)}
-						{@const single = g.children.length === 1}
-						{@const open = expanded.has(g.key)}
-						<tr class="grp" class:clickable={!single} onclick={() => !single && toggleGroup(g.key)}>
-							<td class="t-dot">
-								<span
-									class="load-dot"
-									style:background={colorForLoad(g.sys_pct)}
-									style:box-shadow={`0 0 5px ${colorForLoad(g.sys_pct)}`}
-								></span>
-							</td>
-							<td class="t-name">
-								<span class="tw">
-									{#if !single}<span class="caret" class:open>▸</span>{/if}
-									<span class="app-name" class:guess={g.confidence === 'guess'}>{g.app_name}</span>
-									{#if g.protection === 'critical'}<span class="lock" title="Kritický systémový proces — nelze ukončit">🔒</span>{/if}
-									{#if !single}<span class="count label-tech">{g.children.length}×</span>{/if}
-									{#if g.publisher}<span class="pub label-tech" title={g.publisher}>{g.publisher}</span>{/if}
-								</span>
-							</td>
-							<td class="t-num value-mono">{single ? g.children[0].pid : ''}</td>
-							<td class="t-num value-mono">{g.sys_pct.toFixed(1)} %</td>
-							<td class="t-num value-mono">{g.cpu_pct.toFixed(1)} %</td>
-							<td class="t-num value-mono">{fmtMem(g.ws_bytes)}</td>
-							<td class="t-num value-mono">{g.disk_bps > 0 ? fmtBps(g.disk_bps) : '—'}</td>
-							<td class="t-num value-mono">{single ? (g.children[0].threads ?? '—') : ''}</td>
-						</tr>
-						{#if !single && open}
-							{#each g.children as p (p.pid)}
-								<tr class="child" class:crit={p.protection === 'critical'}>
-									<td class="t-dot"></td>
-									<td class="t-name child-name">{p.name}</td>
-									<td class="t-num value-mono">{p.pid}</td>
-									<td class="t-num value-mono">{p.sys_pct.toFixed(1)} %</td>
-									<td class="t-num value-mono">{p.cpu_pct.toFixed(1)} %</td>
-									<td class="t-num value-mono">{fmtMem(p.ws_bytes)}</td>
-									<td class="t-num value-mono">{p.disk_bps > 0 ? fmtBps(p.disk_bps) : '—'}</td>
-									<td class="t-num value-mono">{p.threads ?? '—'}</td>
-								</tr>
-							{/each}
-						{/if}
+					{#if viewMode === 'apps'}
+						{#each groups as g (g.key)}
+							{@const single = g.children.length === 1}
+							{@const open = expanded.has(g.key)}
+							<tr class="grp" class:clickable={!single} onclick={() => !single && toggleGroup(g.key)}>
+								<td class="t-dot">
+									<span
+										class="load-dot"
+										style:background={colorForLoad(g.sys_pct)}
+										style:box-shadow={`0 0 5px ${colorForLoad(g.sys_pct)}`}
+									></span>
+								</td>
+								<td class="t-name">
+									<span class="tw">
+										{#if iconUrls[g.key]}
+											<img class="app-icon" src={iconUrls[g.key]} alt="" />
+										{:else}
+											<span class="app-icon placeholder"></span>
+										{/if}
+										<span class="app-name" class:guess={g.confidence === 'guess'}>{g.app_name}</span>
+										{#if g.protection === 'critical'}
+											<Lock class="lock-ico" size={13} strokeWidth={2} />
+										{/if}
+										{#if !single}
+											<span class="count label-tech">{g.children.length}×</span>
+											<span class="caret" class:open><ChevronRight size={13} strokeWidth={2.25} /></span>
+										{/if}
+									</span>
+								</td>
+								<td class="t-pub" title={g.publisher ?? ''}>
+									{#if g.publisher}<span class="pub label-tech">{g.publisher}</span>{/if}
+								</td>
+								<td class="t-num value-mono">{single ? g.children[0].pid : ''}</td>
+								<td class="t-num value-mono">{g.sys_pct.toFixed(1)} %</td>
+								<td class="t-num value-mono">{g.cpu_pct.toFixed(1)} %</td>
+								<td class="t-num value-mono">{fmtMem(g.ws_bytes)}</td>
+								<td class="t-num value-mono">{g.disk_bps > 0 ? fmtBps(g.disk_bps) : '—'}</td>
+								<td class="t-num value-mono">{single ? (g.children[0].threads ?? '—') : ''}</td>
+							</tr>
+							{#if !single && open}
+								{#each g.children as p (p.pid)}
+									<tr class="child" class:crit={p.protection === 'critical'}>
+										<td class="t-dot"></td>
+										<td class="t-name child-name">{p.name}</td>
+										<td class="t-pub"></td>
+										<td class="t-num value-mono">{p.pid}</td>
+										<td class="t-num value-mono">{p.sys_pct.toFixed(1)} %</td>
+										<td class="t-num value-mono">{p.cpu_pct.toFixed(1)} %</td>
+										<td class="t-num value-mono">{fmtMem(p.ws_bytes)}</td>
+										<td class="t-num value-mono">{p.disk_bps > 0 ? fmtBps(p.disk_bps) : '—'}</td>
+										<td class="t-num value-mono">{p.threads ?? '—'}</td>
+									</tr>
+								{/each}
+							{/if}
+						{:else}
+							<tr>
+								<td colspan="10" class="empty label-tech">
+									{daemon.alive ? 'čekám na první vzorek…' : 'služba neběží'}
+								</td>
+							</tr>
+						{/each}
 					{:else}
-						<tr>
-							<td colspan="8" class="empty label-tech">
-								{daemon.alive ? 'čekám na první vzorek…' : 'služba neběží'}
-							</td>
-						</tr>
-					{/each}
+						<!-- Plochý seznam procesů (původní view) -->
+						{#each visibleRows as p (p.pid)}
+							<tr>
+								<td class="t-dot">
+									<span
+										class="load-dot"
+										style:background={colorForLoad(p.sys_pct)}
+										style:box-shadow={`0 0 5px ${colorForLoad(p.sys_pct)}`}
+									></span>
+								</td>
+								<td class="t-name">
+									<span class="tw">
+										{#if iconUrls[p.identity_key]}
+											<img class="app-icon" src={iconUrls[p.identity_key]} alt="" />
+										{:else}
+											<span class="app-icon placeholder"></span>
+										{/if}
+										<span class="app-name">{p.name}</span>
+										{#if p.protection === 'critical'}
+											<Lock class="lock-ico" size={13} strokeWidth={2} />
+										{/if}
+									</span>
+								</td>
+								<td class="t-pub" title={p.publisher ?? ''}>
+									{#if p.publisher}<span class="pub label-tech">{p.publisher}</span>{/if}
+								</td>
+								<td class="t-num value-mono">{p.pid}</td>
+								<td class="t-num value-mono">{p.sys_pct.toFixed(1)} %</td>
+								<td class="t-num value-mono">{p.cpu_pct.toFixed(1)} %</td>
+								<td class="t-num value-mono">{fmtMem(p.ws_bytes)}</td>
+								<td class="t-num value-mono">{p.disk_bps > 0 ? fmtBps(p.disk_bps) : '—'}</td>
+								<td class="t-num value-mono">{p.threads ?? '—'}</td>
+							</tr>
+						{:else}
+							<tr>
+								<td colspan="10" class="empty label-tech">
+									{daemon.alive ? 'čekám na první vzorek…' : 'služba neběží'}
+								</td>
+							</tr>
+						{/each}
+					{/if}
 				</tbody>
 			</table>
 		</div>
@@ -1260,15 +1380,28 @@
 		gap: 0.45rem;
 		min-width: 0;
 	}
+	/* Caret až za názvem — rozbalovací šipka aplikace. */
 	.caret {
-		display: inline-block;
-		width: 10px;
+		display: inline-flex;
+		align-items: center;
 		color: var(--text-faint);
 		transition: transform 130ms ease-out;
-		font-size: 0.7rem;
+		flex-shrink: 0;
 	}
 	.caret.open {
 		transform: rotate(90deg);
+	}
+	/* Ikona aplikace extrahovaná z .exe. */
+	.app-icon {
+		width: 16px;
+		height: 16px;
+		flex-shrink: 0;
+		object-fit: contain;
+		image-rendering: -webkit-optimize-contrast;
+	}
+	.app-icon.placeholder {
+		border-radius: 3px;
+		background: var(--surface-hover);
 	}
 	.app-name {
 		font-weight: 500;
@@ -1284,19 +1417,22 @@
 		color: var(--text-faint);
 		flex-shrink: 0;
 	}
+	/* Vydavatel — vlastní sloupec, zarovnaný napříč řádky. */
+	.t-pub {
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
 	.pub {
 		color: var(--text-faint);
 		text-transform: none;
 		letter-spacing: 0.01em;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		opacity: 0.75;
+		opacity: 0.8;
 	}
-	.lock {
-		font-size: 0.7rem;
-		filter: grayscale(1);
-		opacity: 0.7;
+	/* Zámek kritického procesu — Lucide ikona, žlutě. */
+	:global(.lock-ico) {
+		color: var(--warn);
+		flex-shrink: 0;
 	}
 	/* Kritické procesy: šedě (SPEC 9.4). */
 	.grp .app-name,

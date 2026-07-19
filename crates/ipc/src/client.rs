@@ -175,6 +175,18 @@ pub fn query_core_history(from: i64, to: i64) -> Result<Vec<(i64, u32, f32)>, Er
     }
 }
 
+/// Ikona aplikace podle identity_key (None = ikona není / ještě není hotová).
+pub fn query_icon(identity_key: String) -> Result<Option<core_types::proc::IconData>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryIcon { identity_key })? {
+        Response::Icon(icon) => Ok(icon),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Historie disků [from, to].
 pub fn query_disk_history(from: i64, to: i64) -> Result<Vec<(i64, u32, u64, u64)>, Error> {
     let mut stream = connect()?;

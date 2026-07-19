@@ -49,6 +49,15 @@ pub enum Protection {
     User,
 }
 
+/// Ikona aplikace: syrové RGBA pixely (top-down), UI je vykreslí na
+/// canvas → data URL. Přenáší se jen jednou na identity_key (cache v UI).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IconData {
+    pub w: u32,
+    pub h: u32,
+    pub rgba: Vec<u8>,
+}
+
 /// Jistota identity (SPEC kap. 4.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]

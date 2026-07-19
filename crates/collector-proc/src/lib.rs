@@ -51,6 +51,11 @@ pub struct State {
 }
 
 /// Statické informace o komponentách (pro QuerySysInfo).
+/// Sdílená cache ikon aplikací (pro IPC handler ve službě).
+pub fn icon_store(state: &State) -> identity::IconStore {
+    state.identity.icons()
+}
+
 pub fn static_info(state: &State) -> StaticInfo {
     state.statics.clone()
 }

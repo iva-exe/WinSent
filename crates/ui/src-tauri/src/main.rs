@@ -98,6 +98,12 @@ fn query_core_history(from: i64, to: i64) -> Result<Vec<(i64, u32, f32)>, String
     ipc::client::query_core_history(from, to).map_err(|e| e.to_string())
 }
 
+/// Ikona aplikace podle identity_key (RGBA pixely; UI je vykreslí na canvas).
+#[tauri::command]
+fn query_icon(identity_key: String) -> Result<Option<core_types::proc::IconData>, String> {
+    ipc::client::query_icon(identity_key).map_err(|e| e.to_string())
+}
+
 /// Vlastní spotřeba nástroje pro dlaždici v Settings (SPEC kap. 2.3).
 #[derive(Debug, Serialize)]
 struct SelfUsageDto {
@@ -175,7 +181,8 @@ fn main() {
             query_sys_info,
             query_detail_at,
             query_disk_history,
-            query_core_history
+            query_core_history,
+            query_icon
         ])
         .setup(|app| {
             setup_tray(app)?;

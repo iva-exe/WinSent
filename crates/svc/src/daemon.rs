@@ -65,6 +65,8 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     // hlavním spojením, dokud ho máme.
     let sampler_state = collector_proc::init(&cfg.read().expect("config lock poisoned"))?;
     let statics = collector_proc::static_info(&sampler_state);
+    // Sdílená cache ikon aplikací — plní identity worker, čte IPC handler.
+    let icon_store = collector_proc::icon_store(&sampler_state);
     if let Err(e) = store::samples::upsert_disk_names(&conn, &statics.disks) {
         tracing::warn!(error = %e, "zápis názvů disků selhal");
     }
@@ -132,8 +134,20 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         // obslužných vláknech pipe.
         let read_conn = std::sync::Mutex::new(store::open_readonly(&db_path)?);
         let statics = statics.clone();
+        let icons = icon_store;
         let handler: ipc::server::Handler = Arc::new(move |req| match req {
             Request::QuerySysInfo => Response::SysInfo(statics.clone()),
+            Request::QueryIcon { identity_key } => {
+                // Ikona z cache identity workeru; když ještě není hotová,
+                // vrátí None a UI si zkusí znovu (worker ji doplní).
+                let ico = icons
+                    .lock()
+                    .expect("icon cache lock")
+                    .get(&identity_key)
+                    .cloned()
+                    .flatten();
+                Response::Icon(ico)
+            }
             Request::QueryDetailAt { ts } => {
                 let conn = read_conn.lock().expect("read conn lock poisoned");
                 match store::history::detail_at(&conn, ts) {

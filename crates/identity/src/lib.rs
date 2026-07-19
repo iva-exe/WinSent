@@ -10,10 +10,15 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 
-use core_types::proc::{Confidence, Protection};
+use core_types::proc::{Confidence, IconData, Protection};
 
 pub mod cascade;
+
+/// Sdílená cache ikon aplikací: identity_key → ikona (None = zkoušeno,
+/// ikona není). Plní ji identity worker, čte IPC handler ve službě.
+pub type IconStore = Arc<Mutex<HashMap<String, Option<IconData>>>>;
 
 /// Hotová identita jednoho procesu.
 #[derive(Debug, Clone)]
@@ -103,6 +108,7 @@ pub struct Engine {
     rx_done: Receiver<Done>,
     pending: HashSet<u32>,
     sig_cache_len: usize,
+    icons: IconStore,
 }
 
 impl Engine {
@@ -110,10 +116,12 @@ impl Engine {
     pub fn new(tables: Tables) -> Engine {
         let (tx, rx) = std::sync::mpsc::channel::<Job>();
         let (tx_done, rx_done) = std::sync::mpsc::channel::<Done>();
+        let icons: IconStore = Arc::new(Mutex::new(HashMap::new()));
 
+        let icons_worker = Arc::clone(&icons);
         std::thread::Builder::new()
             .name("identity".into())
-            .spawn(move || worker(rx, tx_done, tables))
+            .spawn(move || worker(rx, tx_done, tables, icons_worker))
             .expect("spuštění identity vlákna");
 
         Engine {
@@ -123,7 +131,13 @@ impl Engine {
             rx_done,
             pending: HashSet::new(),
             sig_cache_len: 0,
+            icons,
         }
+    }
+
+    /// Klon sdílené cache ikon (pro IPC handler ve službě).
+    pub fn icons(&self) -> IconStore {
+        Arc::clone(&self.icons)
     }
 
     /// Vezme hotové výsledky z workeru.
@@ -171,7 +185,7 @@ impl Engine {
 
 /// Background worker: fetch cesty, kaskáda, cache podpisů. Jediné vlákno,
 /// takže cache nepotřebuje zámky.
-fn worker(rx: Receiver<Job>, tx_done: Sender<Done>, tables: Tables) {
+fn worker(rx: Receiver<Job>, tx_done: Sender<Done>, tables: Tables, icons: IconStore) {
     let _ = win_sys::threading::set_current_thread_below_normal();
     let mut sig_cache: HashMap<SigKey, Identity> = HashMap::new();
 
@@ -192,6 +206,27 @@ fn worker(rx: Receiver<Job>, tx_done: Sender<Done>, tables: Tables) {
             }
             None => cascade::resolve(job.pid, &job.image_name, path.as_deref(), &tables),
         };
+
+        // Ikona aplikace — jednou na identity_key (drahé GDI, tady na
+        // BELOW_NORMAL vlákně). Do cache i None, ať se nezkouší dokola.
+        let need_icon = {
+            let map = icons.lock().expect("icon cache lock");
+            !map.contains_key(&identity.identity_key)
+        };
+        if need_icon {
+            let ico = path
+                .as_deref()
+                .and_then(win_sys::icon::extract)
+                .map(|i| IconData {
+                    w: i.w,
+                    h: i.h,
+                    rgba: i.rgba,
+                });
+            icons
+                .lock()
+                .expect("icon cache lock")
+                .insert(identity.identity_key.clone(), ico);
+        }
 
         let protection = protection(job.pid, &job.image_name);
         if tx_done
