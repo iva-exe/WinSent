@@ -43,7 +43,11 @@ pub struct State {
     disks: Vec<win_sys::disk::Disk>,
     prev_disks: Vec<win_sys::disk::DiskCounters>,
     /// Per-proces GPU přes PDH (SPEC kap. 3.1); None = counter není.
+    /// Vendor-neutrální — slouží i jako fallback celkového GPU % a VRAM
+    /// na strojích bez NVML (AMD, Intel).
     gpu_proc: Option<win_sys::gpuproc::GpuPerProc>,
+    /// Celková VRAM z registru (fallback pro detail bez NVML).
+    gpu_vram_total_mb: Option<u64>,
     /// Statické info komponent — zjištěno jednou při init.
     statics: StaticInfo,
     /// Engine identity aplikací (v2, SPEC kap. 4) — cache + background.
@@ -69,8 +73,10 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
         .unwrap_or(1) as f64;
     let gpu = win_sys::gpu::Nvml::init();
     if gpu.is_none() {
-        tracing::info!("NVML nedostupné — GPU metrika bude hlášena jako nedostupná");
+        tracing::info!("NVML nedostupné — GPU pojede z PDH/registry fallbacku (vendor-neutrální)");
     }
+    // Registry fallback: název + celková VRAM pro jakéhokoliv vendora.
+    let gpu_basic = win_sys::gpubasic::detect();
 
     // Disky: otevřít jednou, čítače se pak čtou 1×/s.
     let disks = win_sys::disk::open_disks();
@@ -102,7 +108,10 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
             })
             .collect(),
         ram_slots,
-        gpu_name: gpu.as_ref().and_then(|g| g.name()),
+        gpu_name: gpu
+            .as_ref()
+            .and_then(|g| g.name())
+            .or_else(|| gpu_basic.name.clone()),
         disks: disks
             .iter()
             .map(|d| DiskDesc {
@@ -123,6 +132,7 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
         disks,
         prev_disks,
         gpu_proc: win_sys::gpuproc::GpuPerProc::init(),
+        gpu_vram_total_mb: gpu_basic.vram_total_mb,
         statics,
         identity: identity::Engine::new(identity::load_tables()),
         n_cpus,
@@ -137,12 +147,13 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
     let wall_100ns = (now.duration_since(state.prev_tick).as_nanos() / 100).max(1) as f64;
     state.prev_tick = now;
 
-    // Per-proces GPU % (PDH GPU Engine, součet přes enginy daného PID).
-    let gpu_by_pid = state
+    // GPU přes PDH (vendor-neutrální): per-PID % + celkové % + VRAM.
+    let gpu_pdh = state
         .gpu_proc
         .as_mut()
         .map(|g| g.sample())
         .unwrap_or_default();
+    let gpu_by_pid = &gpu_pdh.per_pid;
 
     // Delty per proces (CPU %, disk B/s); nový proces (nebo recyklovaný
     // PID) začíná od nuly — bez minulého vzorku deltu nemá.
@@ -265,16 +276,31 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
     let threads_total: u32 = raw.iter().map(|p| p.threads).sum();
     let handles_total: u32 = raw.iter().map(|p| p.handles).sum();
 
-    let gpu_detail = state.gpu.as_ref().map(|g| {
-        let d = g.details();
-        core_types::proc::GpuInfo {
-            temp_c: d.temp_c,
-            vram_used_mb: d.vram_used_mb,
-            vram_total_mb: d.vram_total_mb,
-            power_w: d.power_w,
-            clock_mhz: d.clock_mhz,
+    // GPU detail: NVML dává vše (teplota, spotřeba, takt); bez NVML
+    // (AMD/Intel) poctivý PDH+registry fallback — VRAM ano, senzory „—“
+    // (ADLX/IGCL přijdou dle SPEC 15.2 později).
+    let gpu_detail = match state.gpu.as_ref() {
+        Some(g) => {
+            let d = g.details();
+            Some(core_types::proc::GpuInfo {
+                temp_c: d.temp_c,
+                vram_used_mb: d.vram_used_mb,
+                vram_total_mb: d.vram_total_mb,
+                power_w: d.power_w,
+                clock_mhz: d.clock_mhz,
+            })
         }
-    });
+        None if gpu_pdh.total_pct.is_some() || state.gpu_vram_total_mb.is_some() => {
+            Some(core_types::proc::GpuInfo {
+                temp_c: None,
+                vram_used_mb: gpu_pdh.vram_used_mb,
+                vram_total_mb: state.gpu_vram_total_mb,
+                power_w: None,
+                clock_mhz: None,
+            })
+        }
+        None => None,
+    };
 
     let snapshot = SystemSnapshot {
         cpu_pct: cpu_pct.clamp(0.0, 100.0),
@@ -283,7 +309,13 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
         proc_count: rows.len() as u32,
         net_rx_bps,
         net_tx_bps,
-        gpu_pct: state.gpu.as_ref().and_then(|g| g.utilization_pct()),
+        // Celkové GPU %: NVML, jinak PDH (metodika Správce úloh) —
+        // funguje na NVIDIA, AMD i Intel.
+        gpu_pct: state
+            .gpu
+            .as_ref()
+            .and_then(|g| g.utilization_pct())
+            .or(gpu_pdh.total_pct),
         cores,
         gpu: gpu_detail,
         disks: disk_rates,

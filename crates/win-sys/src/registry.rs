@@ -4,7 +4,7 @@
 use windows::core::HSTRING;
 use windows::Win32::System::Registry::{
     RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, KEY_ENUMERATE_SUB_KEYS,
-    KEY_READ, RRF_RT_REG_SZ,
+    KEY_READ, RRF_RT_ANY, RRF_RT_REG_SZ,
 };
 
 pub use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
@@ -46,6 +46,36 @@ pub fn read_string(root: HKEY, subkey: &str, value: &str) -> Option<String> {
         let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
         let s = String::from_utf16_lossy(&buf[..end]).trim().to_string();
         (!s.is_empty()).then_some(s)
+    }
+}
+
+/// Přečte číselnou hodnotu — REG_QWORD, REG_DWORD i 8bajtový REG_BINARY
+/// (`HardwareInformation.qwMemorySize` je podle vendora cokoliv z toho).
+pub fn read_u64(root: HKEY, subkey: &str, value: &str) -> Option<u64> {
+    let subkey = HSTRING::from(subkey);
+    let value = HSTRING::from(value);
+    let mut buf = [0u8; 8];
+    let mut len = buf.len() as u32;
+    // SAFETY: buffer má pevných 8 B, len říká API skutečnou velikost.
+    unsafe {
+        if RegGetValueW(
+            root,
+            &subkey,
+            &value,
+            RRF_RT_ANY,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut len),
+        )
+        .is_err()
+        {
+            return None;
+        }
+    }
+    match len {
+        4 => Some(u32::from_le_bytes(buf[..4].try_into().ok()?) as u64),
+        8 => Some(u64::from_le_bytes(buf)),
+        _ => None,
     }
 }
 
