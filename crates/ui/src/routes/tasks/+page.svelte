@@ -149,6 +149,8 @@
 					pinnedCores = null;
 				}
 				refreshTable(true);
+				// Ikony i pro identity_key z náhledu historie.
+				refreshIcons();
 			}, 150);
 		});
 	});
@@ -258,7 +260,8 @@
 			// Identita aplikace (v2). Historie ji nemá → fallback na jméno.
 			identity_key: p.identity_key ?? `name:${p.name}`,
 			app_name: p.app_name ?? p.name,
-			publisher: p.publisher ?? null,
+			// '' místo null → řazení podle vydavatele funguje stringově.
+			publisher: p.publisher ?? '',
 			protection: p.protection ?? 'user',
 			confidence: p.confidence ?? 'exact'
 		}));
@@ -354,7 +357,7 @@
 			sortDir = -sortDir;
 		} else {
 			sortKey = key;
-			sortDir = key === 'name' ? 1 : -1;
+			sortDir = key === 'name' || key === 'publisher' ? 1 : -1;
 		}
 		refreshTable(true);
 	}
@@ -519,6 +522,10 @@
 	function refreshIcons() {
 		const keys = new Set();
 		for (const p of procs) keys.add(p.identity_key ?? `name:${p.name}`);
+		// I klíče z náhledu historie — ikony jsou v cache služby.
+		for (const p of histProcs?.rows ?? []) {
+			keys.add(p.identity_key ?? `name:${p.name}`);
+		}
 		for (const k of keys) if (!iconUrls[k]) fetchIcon(k);
 	}
 
@@ -915,7 +922,9 @@
 						<th class="t-name" onclick={() => setSort('name')}>
 							{viewMode === 'apps' ? 'Aplikace' : 'Proces'} {#if sortKey === 'name'}{arrow}{/if}
 						</th>
-						<th class="t-pub">Vydavatel</th>
+						<th class="t-pub" onclick={() => setSort('publisher')}>
+							Vydavatel {#if sortKey === 'publisher'}{arrow}{/if}
+						</th>
 						<th class="t-num" onclick={() => setSort('pid')}>
 							PID {#if sortKey === 'pid'}{arrow}{/if}
 						</th>

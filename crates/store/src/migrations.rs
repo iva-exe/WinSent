@@ -73,6 +73,12 @@ const MIGRATIONS: &[&str] = &[
         disk INTEGER PRIMARY KEY,
         name TEXT NOT NULL
     ) WITHOUT ROWID;",
+    // → verze 5 (v2): identita aplikací i pro historii — bez ní se
+    // list při náhledu minulosti seskupoval jinak než živý (jen podle
+    // jména) a neměl ikony (klíčované identity_key).
+    "ALTER TABLE proc_names ADD COLUMN identity_key TEXT;
+    ALTER TABLE proc_names ADD COLUMN app_name TEXT;
+    ALTER TABLE proc_names ADD COLUMN publisher TEXT;",
 ];
 
 /// Aplikuje všechny dosud neaplikované migrace. Bezpečné volat při

@@ -63,9 +63,12 @@ pub fn insert_tick(
             "INSERT OR REPLACE INTO sample_1s (ts, proc_id, cpu_pm, ws_kb, priv_kb, io_r, io_w)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
-        // Jména pro čtení historie (pid → poslední známé jméno).
+        // Jména + identita pro čtení historie (pid → poslední stav) —
+        // náhled minulosti tak seskupuje a ikonuje stejně jako živý list.
         let mut name_stmt = tx.prepare_cached(
-            "INSERT OR REPLACE INTO proc_names (pid, name, last_ts) VALUES (?1, ?2, ?3)",
+            "INSERT OR REPLACE INTO proc_names
+                 (pid, name, last_ts, identity_key, app_name, publisher)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
         for p in procs {
             stmt.execute(params![
@@ -77,7 +80,14 @@ pub fn insert_tick(
                 p.disk_r_bps as i64,
                 p.disk_w_bps as i64,
             ])?;
-            name_stmt.execute(params![p.pid as i64, p.name, ts])?;
+            name_stmt.execute(params![
+                p.pid as i64,
+                p.name,
+                ts,
+                p.identity_key,
+                p.app_name,
+                p.publisher,
+            ])?;
         }
     }
     tx.commit()

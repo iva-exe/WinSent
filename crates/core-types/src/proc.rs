@@ -178,4 +178,9 @@ pub struct HistProcRow {
     pub ws_bytes: u64,
     pub disk_r_bps: u64,
     pub disk_w_bps: u64,
+    /// Identita aplikace (v2) — náhled minulosti seskupuje a ikonuje
+    /// stejně jako živý list. Prázdné u vzorků před migrací 5.
+    pub identity_key: Option<String>,
+    pub app_name: Option<String>,
+    pub publisher: Option<String>,
 }

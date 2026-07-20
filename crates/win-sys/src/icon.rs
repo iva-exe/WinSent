@@ -12,7 +12,9 @@ use windows::Win32::Graphics::Gdi::{
     DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO, BITMAPINFOHEADER,
     BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
 };
-use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+use windows::Win32::UI::Shell::{
+    ExtractIconExW, SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON,
+};
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
 
 /// Ikona jako RGBA (šířka, výška, bajty top-down RGBA).
@@ -47,6 +49,78 @@ pub fn extract(path: &str) -> Option<IconRgba> {
         let _ = DestroyIcon(info.hIcon);
         result
     }
+}
+
+/// Extrahuje ikonu podle DisplayIcon spec z registru: `cesta[,index]`,
+/// s uvozovkami a env proměnnými (`%SystemRoot%\…`). Fallback zdroj,
+/// když .exe procesu vlastní ikonu nemá (SPEC 5.2 — DisplayIcon).
+pub fn extract_spec(spec: &str) -> Option<IconRgba> {
+    // "cesta,index" — index oddělený poslední čárkou (cesta může mít čárky
+    // jen výjimečně; DisplayIcon formát je takto definovaný).
+    let (raw_path, index) = match spec.rsplit_once(',') {
+        Some((p, idx)) => match idx.trim().parse::<i32>() {
+            Ok(i) => (p, i),
+            Err(_) => (spec, 0),
+        },
+        None => (spec, 0),
+    };
+    let path = expand_env(raw_path.trim().trim_matches('"'));
+    if path.is_empty() {
+        return None;
+    }
+
+    // Bez indexu zkusit shell (umí .ico, .exe, asociace) — pak ExtractIconEx.
+    if index == 0 {
+        if let Some(icon) = extract(&path) {
+            return Some(icon);
+        }
+    }
+    let wide: Vec<u16> = std::path::Path::new(&path)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: HICON z ExtractIconEx vždy uvolníme.
+    unsafe {
+        let mut hicon = HICON::default();
+        let got = ExtractIconExW(PCWSTR(wide.as_ptr()), index, Some(&mut hicon), None, 1);
+        if got == 0 || hicon.is_invalid() {
+            return None;
+        }
+        let result = icon_to_rgba(hicon);
+        let _ = DestroyIcon(hicon);
+        result
+    }
+}
+
+/// Expanze `%NAZEV%` proměnných prostředí v cestě.
+fn expand_env(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut rest = path;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('%') {
+            Some(end) => {
+                let name = &after[..end];
+                match std::env::var(name) {
+                    Ok(val) => out.push_str(&val),
+                    Err(_) => {
+                        out.push('%');
+                        out.push_str(name);
+                        out.push('%');
+                    }
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// SAFETY: `hicon` je platná ikona; HBITMAPy z GetIconInfo uvolníme.

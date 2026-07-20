@@ -48,6 +48,9 @@ pub struct Tables {
     /// (InstallLocation lowercase, název aplikace), seřazené sestupně
     /// dle délky cesty — nejdelší prefix vyhrává (SPEC 4.1 krok 3).
     pub uninstall: Vec<(String, String)>,
+    /// identity_key („app:…“) → DisplayIcon spec z uninstall registru
+    /// („cesta,index“) — fallback, když .exe procesu ikonu nemá.
+    pub icons: HashMap<String, String>,
 }
 
 /// Ochranná třída procesu (win-sys → serializovatelný core-types typ).
@@ -207,25 +210,33 @@ fn worker(rx: Receiver<Job>, tx_done: Sender<Done>, tables: Tables, icons: IconS
             None => cascade::resolve(job.pid, &job.image_name, path.as_deref(), &tables),
         };
 
-        // Ikona aplikace — jednou na identity_key (drahé GDI, tady na
-        // BELOW_NORMAL vlákně). Do cache i None, ať se nezkouší dokola.
+        // Ikona aplikace (drahé GDI, tady na BELOW_NORMAL vlákně).
+        // Klíč bez ikony se zkouší znovu s každým dalším procesem téže
+        // aplikace (jiné .exe může ikonu mít — např. os:windows ji dodá
+        // explorer.exe); fallback je DisplayIcon z uninstall registru.
         let need_icon = {
             let map = icons.lock().expect("icon cache lock");
-            !map.contains_key(&identity.identity_key)
+            !matches!(map.get(&identity.identity_key), Some(Some(_)))
         };
         if need_icon {
-            let ico = path
-                .as_deref()
-                .and_then(win_sys::icon::extract)
-                .map(|i| IconData {
-                    w: i.w,
-                    h: i.h,
-                    rgba: i.rgba,
-                });
-            icons
-                .lock()
-                .expect("icon cache lock")
-                .insert(identity.identity_key.clone(), ico);
+            let mut ico = path.as_deref().and_then(win_sys::icon::extract);
+            if ico.is_none() {
+                if let Some(spec) = tables.icons.get(&identity.identity_key) {
+                    ico = win_sys::icon::extract_spec(spec);
+                }
+            }
+            let mut map = icons.lock().expect("icon cache lock");
+            // None nepřepisovat přes dřívější úspěch (souběh s retry).
+            if ico.is_some() || !matches!(map.get(&identity.identity_key), Some(Some(_))) {
+                map.insert(
+                    identity.identity_key.clone(),
+                    ico.map(|i| IconData {
+                        w: i.w,
+                        h: i.h,
+                        rgba: i.rgba,
+                    }),
+                );
+            }
         }
 
         let protection = protection(job.pid, &job.image_name);
@@ -260,6 +271,7 @@ pub fn load_tables() -> Tables {
             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
         ),
     ];
+    let mut icons = HashMap::new();
     for (root, base) in roots {
         for sub in enum_subkeys(root, base) {
             let key = format!("{base}\\{sub}");
@@ -270,6 +282,12 @@ pub fn load_tables() -> Tables {
                 continue;
             }
             let name = read_string(root, &key, "DisplayName").unwrap_or_else(|| sub.clone());
+            // DisplayIcon jako fallback zdroj ikony (SPEC 5.2).
+            if let Some(ico) = read_string(root, &key, "DisplayIcon") {
+                if !ico.trim().is_empty() {
+                    icons.insert(format!("app:{}", name.to_ascii_lowercase()), ico);
+                }
+            }
             uninstall.push((loc.to_ascii_lowercase(), name));
         }
     }
@@ -278,9 +296,10 @@ pub fn load_tables() -> Tables {
     uninstall.dedup_by(|a, b| a.0 == b.0);
     tracing::info!(
         count = uninstall.len(),
+        icons = icons.len(),
         "načteny uninstall záznamy pro identitu"
     );
-    Tables { uninstall }
+    Tables { uninstall, icons }
 }
 
 /// Je cesta pod systémovým adresářem Windows?

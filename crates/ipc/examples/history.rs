@@ -31,7 +31,10 @@ fn main() {
                 ts
             );
             for r in rows.iter().take(3) {
-                println!("  {:>7}  {:5.1} %  {}", r.pid, r.cpu_pct, r.name);
+                println!(
+                    "  {:>7}  {:5.1} %  {}  id={:?} app={:?}",
+                    r.pid, r.cpu_pct, r.name, r.identity_key, r.app_name
+                );
             }
         }
         Err(e) => {
