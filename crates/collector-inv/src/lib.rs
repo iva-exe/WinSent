@@ -60,6 +60,10 @@ pub struct AppEntry {
     /// InstallDate „YYYYMMDD“ → unix (půlnoc), když jde naparsovat.
     pub install_ts: Option<i64>,
     pub paths: Vec<PathEntry>,
+    /// Nápověda pro ikonu: DisplayIcon spec („cesta,index“) nebo cesta
+    /// k .exe z UninstallString — svc z ní doplní ikonu i aplikacím,
+    /// jejichž proces nikdy neběžel.
+    pub icon_hint: Option<String>,
 }
 
 /// Kompletní sken inventáře. Trvá sekundy — volat z pozadí.
@@ -86,10 +90,12 @@ pub fn scan() -> Vec<AppEntry> {
             version: None,
             install_ts: None,
             paths: Vec::new(),
+            icon_hint: None,
         });
         entry.publisher = entry.publisher.take().or(u.publisher);
         entry.version = entry.version.take().or(u.version);
         entry.install_ts = entry.install_ts.take().or(u.install_ts);
+        entry.icon_hint = entry.icon_hint.take().or(u.display_icon);
 
         if let Some(loc) = u
             .install_location
@@ -171,6 +177,7 @@ pub fn scan() -> Vec<AppEntry> {
                 version: p.version.clone(),
                 install_ts: parse_install_date(p.install_date.as_deref()),
                 paths,
+                icon_hint: None,
             },
         );
     }
@@ -208,6 +215,7 @@ pub fn scan() -> Vec<AppEntry> {
                 publisher: pkg.publisher,
                 version: pkg.version,
                 install_ts: None,
+                icon_hint: pkg.install_path,
                 paths,
             },
         );
@@ -243,6 +251,7 @@ struct UninstallEntry {
     version: Option<String>,
     install_location: Option<String>,
     install_ts: Option<i64>,
+    display_icon: Option<String>,
 }
 
 /// Načte Uninstall záznamy ze tří kořenů. Systémové komponenty
@@ -287,6 +296,7 @@ fn uninstall_entries() -> Vec<UninstallEntry> {
                 version: read_string(root, &key, "DisplayVersion"),
                 install_location: read_string(root, &key, "InstallLocation"),
                 install_ts,
+                display_icon: read_string(root, &key, "DisplayIcon"),
             });
         }
     }

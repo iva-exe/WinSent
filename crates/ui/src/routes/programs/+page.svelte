@@ -3,6 +3,7 @@
 	// Seznam vlevo, detail s mapou vpravo. Každá cesta nese zdroj +
 	// confidence — guess je tečkovaně (nikdy netvrdit, co jen hádáme).
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { invoke } from '@tauri-apps/api/core';
 	import {
 		RefreshCw,
@@ -13,12 +14,15 @@
 		Archive,
 		ScrollText,
 		BookKey,
-		Scale
+		Scale,
+		ExternalLink
 	} from 'lucide-svelte';
 
 	let apps = $state([]);
 	let procs = $state([]);
 	let filter = $state('');
+	let segment = $state('all'); // all | desktop | msix | running
+	let sortKey = $state('name'); // name | publisher | date | paths
 	let selected = $state(null);
 	let map = $state([]);
 	let sizing = $state(false);
@@ -68,16 +72,6 @@
 		heuristic: 'Heuristika'
 	};
 
-	let shown = $derived.by(() => {
-		const f = filter.trim().toLowerCase();
-		if (!f) return apps;
-		return apps.filter(
-			(a) =>
-				a.display_name.toLowerCase().includes(f) ||
-				(a.publisher ?? '').toLowerCase().includes(f)
-		);
-	});
-
 	// Počet běžících procesů per identity_key (spojení s živým během).
 	let running = $derived.by(() => {
 		const m = new Map();
@@ -86,6 +80,37 @@
 		}
 		return m;
 	});
+
+	// Segment (Programy = klasické desktop instalace, Aplikace = MSIX
+	// ze Store) + textový filtr + řazení.
+	let shown = $derived.by(() => {
+		const f = filter.trim().toLowerCase();
+		let list = apps.filter((a) => {
+			if (segment === 'desktop' && a.kind !== 'desktop') return false;
+			if (segment === 'msix' && a.kind !== 'msix') return false;
+			if (segment === 'running' && !running.get(a.identity_key)) return false;
+			if (
+				f &&
+				!a.display_name.toLowerCase().includes(f) &&
+				!(a.publisher ?? '').toLowerCase().includes(f)
+			)
+				return false;
+			return true;
+		});
+		const cmp = {
+			name: (a, b) => a.display_name.localeCompare(b.display_name, 'cs'),
+			publisher: (a, b) => (a.publisher ?? '￿').localeCompare(b.publisher ?? '￿', 'cs'),
+			date: (a, b) => (b.install_ts ?? 0) - (a.install_ts ?? 0),
+			paths: (a, b) => b.path_count - a.path_count
+		}[sortKey];
+		return list.toSorted(cmp);
+	});
+
+	let counts = $derived.by(() => ({
+		desktop: apps.filter((a) => a.kind === 'desktop').length,
+		msix: apps.filter((a) => a.kind === 'msix').length,
+		running: apps.filter((a) => running.get(a.identity_key)).length
+	}));
 
 	function fmtSize(b) {
 		if (b == null) return '—';
@@ -144,6 +169,19 @@
 		}
 	}
 
+	async function openPath(path) {
+		try {
+			await invoke('open_path', { path });
+		} catch {
+			/* registry větev / neexistující cesta */
+		}
+	}
+
+	// „x procesů běží" → Tasks se zaskrolováním a probliknutím řádku.
+	function gotoRunning(key) {
+		goto('/tasks?hl=' + encodeURIComponent(key));
+	}
+
 	let totalSize = $derived.by(() => {
 		let t = 0;
 		let any = false;
@@ -166,7 +204,26 @@
 <div class="page">
 	<header class="head">
 		<h1>Programs</h1>
-		<span class="sub">{apps.length} aplikací · mapa souborů se zdrojem a jistotou</span>
+		<div class="seg">
+			<button class:active={segment === 'all'} onclick={() => (segment = 'all')}>
+				Vše <i>{apps.length}</i>
+			</button>
+			<button class:active={segment === 'desktop'} onclick={() => (segment = 'desktop')}>
+				Programy <i>{counts.desktop}</i>
+			</button>
+			<button class:active={segment === 'msix'} onclick={() => (segment = 'msix')}>
+				Aplikace <i>{counts.msix}</i>
+			</button>
+			<button class:active={segment === 'running'} onclick={() => (segment = 'running')}>
+				Běžící <i>{counts.running}</i>
+			</button>
+		</div>
+		<select class="sort" bind:value={sortKey} title="Řazení">
+			<option value="name">dle názvu</option>
+			<option value="publisher">dle vydavatele</option>
+			<option value="date">dle instalace</option>
+			<option value="paths">dle počtu cest</option>
+		</select>
 		<div class="filter">
 			<Search size={13} />
 			<input placeholder="hledat aplikaci…" bind:value={filter} />
@@ -223,7 +280,14 @@
 								{selected.publisher ?? '—'} · {selected.version ?? '—'} ·
 								instalace {fmtDate(selected.install_ts)}
 								{#if running.get(selected.identity_key)}
-									· <span class="ok">{running.get(selected.identity_key)} procesů běží</span>
+									· <button
+										class="run-link"
+										onclick={() => gotoRunning(selected.identity_key)}
+										title="Ukázat v Tasks"
+									>
+										{running.get(selected.identity_key)} procesů běží
+										<ExternalLink size={11} />
+									</button>
 								{/if}
 							</span>
 						</div>
@@ -240,8 +304,16 @@
 							{#each map as p (p.path)}
 								{@const r = roles[p.role] ?? roles.data}
 								<li class="map-row" class:guess={p.confidence === 'guess'}>
-									<span class="m-role"><r.icon size={13} /> {r.label}</span>
-									<span class="m-path mono" title={p.path}>{p.path}</span>
+									<span class="m-role"><r.icon size={14} /> {r.label}</span>
+									{#if p.role === 'registry'}
+										<span class="m-path mono" title={p.path}>{p.path}</span>
+									{:else}
+										<button
+											class="m-path mono m-link"
+											title="Otevřít v Průzkumníku"
+											onclick={() => openPath(p.path)}>{p.path}</button
+										>
+									{/if}
 									<span class="m-src" data-conf={p.confidence}>
 										{sources[p.source] ?? p.source}
 									</span>
@@ -319,9 +391,51 @@
 		border-color: var(--border-strong);
 	}
 
+	.seg {
+		display: flex;
+		gap: 2px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		padding: 2px;
+		background: var(--surface);
+	}
+	.seg button {
+		background: none;
+		border: none;
+		color: var(--text-dim);
+		font: inherit;
+		font-size: 0.76rem;
+		padding: 4px 10px;
+		border-radius: 3px;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.seg button i {
+		font-style: normal;
+		font-family: var(--font-mono);
+		font-size: 0.64rem;
+		color: var(--text-faint);
+	}
+	.seg button.active {
+		background: var(--surface-hover);
+		color: var(--text);
+		box-shadow: inset 0 0 0 1px var(--border-strong);
+	}
+	.sort {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text-dim);
+		font: inherit;
+		font-size: 0.76rem;
+		padding: 5px 8px;
+	}
+
 	.cols {
 		display: grid;
-		grid-template-columns: minmax(320px, 400px) 1fr;
+		grid-template-columns: minmax(380px, 500px) 1fr;
 		gap: 14px;
 		min-height: 0;
 		flex: 1;
@@ -427,15 +541,28 @@
 		flex: 1;
 	}
 	.d-head h2 {
-		font-size: 1rem;
+		font-size: 1.15rem;
 		font-weight: 600;
 	}
 	.d-meta {
-		font-size: 0.74rem;
+		font-size: 0.82rem;
 		color: var(--text-dim);
 	}
-	.ok {
+	.run-link {
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		font-size: 0.82rem;
 		color: var(--ok);
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		text-shadow: var(--glow-ok);
+	}
+	.run-link:hover {
+		text-decoration: underline;
 	}
 	.size-btn {
 		display: flex;
@@ -469,14 +596,14 @@
 	}
 	.map-row {
 		display: grid;
-		grid-template-columns: 118px 1fr auto 84px;
-		gap: 10px;
+		grid-template-columns: 134px 1fr auto 96px;
+		gap: 12px;
 		align-items: center;
-		padding: 6px 10px;
+		padding: 9px 12px;
 		background: var(--panel);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
-		font-size: 0.78rem;
+		font-size: 0.88rem;
 	}
 	.map-row.guess .m-path {
 		text-decoration: underline dotted var(--text-faint);
@@ -485,23 +612,36 @@
 	.m-role {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 7px;
 		color: var(--text-dim);
-		font-size: 0.72rem;
+		font-size: 0.8rem;
 	}
 	.m-path {
-		font-size: 0.72rem;
+		font-size: 0.8rem;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		direction: rtl;
 		text-align: left;
 	}
+	.m-link {
+		background: none;
+		border: none;
+		padding: 0;
+		color: var(--text);
+		cursor: pointer;
+		min-width: 0;
+	}
+	.m-link:hover {
+		color: var(--accent);
+		text-decoration: underline;
+		text-underline-offset: 3px;
+	}
 	.m-src {
-		font-size: 0.62rem;
+		font-size: 0.66rem;
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
-		padding: 1px 6px;
+		padding: 2px 7px;
 		border-radius: 999px;
 		border: 1px solid var(--border-strong);
 		color: var(--text-dim);
@@ -515,13 +655,13 @@
 		color: var(--text-faint);
 	}
 	.m-size {
-		font-size: 0.72rem;
+		font-size: 0.8rem;
 		text-align: right;
 		color: var(--text-dim);
 	}
 	.legend {
 		margin-top: 10px;
-		font-size: 0.68rem;
+		font-size: 0.72rem;
 		color: var(--text-faint);
 	}
 	.lg-guess {

@@ -67,6 +67,8 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     let statics = collector_proc::static_info(&sampler_state);
     // Sdílená cache ikon aplikací — plní identity worker, čte IPC handler.
     let icon_store = collector_proc::icon_store(&sampler_state);
+    // Klon pro inventární vlákno (ikony i pro neběžící aplikace).
+    let icon_store_inv = Arc::clone(&icon_store);
     if let Err(e) = store::samples::upsert_disk_names(&conn, &statics.disks) {
         tracing::warn!(error = %e, "zápis názvů disků selhal");
     }
@@ -320,6 +322,31 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             ms = t0.elapsed().as_millis() as u64,
                             "sken inventáře hotový"
                         );
+                        // Ikony i pro aplikace, jejichž proces neběží —
+                        // z DisplayIcon / instalačního adresáře. Jednou
+                        // na klíč, na BELOW_NORMAL, výsledky do sdílené
+                        // cache (odkud je čte QueryIcon).
+                        let mut icons_added = 0u32;
+                        for app in &apps {
+                            if stop.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            let missing = {
+                                let m = icon_store_inv.lock().expect("icon cache lock");
+                                !matches!(m.get(&app.identity_key), Some(Some(_)))
+                            };
+                            if !missing {
+                                continue;
+                            }
+                            if let Some(ico) = inventory_icon(app) {
+                                icon_store_inv
+                                    .lock()
+                                    .expect("icon cache lock")
+                                    .insert(app.identity_key.clone(), Some(ico));
+                                icons_added += 1;
+                            }
+                        }
+                        tracing::info!(added = icons_added, "ikony inventáře doplněny");
                         let scan: Vec<store::apps::ScanApp> =
                             apps.into_iter().map(to_scan_app).collect();
                         if tx
@@ -803,6 +830,58 @@ fn archive_blackbox(ts: i64) -> Option<String> {
             tracing::warn!(error = %e, "archivace černé skříňky selhala");
             None
         }
+    }
+}
+
+/// Ikona aplikace z inventáře: DisplayIcon spec → .exe v instalačních
+/// adresářích. Pro aplikace, jejichž proces neběží (identity worker
+/// je nikdy nepotká).
+fn inventory_icon(app: &collector_inv::AppEntry) -> Option<core_types::proc::IconData> {
+    if let Some(hint) = app.icon_hint.as_deref() {
+        let trimmed = hint.trim().trim_matches('"');
+        if std::path::Path::new(trimmed).is_dir() {
+            if let Some(i) = icon_from_dir(trimmed) {
+                return Some(i);
+            }
+        } else if let Some(i) = win_sys::icon::extract_spec(hint) {
+            return Some(to_icon_data(i));
+        }
+    }
+    for p in app.paths.iter().filter(|p| p.role == "install") {
+        if let Some(i) = icon_from_dir(&p.path) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// První použitelná ikona z .exe v adresáři (nejkratší jméno bývá
+/// hlavní binárka — instalátory/updatery mívají dlouhá).
+fn icon_from_dir(dir: &str) -> Option<core_types::proc::IconData> {
+    let rd = std::fs::read_dir(dir).ok()?;
+    let mut exes: Vec<std::path::PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")))
+        .collect();
+    exes.sort_by_key(|p| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().len())
+            .unwrap_or(usize::MAX)
+    });
+    for exe in exes.into_iter().take(3) {
+        if let Some(i) = win_sys::icon::extract(exe.to_str()?) {
+            return Some(to_icon_data(i));
+        }
+    }
+    None
+}
+
+fn to_icon_data(i: win_sys::icon::IconRgba) -> core_types::proc::IconData {
+    core_types::proc::IconData {
+        w: i.w,
+        h: i.h,
+        rgba: i.rgba,
     }
 }
 

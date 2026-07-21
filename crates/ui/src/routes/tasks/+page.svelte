@@ -566,7 +566,26 @@
 		}
 	}
 
+	// Deep-link z Programs: ?hl=<identity_key> → zaskrolovat na řádek
+	// (skupinu v apps view / první proces) a nechat ho probliknout.
+	function tryHighlight(key, tries = 0) {
+		const el = document.querySelector(`[data-idkey="${CSS.escape(key)}"]`);
+		if (el) {
+			el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+			el.classList.add('hl-flash');
+			setTimeout(() => el.classList.remove('hl-flash'), 1700);
+		} else if (tries < 20) {
+			// data ještě nedoběhla — zkusit znovu
+			setTimeout(() => tryHighlight(key, tries + 1), 300);
+		}
+	}
+
 	onMount(() => {
+		const hl = new URLSearchParams(window.location.search).get('hl');
+		if (hl) {
+			history.replaceState(null, '', '/tasks');
+			tryHighlight(hl);
+		}
 		loadStatics();
 		pollSystem();
 		pollProcs();
@@ -974,7 +993,7 @@
 						{#each groups as g (g.key)}
 							{@const single = g.children.length === 1}
 							{@const open = expanded.has(g.key)}
-							<tr class="grp" class:clickable={!single} onclick={() => !single && toggleGroup(g.key)}>
+							<tr class="grp" data-idkey={g.key} class:clickable={!single} onclick={() => !single && toggleGroup(g.key)}>
 								<td class="t-dot">
 									<span
 										class="load-dot"
@@ -1036,7 +1055,7 @@
 					{:else}
 						<!-- Plochý seznam procesů (původní view) -->
 						{#each visibleRows as p (p.pid)}
-							<tr>
+							<tr data-idkey={p.identity_key}>
 								<td class="t-dot">
 									<span
 										class="load-dot"
@@ -1520,5 +1539,22 @@
 	.empty {
 		text-align: center;
 		padding: 2rem 0;
+	}
+
+	/* Problik řádku po deep-linku z Programs (?hl=identity_key). */
+	:global(tr.hl-flash td) {
+		animation: -global-hlflash 1.6s ease;
+	}
+	@keyframes -global-hlflash {
+		0%,
+		30%,
+		60%,
+		100% {
+			background: transparent;
+		}
+		15%,
+		45% {
+			background: color-mix(in srgb, var(--accent) 16%, transparent);
+		}
 	}
 </style>

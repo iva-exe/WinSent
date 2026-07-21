@@ -251,7 +251,7 @@
 
 	.cols {
 		display: grid;
-		grid-template-columns: minmax(300px, 380px) 1fr;
+		grid-template-columns: minmax(360px, 480px) 1fr;
 		gap: 14px;
 		min-height: 0;
 		flex: 1;

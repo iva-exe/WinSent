@@ -140,6 +140,24 @@ fn rescan_apps() -> Result<(), String> {
     ipc::client::rescan_apps().map_err(|e| e.to_string())
 }
 
+/// Otevře cestu v Průzkumníku (adresář přímo, soubor s /select).
+/// Jen otevření — žádná mutace; registry cesty sem nepatří.
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    if path.starts_with("HKLM") || path.starts_with("HKU") || path.starts_with("HKCU") {
+        return Err("registry větev nejde otevřít v Průzkumníku".into());
+    }
+    let p = std::path::Path::new(&path);
+    let mut cmd = std::process::Command::new("explorer.exe");
+    if p.is_dir() {
+        cmd.arg(&path);
+    } else {
+        cmd.arg(format!("/select,{path}"));
+    }
+    cmd.spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Vlastní spotřeba nástroje pro dlaždici v Settings (SPEC kap. 2.3).
 #[derive(Debug, Serialize)]
 struct SelfUsageDto {
@@ -224,7 +242,8 @@ fn main() {
             query_apps,
             query_app_map,
             compute_app_sizes,
-            rescan_apps
+            rescan_apps,
+            open_path
         ])
         .setup(|app| {
             setup_tray(app)?;
