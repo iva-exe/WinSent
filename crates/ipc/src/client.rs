@@ -325,6 +325,42 @@ pub fn search_files(
     }
 }
 
+/// Stav auto-úklidu (v4E): indexace, běh analýzy, výsledek.
+#[allow(clippy::type_complexity)]
+pub fn query_cleanup() -> Result<
+    (
+        Vec<(char, u64, bool)>,
+        bool,
+        Option<core_types::proc::CleanupReport>,
+    ),
+    Error,
+> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryCleanup)? {
+        Response::Cleanup {
+            indexing,
+            running,
+            report,
+        } => Ok((indexing, running, report)),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Smaže záznam incidentu.
+pub fn delete_incident(id: i64) -> Result<(), Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::DeleteIncident { id })? {
+        Response::Ack => Ok(()),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Duplicity pod kořenem (v4D): skupiny (velikost, cesty).
 pub fn find_duplicates(root: String, min_size: u64) -> Result<Vec<(u64, Vec<String>)>, Error> {
     let mut stream = connect()?;

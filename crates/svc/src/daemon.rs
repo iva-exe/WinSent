@@ -34,6 +34,16 @@ struct LiveSample {
     system: SystemSnapshot,
 }
 
+/// Stav auto-indexace a úklidové analýzy (v4E) sdílený s IPC.
+#[derive(Default)]
+struct CleanupState {
+    /// (svazek, záznamů zatím, hotovo).
+    indexing: Vec<(char, u64, bool)>,
+    running: bool,
+    report: Option<core_types::proc::CleanupReport>,
+}
+type CleanupShared = Arc<std::sync::Mutex<CleanupState>>;
+
 /// Spustí démona a blokuje, dokud `stop` nenastaví okolí (SCM handler
 /// nebo Ctrl+C). Vrací se až po korektním úklidu.
 pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
@@ -176,12 +186,16 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                                                 .is_some_and(|&t| ts - t < 120);
                                             if !name.is_empty() && !recently {
                                                 last_crash.insert(rate_key, ts);
+                                                // U systémové skupiny („Windows")
+                                                // je viníkem konkrétní proces —
+                                                // „pád aplikace Windows" nic neříká.
+                                                let is_os = key.starts_with("os:");
                                                 let _ = sample_tx.try_send(StoreMsg::Incident {
                                                     ts,
                                                     kind: "app_crash",
                                                     identity_key: (!key.is_empty())
                                                         .then_some(key),
-                                                    culprit: Some(if app.is_empty() {
+                                                    culprit: Some(if app.is_empty() || is_os {
                                                         name
                                                     } else {
                                                         app
@@ -307,6 +321,87 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     let fs_indexes: FsIndexes = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let fs_indexes_janitor = Arc::clone(&fs_indexes);
 
+    // Úklidová analýza (v4E): auto-indexace všech NTFS svazků na pozadí
+    // + duplicity/0B/junk. Stav sdílený s IPC (progres do UI).
+    let cleanup: CleanupShared = Arc::new(std::sync::Mutex::new(CleanupState::default()));
+    let cleanup_ipc = Arc::clone(&cleanup);
+    let fs_indexes_auto = Arc::clone(&fs_indexes);
+    let cleanup_handle = {
+        let stop = Arc::clone(&stop);
+        std::thread::Builder::new()
+            .name("cleanup".into())
+            .spawn(move || {
+                let _ = win_sys::threading::set_current_thread_below_normal();
+                // Počkat, až se systém po startu služby usadí.
+                wait_or_stop(&stop, Duration::from_secs(15));
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                let letters: Vec<char> = win_sys::volumes::volumes()
+                    .into_iter()
+                    .filter(|v| v.fixed && v.fs == "NTFS")
+                    .map(|v| v.letter)
+                    .collect();
+                {
+                    let mut c = cleanup.lock().expect("cleanup lock");
+                    c.indexing = letters.iter().map(|&l| (l, 0, false)).collect();
+                }
+                let mut built = Vec::new();
+                for &letter in &letters {
+                    if stop.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let progress = Arc::clone(&cleanup);
+                    match fs_index::VolumeIndex::build_with(letter, move |n| {
+                        let mut c = progress.lock().expect("cleanup lock");
+                        if let Some(e) = c.indexing.iter_mut().find(|e| e.0 == letter) {
+                            e.1 = n;
+                        }
+                    }) {
+                        Ok(idx) => {
+                            let entries = idx.len() as u64;
+                            let mut c = cleanup.lock().expect("cleanup lock");
+                            if let Some(e) = c.indexing.iter_mut().find(|e| e.0 == letter) {
+                                *e = (letter, entries, true);
+                            }
+                            tracing::info!(volume = %letter, entries, "auto-index hotový");
+                            built.push(idx);
+                        }
+                        Err(e) => {
+                            tracing::warn!(volume = %letter, error = %e, "auto-index selhal")
+                        }
+                    }
+                }
+                // Analýza nad lokálně drženými indexy (zámek map se
+                // nedrží — search jede dál); pak indexy do sdílené mapy
+                // pro rychlé hledání.
+                cleanup.lock().expect("cleanup lock").running = true;
+                let t0 = Instant::now();
+                let refs: Vec<&fs_index::VolumeIndex> = built.iter().collect();
+                let rep = fs_index::cleanup_analysis(&refs);
+                tracing::info!(
+                    dups = rep.dups.len(),
+                    zero = rep.zero_byte.len(),
+                    ms = t0.elapsed().as_millis() as u64,
+                    "úklidová analýza hotová"
+                );
+                {
+                    let mut c = cleanup.lock().expect("cleanup lock");
+                    c.running = false;
+                    c.report = Some(core_types::proc::CleanupReport {
+                        dups: rep.dups,
+                        zero_byte: rep.zero_byte,
+                        junk: rep.junk,
+                        finished_ts: unix_now(),
+                    });
+                }
+                let mut map = fs_indexes_auto.lock().expect("fs index lock");
+                for idx in built {
+                    map.insert(idx.letter, (idx, Instant::now()));
+                }
+            })?
+    };
+
     // Inventář aplikací (v4, SPEC kap. 5): sken na pozadí při startu
     // a pak řídce (6 h); RescanApps ho vyžádá dřív. Nikdy v cyklu.
     let rescan = Arc::new(AtomicBool::new(false));
@@ -400,6 +495,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         let icons = icon_store;
         let rescan_flag = Arc::clone(&rescan);
         let fs_idx = Arc::clone(&fs_indexes);
+        let cleanup_state = cleanup_ipc;
         let handler: ipc::server::Handler = Arc::new(move |req| match req {
             Request::QuerySysInfo => Response::SysInfo(statics.clone()),
             Request::QueryIcon { identity_key } => {
@@ -595,6 +691,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         total_bytes: v.total_bytes,
                         free_bytes: v.free_bytes,
                         fixed: v.fixed,
+                        disk_index: v.disk_index,
                     })
                     .collect();
                 let health = statics
@@ -670,6 +767,20 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 let groups = fs_index::find_duplicates(&root, min_size.max(1), 200_000);
                 Response::Duplicates(groups.into_iter().map(|g| (g.size, g.paths)).collect())
             }
+            // Stav auto-úklidu (v4E) — progres indexace + výsledek.
+            Request::QueryCleanup => {
+                let c = cleanup_state.lock().expect("cleanup lock");
+                Response::Cleanup {
+                    indexing: c.indexing.clone(),
+                    running: c.running,
+                    report: c.report.clone(),
+                }
+            }
+            // Smazání VLASTNÍHO záznamu incidentu (žádná mutace OS).
+            Request::DeleteIncident { id } => {
+                let _ = size_tx.try_send(crate::incidents::StoreMsg::DeleteIncident(id));
+                Response::Ack
+            }
             Request::QueryIncidents { limit } => {
                 let conn = read_conn.lock().expect("read conn lock poisoned");
                 match store::events::recent_incidents(&conn, limit.min(500)) {
@@ -719,6 +830,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     let _ = ipc_handle.join();
     let _ = sampler_handle.join();
     let _ = inv_handle.join();
+    let _ = cleanup_handle.join();
     let _ = store_handle.join();
     tracing::info!("démon ukončen čistě");
     Ok(())
@@ -801,6 +913,7 @@ fn store_msg(
             size_bytes,
             ts,
         } => store::apps::set_path_size(conn, &identity_key, &path, size_bytes, ts),
+        StoreMsg::DeleteIncident(id) => store::events::delete_incident(conn, id),
         StoreMsg::Event {
             ts,
             kind,
@@ -982,6 +1095,34 @@ fn icon_from_dir(dir: &str) -> Option<core_types::proc::IconData> {
     for exe in exes.into_iter().take(3) {
         if let Some(i) = win_sys::icon::extract(exe.to_str()?) {
             return Some(to_icon_data(i));
+        }
+    }
+    // Úroveň hlouběji (bin/, app-1.2.3/ apod.) — spousta aplikací nemá
+    // .exe přímo v kořeni instalace.
+    let rd = std::fs::read_dir(dir).ok()?;
+    for sub in rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .take(8)
+    {
+        let Ok(rd2) = std::fs::read_dir(&sub) else {
+            continue;
+        };
+        let mut exes: Vec<std::path::PathBuf> = rd2
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")))
+            .collect();
+        exes.sort_by_key(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().len())
+                .unwrap_or(usize::MAX)
+        });
+        for exe in exes.into_iter().take(2) {
+            if let Some(i) = win_sys::icon::extract(exe.to_str()?) {
+                return Some(to_icon_data(i));
+            }
         }
     }
     None

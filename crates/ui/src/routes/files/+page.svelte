@@ -1,22 +1,27 @@
 <script>
-	// Files (v4C, SPEC kap. 11.1–11.2): přehled svazků + SMART zdraví
-	// a bleskové hledání přes NTFS MFT index. Jen čtení — mazání v8.
+	// Files (v4E): úklid a zdraví disků. Služba po startu sama zindexuje
+	// všechny NTFS svazky (progres níže) a najde duplicity, 0bajtové
+	// soubory a temp junk. Rychlé hledání je bonus dole. Jen čtení —
+	// mazání přijde v v8 (bezpečně, do koše).
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
-	import { HardDrive, Search, Folder, FileText, Thermometer, Activity } from 'lucide-svelte';
+	import {
+		HardDrive,
+		Search,
+		Folder,
+		FileText,
+		Thermometer,
+		Activity,
+		Copy,
+		FileX,
+		Trash2,
+		Loader
+	} from 'lucide-svelte';
 
 	let volumes = $state([]);
 	let health = $state([]);
+	let cleanup = $state(null); // { indexing, running, report }
 	let loadError = $state('');
-
-	// MFT index + hledání.
-	let indexLetter = $state(null); // písmeno s postaveným indexem
-	let indexEntries = $state(0);
-	let building = $state(null); // písmeno, které se právě staví
-	let query = $state('');
-	let hits = $state([]);
-	let searching = $state(false);
-	let debounce;
 
 	const ATTR_DIR = 0x10;
 	const ATTR_HIDDEN = 0x2;
@@ -29,6 +34,91 @@
 		if (b >= 1e3) return (b / 1e3).toFixed(0) + ' kB';
 		return b + ' B';
 	}
+	function usedPct(v) {
+		return v.total_bytes ? ((v.total_bytes - v.free_bytes) / v.total_bytes) * 100 : 0;
+	}
+	function barColor(pct) {
+		if (pct >= 90) return 'var(--danger)';
+		if (pct >= 75) return 'var(--warn)';
+		return 'var(--ok)';
+	}
+	function healthColor(h) {
+		if (h?.critical) return 'var(--danger)';
+		if ((h?.used_pct ?? 0) >= 80) return 'var(--warn)';
+		return 'var(--ok)';
+	}
+
+	// Karty: fyzický disk + jeho svazky (spojené přes disk_index).
+	let diskCards = $derived.by(() => {
+		const cards = health.map((h) => ({
+			key: 'd' + h.index,
+			model: h.model,
+			health: h.temp_c != null ? h : null,
+			vols: volumes.filter((v) => v.disk_index === h.index)
+		}));
+		const orphan = volumes.filter((v) => v.disk_index == null);
+		if (orphan.length) {
+			cards.push({ key: 'orphan', model: 'Ostatní svazky', health: null, vols: orphan });
+		}
+		return cards.filter((c) => c.vols.length || c.health);
+	});
+
+	let dupWaste = $derived.by(() => {
+		const d = cleanup?.report?.dups ?? [];
+		return d.reduce((a, [size, paths]) => a + size * (paths.length - 1), 0);
+	});
+	let junkTotal = $derived.by(() =>
+		(cleanup?.report?.junk ?? []).reduce((a, [, s]) => a + s, 0)
+	);
+	let indexingDone = $derived.by(() => (cleanup?.indexing ?? []).every((i) => i[2]));
+
+	// Hledání (bonus) — přes indexy postavené službou.
+	let searchLetter = $state(null);
+	let query = $state('');
+	let hits = $state([]);
+	let searching = $state(false);
+	let searchNote = $state('');
+	let debounce;
+	let readyVolumes = $derived.by(() =>
+		(cleanup?.indexing ?? []).filter((i) => i[2]).map((i) => i[0])
+	);
+
+	function onQueryInput() {
+		clearTimeout(debounce);
+		debounce = setTimeout(runSearch, 200);
+	}
+	async function runSearch() {
+		const letter = searchLetter ?? readyVolumes[0];
+		if (!letter || !query.trim()) {
+			hits = [];
+			return;
+		}
+		searching = true;
+		searchNote = '';
+		try {
+			hits = await invoke('search_files', { letter, query: query.trim(), limit: 200 });
+		} catch {
+			// Index mohl po nečinnosti vypršet — postavit znovu a zkusit.
+			searchNote = 'index se obnovuje…';
+			try {
+				await invoke('build_file_index', { letter });
+				hits = await invoke('search_files', { letter, query: query.trim(), limit: 200 });
+				searchNote = '';
+			} catch (e2) {
+				searchNote = String(e2);
+				hits = [];
+			}
+		}
+		searching = false;
+	}
+
+	async function openPath(path) {
+		try {
+			await invoke('open_path', { path });
+		} catch {
+			/* cesta zmizela */
+		}
+	}
 
 	async function load() {
 		try {
@@ -39,96 +129,16 @@
 		} catch (e) {
 			loadError = String(e);
 		}
-	}
-
-	async function buildIndex(letter) {
-		if (building) return;
-		building = letter;
 		try {
-			indexEntries = await invoke('build_file_index', { letter });
-			indexLetter = letter;
-			hits = [];
-			if (query.trim()) runSearch();
-		} catch (e) {
-			loadError = String(e);
-		}
-		building = null;
-	}
-
-	function onQueryInput() {
-		clearTimeout(debounce);
-		debounce = setTimeout(runSearch, 180);
-	}
-
-	async function runSearch() {
-		if (!indexLetter || !query.trim()) {
-			hits = [];
-			return;
-		}
-		searching = true;
-		try {
-			hits = await invoke('search_files', {
-				letter: indexLetter,
-				query: query.trim(),
-				limit: 200
-			});
+			cleanup = await invoke('query_cleanup');
 		} catch {
-			hits = [];
+			cleanup = null;
 		}
-		searching = false;
-	}
-
-	async function openHit(h) {
-		try {
-			await invoke('open_path', { path: h.path });
-		} catch {
-			/* cesta mezitím zmizela */
-		}
-	}
-
-	// Duplicity (SPEC 11.3): dvoufázová čtecí analýza on-demand.
-	let dupRoot = $state('');
-	let dups = $state(null);
-	let dupsRunning = $state(false);
-
-	async function runDups() {
-		if (dupsRunning || !dupRoot.trim()) return;
-		dupsRunning = true;
-		dups = null;
-		try {
-			dups = await invoke('find_duplicates', {
-				root: dupRoot.trim(),
-				minSize: 1024 * 1024 // 1 MB — menší soubory nestojí za řeč
-			});
-		} catch {
-			dups = [];
-		}
-		dupsRunning = false;
-	}
-
-	let dupWaste = $derived.by(() => {
-		if (!dups) return 0;
-		return dups.reduce((a, [size, paths]) => a + size * (paths.length - 1), 0);
-	});
-
-	function usedPct(v) {
-		return v.total_bytes ? ((v.total_bytes - v.free_bytes) / v.total_bytes) * 100 : 0;
-	}
-	function barColor(pct) {
-		if (pct >= 90) return 'var(--danger)';
-		if (pct >= 75) return 'var(--warn)';
-		return 'var(--ok)';
-	}
-	// Zdraví: NVMe used_pct → zbývající životnost.
-	function healthColor(h) {
-		if (h.critical) return 'var(--danger)';
-		if ((h.used_pct ?? 0) >= 80) return 'var(--warn)';
-		return 'var(--ok)';
 	}
 
 	onMount(() => {
 		load();
-		const t = setInterval(load, 30000);
+		const t = setInterval(load, 4000);
 		return () => clearInterval(t);
 	});
 </script>
@@ -136,145 +146,172 @@
 <div class="page">
 	<header class="head">
 		<h1>Files</h1>
-		<span class="sub">svazky · zdraví disků · bleskové hledání přes NTFS MFT</span>
+		<span class="sub">zdraví disků · úklid místa · duplicity</span>
 	</header>
 
 	{#if loadError}
 		<p class="empty">{loadError}</p>
 	{/if}
 
-	<!-- ── Svazky ── -->
-	<div class="vol-grid">
-		{#each volumes as v (v.letter)}
-			{@const pct = usedPct(v)}
-			<div class="vol card">
-				<div class="vol-head">
-					<HardDrive size={16} />
-					<span class="vol-letter">{v.letter}:</span>
-					<span class="vol-label">{v.label || (v.fixed ? 'Místní disk' : 'Výměnný')}</span>
-					<span class="vol-fs label-tech">{v.fs}</span>
+	<!-- ── Karty disků: kapacity + zdraví v jednom ── -->
+	<div class="disk-grid">
+		{#each diskCards as d (d.key)}
+			<div class="disk card">
+				<div class="d-head">
+					<HardDrive size={17} />
+					<span class="d-model">{d.model}</span>
+					{#if d.health}
+						<span class="d-health" style:color={healthColor(d.health)}>
+							<Activity size={14} />
+							{100 - Math.min(d.health.used_pct ?? 0, 100)} % životnosti
+						</span>
+						<span class="d-h-item"><Thermometer size={14} /> {d.health.temp_c} °C</span>
+						<span class="d-h-item dim">{d.health.power_on_hours} h provozu</span>
+					{:else if d.key !== 'orphan'}
+						<span class="d-h-item dim">SMART nedostupný (SATA — doplní se)</span>
+					{/if}
 				</div>
-				<div class="bar">
-					<div class="bar-fill" style:width="{pct}%" style:background={barColor(pct)}></div>
-				</div>
-				<div class="vol-nums mono">
-					<span>{fmtSize(v.total_bytes - v.free_bytes)} / {fmtSize(v.total_bytes)}</span>
-					<span class="dim">{fmtSize(v.free_bytes)} volných</span>
-				</div>
-				{#if v.fs === 'NTFS' && v.fixed}
-					<button
-						class="idx-btn"
-						disabled={building != null}
-						onclick={() => buildIndex(v.letter)}
-					>
-						{building === v.letter
-							? 'stavím index…'
-							: indexLetter === v.letter
-								? `index: ${indexEntries.toLocaleString('cs-CZ')} záznamů`
-								: 'Postavit index pro hledání'}
-					</button>
-				{/if}
+				{#each d.vols as v (v.letter)}
+					{@const pct = usedPct(v)}
+					<div class="vol-row">
+						<span class="vol-letter mono">{v.letter}:</span>
+						<span class="vol-label">{v.label || 'Místní disk'}</span>
+						<span class="vol-fs label-tech">{v.fs}</span>
+						<span class="bar"
+							><span class="bar-fill" style:width="{pct}%" style:background={barColor(pct)}
+							></span></span
+						>
+						<span class="vol-nums mono"
+							>{fmtSize(v.total_bytes - v.free_bytes)} / {fmtSize(v.total_bytes)} ·
+							<b>{fmtSize(v.free_bytes)} volných</b></span
+						>
+					</div>
+				{/each}
 			</div>
 		{/each}
 	</div>
 
-	<!-- ── Zdraví fyzických disků (SMART/NVMe) ── -->
-	<div class="health-row">
-		{#each health as h (h.index)}
-			<div class="hcard card">
-				<span class="h-model">{h.model}</span>
-				{#if h.temp_c != null}
-					<span class="h-item" style:color={healthColor(h)}>
-						<Activity size={13} />
-						{100 - Math.min(h.used_pct ?? 0, 100)} % životnosti
-					</span>
-					<span class="h-item"><Thermometer size={13} /> {h.temp_c} °C</span>
-					<span class="h-item dim">{h.power_on_hours} h provozu</span>
-				{:else}
-					<span class="h-item dim">SMART nedostupný (SATA — přijde později)</span>
-				{/if}
-			</div>
-		{/each}
-	</div>
+	<!-- ── Úklid: progres indexace + výsledky analýzy ── -->
+	<section class="card cleanup">
+		<div class="c-head">
+			<span class="label-tech">// úklid disků</span>
+			{#if cleanup?.indexing?.length && !indexingDone}
+				<span class="c-status">
+					<Loader size={14} class="spin" />
+					indexuji disky —
+					{#each cleanup.indexing as [l, n, done] (l)}
+						<span class="mono">{l}: {done ? '✓' : n.toLocaleString('cs-CZ')}</span>
+					{/each}
+				</span>
+			{:else if cleanup?.running}
+				<span class="c-status"><Loader size={14} class="spin" /> analyzuji obsah disků…</span>
+			{:else if cleanup?.report}
+				<span class="c-status dim">
+					analýza hotová · zbytečně obsazeno ~{fmtSize(dupWaste + junkTotal)}
+				</span>
+			{:else}
+				<span class="c-status dim">služba analýzu spustí sama krátce po startu…</span>
+			{/if}
+		</div>
 
-	<!-- ── Hledání ── -->
-	<section class="search card">
+		{#if cleanup?.report}
+			{@const r = cleanup.report}
+			<div class="c-cols">
+				<!-- Temp junk -->
+				<div class="c-block">
+					<h3><Trash2 size={14} /> Temp adresáře — {fmtSize(junkTotal)}</h3>
+					{#each r.junk as [path, size] (path)}
+						<button class="row" onclick={() => openPath(path)} title="Otevřít v Průzkumníku">
+							<span class="r-path mono">{path}</span>
+							<span class="r-size mono">{fmtSize(size)}</span>
+						</button>
+					{/each}
+					<p class="note">obsah temp adresářů jde většinou bezpečně smazat</p>
+				</div>
+
+				<!-- Duplicity -->
+				<div class="c-block">
+					<h3>
+						<Copy size={14} /> Duplicity — {r.dups.length} skupin, {fmtSize(dupWaste)} navíc
+					</h3>
+					{#if r.dups.length === 0}
+						<p class="note">žádné duplicitní soubory (média/archivy/dokumenty ≥ 1 MB)</p>
+					{:else}
+						<ul class="dup-list">
+							{#each r.dups.slice(0, 40) as [size, paths], gi (gi)}
+								<li>
+									<span class="dup-size mono">{fmtSize(size)} × {paths.length}</span>
+									{#each paths as p (p)}
+										<button class="row" onclick={() => openPath(p)}>
+											<span class="r-path mono">{p}</span>
+										</button>
+									{/each}
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+
+				<!-- 0bajtové -->
+				<div class="c-block">
+					<h3><FileX size={14} /> Prázdné soubory (0 B) — {r.zero_byte.length}</h3>
+					{#if r.zero_byte.length === 0}
+						<p class="note">žádné prázdné soubory v profilech</p>
+					{:else}
+						{#each r.zero_byte.slice(0, 60) as p (p)}
+							<button class="row" onclick={() => openPath(p)}>
+								<span class="r-path mono">{p}</span>
+							</button>
+						{/each}
+					{/if}
+				</div>
+			</div>
+			<p class="note big">
+				Zatím jen ukazujeme — mazání přijde v další verzi bezpečně (do koše, s náhledem).
+				Klik = otevřít v Průzkumníku a uklidit ručně.
+			</p>
+		{/if}
+	</section>
+
+	<!-- ── Rychlé hledání (bonus) ── -->
+	<section class="card search">
 		<div class="s-head">
-			<Search size={14} />
+			<Search size={15} />
+			{#if readyVolumes.length > 1}
+				<select class="sel" bind:value={searchLetter}>
+					{#each readyVolumes as l (l)}
+						<option value={l}>{l}:</option>
+					{/each}
+				</select>
+			{/if}
 			<input
-				placeholder={indexLetter
-					? `hledat na ${indexLetter}: (instantně, ${indexEntries.toLocaleString('cs-CZ')} záznamů)`
-					: 'nejdřív postav index svazku ↑'}
+				placeholder={readyVolumes.length
+					? 'rychlé hledání souboru na celém disku…'
+					: 'hledání bude dostupné po dokončení indexace…'}
 				bind:value={query}
 				oninput={onQueryInput}
-				disabled={!indexLetter}
+				disabled={!readyVolumes.length}
 			/>
 			{#if searching}<span class="dim label-tech">hledám…</span>{/if}
+			{#if searchNote}<span class="dim label-tech">{searchNote}</span>{/if}
 		</div>
 		{#if hits.length}
 			<ul class="hits">
 				{#each hits as h (h.path)}
 					<li>
 						<button
-							class="hit"
+							class="row"
 							class:hidden-f={h.attrs & ATTR_HIDDEN}
 							class:system-f={h.attrs & ATTR_SYSTEM}
-							onclick={() => openHit(h)}
-							title="Otevřít v Průzkumníku"
+							onclick={() => openPath(h.path)}
 						>
-							{#if h.attrs & ATTR_DIR}
-								<Folder size={13} class="f-dir" />
-							{:else}
-								<FileText size={13} />
-							{/if}
-							<span class="hit-path mono">{h.path}</span>
-							<span class="hit-size mono">{h.attrs & ATTR_DIR ? '' : fmtSize(h.size_bytes)}</span>
+							{#if h.attrs & ATTR_DIR}<Folder size={14} />{:else}<FileText size={14} />{/if}
+							<span class="r-path mono">{h.path}</span>
+							<span class="r-size mono">{h.attrs & ATTR_DIR ? '' : fmtSize(h.size_bytes)}</span>
 						</button>
 					</li>
 				{/each}
 			</ul>
-			<p class="legend">
-				<span class="system-f">systémové</span> · <span class="hidden-f">skryté</span> ·
-				max 200 nálezů · klik otevře v Průzkumníku · index se po 5 min nečinnosti uvolní
-			</p>
-		{:else if indexLetter && query.trim() && !searching}
-			<p class="empty small">nic nenalezeno</p>
-		{/if}
-	</section>
-
-	<!-- ── Duplicity (čtecí analýza; mazání až v8) ── -->
-	<section class="card dups">
-		<div class="s-head">
-			<span class="label-tech">// duplicity (soubory ≥ 1 MB)</span>
-			<input
-				class="dup-input mono"
-				placeholder="kořen, např. C:\Users\IVA\Downloads"
-				bind:value={dupRoot}
-			/>
-			<button class="idx-btn dup-btn" disabled={dupsRunning} onclick={runDups}>
-				{dupsRunning ? 'analyzuji…' : 'Najít duplicity'}
-			</button>
-		</div>
-		{#if dups?.length}
-			<p class="legend">
-				{dups.length} skupin · zbytečně obsazeno {fmtSize(dupWaste)} — jen analýza,
-				mazání přijde později (bezpečně, do koše)
-			</p>
-			<ul class="hits">
-				{#each dups as [size, paths], gi (gi)}
-					<li class="dup-group">
-						<span class="dup-size mono">{fmtSize(size)} × {paths.length}</span>
-						{#each paths as p (p)}
-							<button class="hit" onclick={() => invoke('open_path', { path: p })}>
-								<FileText size={12} />
-								<span class="hit-path mono">{p}</span>
-							</button>
-						{/each}
-					</li>
-				{/each}
-			</ul>
-		{:else if dups && !dupsRunning}
-			<p class="empty small">žádné duplicity nad 1 MB</p>
 		{/if}
 	</section>
 </div>
@@ -286,6 +323,7 @@
 		gap: 14px;
 		height: 100%;
 		min-height: 0;
+		overflow-y: auto;
 	}
 	.head {
 		display: flex;
@@ -293,117 +331,192 @@
 		gap: 12px;
 	}
 	.head h1 {
-		font-size: 1.15rem;
+		font-size: 1.2rem;
 		font-weight: 600;
 	}
 	.sub {
 		color: var(--text-faint);
-		font-size: 0.78rem;
+		font-size: 0.84rem;
 	}
 	.card {
 		border: 1px dashed var(--border);
 		border-radius: var(--radius);
 		background: var(--surface);
-		padding: 12px 14px;
+		padding: 14px 16px;
 	}
 
-	.vol-grid {
+	/* Karty disků — plná šířka, responsivní grid. */
+	.disk-grid {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
 		gap: 10px;
 	}
-	.vol-head {
+	.disk .d-head {
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		color: var(--text);
-		margin-bottom: 8px;
+		gap: 14px;
+		flex-wrap: wrap;
+		margin-bottom: 10px;
+	}
+	.d-model {
+		font-weight: 600;
+		font-size: 0.95rem;
+	}
+	.d-health,
+	.d-h-item {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-family: var(--font-mono);
+		font-size: 0.82rem;
+	}
+	.vol-row {
+		display: grid;
+		grid-template-columns: 34px minmax(90px, auto) auto 1fr minmax(230px, auto);
+		gap: 12px;
+		align-items: center;
+		padding: 6px 0;
 	}
 	.vol-letter {
-		font-family: var(--font-mono);
 		font-weight: 500;
 	}
 	.vol-label {
-		font-size: 0.82rem;
+		font-size: 0.86rem;
 		color: var(--text-dim);
-		flex: 1;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
 	.vol-fs {
-		font-size: 0.64rem;
+		font-size: 0.68rem;
 	}
 	.bar {
-		height: 6px;
-		border-radius: 3px;
+		height: 7px;
+		border-radius: 4px;
 		background: var(--surface-hover);
 		overflow: hidden;
+		display: block;
 	}
 	.bar-fill {
+		display: block;
 		height: 100%;
-		border-radius: 3px;
-		box-shadow: 0 0 6px color-mix(in srgb, currentColor 40%, transparent);
+		border-radius: 4px;
 	}
 	.vol-nums {
-		display: flex;
-		justify-content: space-between;
-		font-size: 0.7rem;
-		margin-top: 6px;
-	}
-	.idx-btn {
-		margin-top: 8px;
-		width: 100%;
-		background: var(--panel);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
+		font-size: 0.78rem;
 		color: var(--text-dim);
-		font: inherit;
-		font-size: 0.72rem;
-		padding: 5px 8px;
-		cursor: pointer;
+		text-align: right;
 	}
-	.idx-btn:hover {
+	.vol-nums b {
 		color: var(--text);
-		border-color: var(--border-strong);
-	}
-	.idx-btn:disabled {
-		opacity: 0.6;
-		cursor: wait;
-	}
-
-	.health-row {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-		gap: 10px;
-	}
-	.hcard {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-	}
-	.h-model {
-		font-size: 0.82rem;
 		font-weight: 500;
 	}
-	.h-item {
+
+	/* Úklid */
+	.c-head {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		font-size: 0.76rem;
-		font-family: var(--font-mono);
+		gap: 14px;
+		flex-wrap: wrap;
 	}
-
-	.search {
-		flex: 1;
-		min-height: 0;
-		display: flex;
-		flex-direction: column;
-	}
-	.s-head {
+	.c-status {
 		display: flex;
 		align-items: center;
 		gap: 8px;
+		font-size: 0.86rem;
+		color: var(--text-dim);
+	}
+	:global(.spin) {
+		animation: spin 1.1s linear infinite;
+	}
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+	.c-cols {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+		gap: 14px;
+		margin-top: 12px;
+	}
+	.c-block h3 {
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		font-size: 0.82rem;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--text-dim);
+		font-weight: 500;
+		margin: 0 0 8px;
+	}
+	.c-block {
+		min-width: 0;
+		max-height: 44vh;
+		overflow-y: auto;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--panel);
+		padding: 10px 12px;
+	}
+	.dup-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+	.dup-list li {
+		border-bottom: 1px dashed var(--border);
+		padding: 5px 0;
+	}
+	.dup-size {
+		font-size: 0.76rem;
+		color: var(--warn);
+	}
+	.row {
+		width: 100%;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 4px 2px;
+		background: none;
+		border: none;
+		color: var(--text);
+		font: inherit;
+		cursor: pointer;
+		text-align: left;
+	}
+	.row:hover {
+		background: var(--surface-hover);
+	}
+	.r-path {
+		flex: 1;
+		font-size: 0.8rem;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		direction: rtl;
+		text-align: left;
+	}
+	.r-size {
+		font-size: 0.78rem;
+		color: var(--text-dim);
+	}
+	.note {
+		font-size: 0.74rem;
+		color: var(--text-faint);
+		margin: 6px 0 0;
+	}
+	.note.big {
+		font-size: 0.8rem;
+		margin-top: 12px;
+	}
+
+	/* Hledání */
+	.s-head {
+		display: flex;
+		align-items: center;
+		gap: 10px;
 		color: var(--text-dim);
 	}
 	.s-head input {
@@ -413,87 +526,33 @@
 		outline: none;
 		color: var(--text);
 		font: inherit;
-		font-size: 0.9rem;
+		font-size: 0.95rem;
 		padding: 4px 0;
+	}
+	.sel {
+		background: var(--panel);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text);
+		font: inherit;
+		font-size: 0.82rem;
+		padding: 4px 8px;
 	}
 	.hits {
 		list-style: none;
 		margin: 10px 0 0;
 		padding: 0;
-		overflow-y: auto;
-		min-height: 0;
-		flex: 1;
-	}
-	.hit {
-		width: 100%;
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 5px 8px;
-		background: none;
-		border: none;
-		border-bottom: 1px dashed var(--border);
-		color: var(--text);
-		font: inherit;
-		cursor: pointer;
-		text-align: left;
-	}
-	.hit:hover {
-		background: var(--surface-hover);
-	}
-	.hit-path {
-		flex: 1;
-		font-size: 0.78rem;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		direction: rtl;
-		text-align: left;
-	}
-	.hit-size {
-		font-size: 0.72rem;
-		color: var(--text-dim);
-	}
-	.hit.system-f .hit-path,
-	.legend .system-f {
-		color: var(--warn);
-	}
-	.hit.hidden-f .hit-path,
-	.legend .hidden-f {
-		color: var(--text-faint);
-	}
-	.legend {
-		font-size: 0.68rem;
-		color: var(--text-faint);
-		margin-top: 8px;
-	}
-	.dups {
-		max-height: 40vh;
+		max-height: 38vh;
 		overflow-y: auto;
 	}
-	.dup-input {
-		flex: 1;
-		background: var(--panel);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		color: var(--text);
-		font-size: 0.76rem;
-		padding: 5px 8px;
-		outline: none;
-	}
-	.dup-btn {
-		width: auto;
-		margin-top: 0;
-		white-space: nowrap;
-	}
-	.dup-group {
+	.hits .row {
 		border-bottom: 1px dashed var(--border);
-		padding: 6px 0;
 	}
-	.dup-size {
-		font-size: 0.72rem;
+	.row.system-f .r-path {
 		color: var(--warn);
-		padding: 0 8px;
+	}
+	.row.hidden-f .r-path {
+		color: var(--text-faint);
 	}
 	.mono {
 		font-family: var(--font-mono);
@@ -503,10 +562,7 @@
 	}
 	.empty {
 		color: var(--text-faint);
-		font-size: 0.85rem;
+		font-size: 0.88rem;
 		padding: 12px;
-	}
-	.empty.small {
-		padding: 8px 0;
 	}
 </style>

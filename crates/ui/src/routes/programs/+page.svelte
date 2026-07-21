@@ -106,6 +106,38 @@
 		return list.toSorted(cmp);
 	});
 
+	// Seskupení seznamu do sekcí s hlavičkami — ať se v 500 položkách
+	// dá orientovat: dle názvu → písmena, dle vydavatele → vydavatel,
+	// dle instalace → měsíce.
+	let groupedList = $derived.by(() => {
+		const label = (a) => {
+			if (sortKey === 'publisher') return a.publisher ?? 'Bez vydavatele';
+			if (sortKey === 'date') {
+				if (!a.install_ts) return 'Neznámé datum';
+				const d = new Date(a.install_ts * 1000);
+				return d.toLocaleDateString('cs-CZ', { month: 'long', year: 'numeric' });
+			}
+			if (sortKey === 'paths') return null;
+			const c = a.display_name[0]?.toUpperCase() ?? '#';
+			return /[A-ZÁ-Ž]/.test(c) ? c : '#';
+		};
+		const groups = [];
+		let current = null;
+		for (const a of shown) {
+			const l = label(a);
+			if (l === null) {
+				if (!current) groups.push((current = { label: null, items: [] }));
+				current.items.push(a);
+				continue;
+			}
+			if (!current || current.label !== l) {
+				groups.push((current = { label: l, items: [] }));
+			}
+			current.items.push(a);
+		}
+		return groups;
+	});
+
 	let counts = $derived.by(() => ({
 		desktop: apps.filter((a) => a.kind === 'desktop').length,
 		msix: apps.filter((a) => a.kind === 'msix').length,
@@ -148,13 +180,22 @@
 		} catch {
 			map = [];
 		}
+		// Velikosti rovnou a samy — cache z DB je hned, chybějící nebo
+		// starší než den se dopočítají na pozadí (loader v řádcích).
+		const dayAgo = Date.now() / 1000 - 86400;
+		const stale = map.some(
+			(p) => p.role !== 'registry' && (p.size_bytes == null || (p.size_ts ?? 0) < dayAgo)
+		);
+		if (stale) computeSizes(a.identity_key);
 	}
 
-	async function computeSizes() {
-		if (!selected || sizing) return;
+	async function computeSizes(key) {
+		if (sizing) return;
 		sizing = true;
 		try {
-			map = await invoke('compute_app_sizes', { identityKey: selected.identity_key });
+			const fresh = await invoke('compute_app_sizes', { identityKey: key });
+			// Uživatel mohl mezitím kliknout jinam — nepřepsat cizí mapu.
+			if (selected?.identity_key === key) map = fresh;
 		} catch {
 			/* chyba se ukáže absencí velikostí */
 		}
@@ -238,29 +279,34 @@
 	{:else}
 		<div class="cols">
 			<ul class="list">
-				{#each shown as a (a.identity_key)}
-					{@const run = running.get(a.identity_key) ?? 0}
-					<li>
-						<button
-							class="row"
-							class:active={selected?.identity_key === a.identity_key}
-							onclick={() => select(a)}
-						>
-							{#if iconUrls[a.identity_key]}
-								<img class="app-icon" src={iconUrls[a.identity_key]} alt="" />
-							{:else}
-								<span class="app-icon ph"></span>
-							{/if}
-							<span class="row-main">
-								<span class="row-title">{a.display_name}</span>
-								<span class="row-pub">{a.publisher ?? '—'}</span>
-							</span>
-							{#if run > 0}
-								<span class="run-dot" title="{run} běžících procesů">{run}</span>
-							{/if}
-							<span class="row-ver mono">{a.version ?? ''}</span>
-						</button>
-					</li>
+				{#each groupedList as g (g.label ?? '·')}
+					{#if g.label}
+						<li class="grp-head label-tech">{g.label}</li>
+					{/if}
+					{#each g.items as a (a.identity_key)}
+						{@const run = running.get(a.identity_key) ?? 0}
+						<li>
+							<button
+								class="row"
+								class:active={selected?.identity_key === a.identity_key}
+								onclick={() => select(a)}
+							>
+								{#if iconUrls[a.identity_key]}
+									<img class="app-icon" src={iconUrls[a.identity_key]} alt="" />
+								{:else}
+									<span class="app-icon ph"></span>
+								{/if}
+								<span class="row-main">
+									<span class="row-title">{a.display_name}</span>
+									<span class="row-pub">{a.publisher ?? '—'}</span>
+								</span>
+								{#if run > 0}
+									<span class="run-dot" title="{run} běžících procesů">{run}</span>
+								{/if}
+								<span class="row-ver mono">{a.version ?? ''}</span>
+							</button>
+						</li>
+					{/each}
 				{/each}
 			</ul>
 
@@ -291,10 +337,10 @@
 								{/if}
 							</span>
 						</div>
-						<button class="size-btn" onclick={computeSizes} disabled={sizing}>
-							<Scale size={13} />
-							{sizing ? 'počítám…' : totalSize != null ? fmtSize(totalSize) : 'Spočítat velikosti'}
-						</button>
+						<span class="size-btn" class:loading={sizing}>
+							<Scale size={14} />
+							{sizing ? 'počítám velikosti…' : totalSize != null ? fmtSize(totalSize) : '—'}
+						</span>
 					</div>
 
 					{#if map.length === 0}
@@ -317,9 +363,11 @@
 									<span class="m-src" data-conf={p.confidence}>
 										{sources[p.source] ?? p.source}
 									</span>
-									<span class="m-size mono"
-										>{p.role === 'registry' ? '' : fmtSize(p.size_bytes)}</span
-									>
+									<span class="m-size mono">
+										{#if p.role === 'registry'}{''}
+										{:else if p.size_bytes == null && sizing}<span class="m-load">···</span>
+										{:else}{fmtSize(p.size_bytes)}{/if}
+									</span>
 								</li>
 							{/each}
 						</ul>
@@ -423,14 +471,48 @@
 		color: var(--text);
 		box-shadow: inset 0 0 0 1px var(--border-strong);
 	}
+	/* Select ve stejném jazyce jako segmenty — tmavý, bez nativního vzhledu. */
 	.sort {
+		appearance: none;
 		background: var(--surface);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		color: var(--text-dim);
 		font: inherit;
-		font-size: 0.76rem;
-		padding: 5px 8px;
+		font-size: 0.8rem;
+		padding: 6px 26px 6px 10px;
+		cursor: pointer;
+		color-scheme: dark;
+		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%239a9aa1' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
+		background-repeat: no-repeat;
+		background-position: right 9px center;
+	}
+	.sort:hover {
+		color: var(--text);
+		border-color: var(--border-strong);
+	}
+	.grp-head {
+		position: sticky;
+		top: 0;
+		background: rgba(22, 23, 28, 0.92);
+		padding: 5px 12px 4px;
+		font-size: 0.68rem;
+		color: var(--text-faint);
+		border-bottom: 1px dashed var(--border);
+		z-index: 1;
+	}
+	.m-load {
+		color: var(--text-faint);
+		animation: pulse 1s ease infinite;
+	}
+	@keyframes pulse {
+		50% {
+			opacity: 0.35;
+		}
+	}
+	.size-btn.loading {
+		color: var(--text-dim);
+		animation: pulse 1.2s ease infinite;
 	}
 
 	.cols {

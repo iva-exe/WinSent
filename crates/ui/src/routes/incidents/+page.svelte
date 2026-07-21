@@ -3,7 +3,7 @@
 	// jedním modelem. Seznam + detail s křivkou okna T-5min..T+30s.
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
-	import { TriangleAlert, Zap, MonitorX, Timer, RefreshCw } from 'lucide-svelte';
+	import { TriangleAlert, Zap, MonitorX, Timer, RefreshCw, Trash2 } from 'lucide-svelte';
 	import Sparkline from '$lib/Sparkline.svelte';
 
 	let incidents = $state([]);
@@ -51,6 +51,18 @@
 		}
 	}
 
+	// Smazání ZÁZNAMU (jen náš seznam — nic v systému se nemění).
+	async function remove(i, ev) {
+		ev?.stopPropagation();
+		try {
+			await invoke('delete_incident', { id: i.id });
+			if (selected?.id === i.id) selected = null;
+			load();
+		} catch {
+			/* služba mimo */
+		}
+	}
+
 	// Křivka systému v okně incidentu (CPU %) — z retenční kaskády,
 	// takže funguje i pro starší incidenty (řidší body).
 	async function select(i) {
@@ -93,10 +105,21 @@
 	{#if loadError}
 		<p class="empty">Nelze načíst incidenty: {loadError}</p>
 	{:else if incidents.length === 0}
-		<p class="empty">
-			Žádné incidenty. Až se něco zasekne, spadne nebo modře zhavaruje, objeví se to tady —
-			i s tím, co se dělo okolo.
-		</p>
+		<div class="empty explain">
+			<p><b>Zatím žádné incidenty — to je dobře.</b></p>
+			<p>
+				Winsent na pozadí nepřetržitě nahrává stav systému. Když se něco pokazí, objeví se
+				to tady i s kontextem, který jinde nenajdeš:
+			</p>
+			<p>
+				<Timer size={13} /> <b>Zásek systému</b> — celé PC přestane reagovat; hlídač to změří
+				a určí viníka (disk / RAM / CPU / přehřátí).<br />
+				<Zap size={13} /> <b>Pád aplikace</b> — proces skončil chybou; uvidíš exit kód
+				a co se dělo 5 minut předtím.<br />
+				<MonitorX size={13} /> <b>Modrá obrazovka</b> — po restartu se přečte minidump
+				a bugcheck se přeloží do lidské řeči.
+			</p>
+		</div>
 	{:else}
 		<div class="cols">
 			<ul class="list">
@@ -110,6 +133,14 @@
 								<span class="row-culprit">{i.culprit ?? '—'}</span>
 							</span>
 							<span class="row-ts">{fmtTs(i.ts)}</span>
+							<span
+								class="row-del"
+								role="button"
+								tabindex="-1"
+								title="Odstranit záznam (v systému se nic nemění)"
+								onclick={(ev) => remove(i, ev)}
+								onkeydown={() => {}}><Trash2 size={14} /></span
+							>
 						</button>
 					</li>
 				{/each}
@@ -193,18 +224,51 @@
 						</ul>
 					{/if}
 
-					<h3 class="sec">CPU v okně incidentu</h3>
+					<h3 class="sec">Co se dělo okolo (okno incidentu)</h3>
 					{#if windowPoints.length > 1}
+						{@const maxMem = Math.max(...windowPoints.map((p) => p.mem_used_mb), 1)}
+						{@const maxNet = Math.max(
+							...windowPoints.map((p) => p.net_rx_bps + p.net_tx_bps),
+							1
+						)}
 						<div class="spark">
-							<Sparkline values={windowPoints.map((p) => p.cpu_pct)} height={54} marker={markerIdx} />
+							<span class="spark-l">CPU</span>
+							<Sparkline
+								values={windowPoints.map((p) => p.cpu_pct)}
+								height={48}
+								marker={markerIdx}
+							/>
+						</div>
+						<div class="spark">
+							<span class="spark-l">RAM</span>
+							<Sparkline
+								values={windowPoints.map((p) => (p.mem_used_mb / maxMem) * 100)}
+								height={48}
+								marker={markerIdx}
+							/>
+						</div>
+						<div class="spark">
+							<span class="spark-l">Síť</span>
+							<Sparkline
+								values={windowPoints.map(
+									(p) => ((p.net_rx_bps + p.net_tx_bps) / maxNet) * 100
+								)}
+								height={48}
+								marker={markerIdx}
+							/>
 						</div>
 						<div class="spark-range">
 							<span>{fmtTs(windowPoints[0].ts)}</span>
+							<span>linka = okamžik incidentu</span>
 							<span>{fmtTs(windowPoints[windowPoints.length - 1].ts)}</span>
 						</div>
 					{:else}
 						<p class="empty small">Pro toto okno už nejsou vzorky v historii.</p>
 					{/if}
+					<p class="foot">
+						Záznam jde odstranit ikonou koše v seznamu — maže se jen tenhle zápis,
+						v systému se nic nemění.
+					</p>
 				{/if}
 			</section>
 		</div>
@@ -409,14 +473,49 @@
 		border-radius: var(--radius-sm);
 		background: var(--panel);
 		padding: 8px 10px 4px;
+		margin-bottom: 6px;
+		position: relative;
+	}
+	.spark-l {
+		position: absolute;
+		top: 5px;
+		left: 9px;
+		font-size: 0.64rem;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-faint);
+		z-index: 1;
 	}
 	.spark-range {
 		display: flex;
 		justify-content: space-between;
 		font-family: var(--font-mono);
-		font-size: 0.64rem;
+		font-size: 0.68rem;
 		color: var(--text-faint);
 		margin-top: 4px;
+	}
+	.row-del {
+		display: grid;
+		place-items: center;
+		color: var(--text-faint);
+		padding: 3px;
+		border-radius: var(--radius-sm);
+	}
+	.row-del:hover {
+		color: var(--danger);
+		background: var(--surface-hover);
+	}
+	.empty.explain {
+		max-width: 620px;
+		line-height: 1.55;
+	}
+	.empty.explain p {
+		margin: 0 0 10px;
+	}
+	.foot {
+		margin-top: 14px;
+		font-size: 0.76rem;
+		color: var(--text-faint);
 	}
 	.empty {
 		color: var(--text-faint);

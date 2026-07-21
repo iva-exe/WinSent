@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,6 +62,10 @@ pub enum Request {
     },
     /// Duplicity pod kořenem — dvoufázová čtecí analýza (SPEC 11.3).
     FindDuplicates { root: String, min_size: u64 },
+    /// Stav auto-indexace + úklidové analýzy (v4E).
+    QueryCleanup,
+    /// Smaže záznam incidentu (jen náš DB záznam, žádná mutace OS).
+    DeleteIncident { id: i64 },
 }
 
 /// Odpověď služba → UI.
@@ -124,6 +128,13 @@ pub enum Response {
     Files(Vec<crate::proc::FileHit>),
     /// Skupiny duplicit: (velikost, cesty).
     Duplicates(Vec<(u64, Vec<String>)>),
+    /// Stav úklidu: indexace svazků (písmeno, záznamů, hotovo),
+    /// běží-li analýza a případný výsledek.
+    Cleanup {
+        indexing: Vec<(char, u64, bool)>,
+        running: bool,
+        report: Option<crate::proc::CleanupReport>,
+    },
     /// Chyba zpracování požadavku. Nic neselhává mlčky (SPEC kap. 22).
     Error {
         message: String,

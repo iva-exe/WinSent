@@ -17,6 +17,8 @@ pub enum StoreMsg {
         size_bytes: u64,
         ts: i64,
     },
+    /// Smazání záznamu incidentu (vlastní DB, žádná mutace OS).
+    DeleteIncident(i64),
     Event {
         ts: i64,
         kind: &'static str,

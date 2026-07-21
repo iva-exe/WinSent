@@ -170,6 +170,31 @@ fn search_files(
     ipc::client::search_files(letter, query, limit).map_err(|e| e.to_string())
 }
 
+/// Stav auto-úklidu (v4E).
+#[derive(Debug, Serialize)]
+struct CleanupDto {
+    indexing: Vec<(char, u64, bool)>,
+    running: bool,
+    report: Option<core_types::proc::CleanupReport>,
+}
+
+#[tauri::command]
+fn query_cleanup() -> Result<CleanupDto, String> {
+    ipc::client::query_cleanup()
+        .map(|(indexing, running, report)| CleanupDto {
+            indexing,
+            running,
+            report,
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Smaže záznam incidentu (vlastní DB záznam).
+#[tauri::command]
+fn delete_incident(id: i64) -> Result<(), String> {
+    ipc::client::delete_incident(id).map_err(|e| e.to_string())
+}
+
 /// Duplicity (v4D) — pomalé, async command.
 #[tauri::command(async)]
 fn find_duplicates(root: String, min_size: u64) -> Result<Vec<(u64, Vec<String>)>, String> {
@@ -283,7 +308,9 @@ fn main() {
             query_volumes,
             build_file_index,
             search_files,
-            find_duplicates
+            find_duplicates,
+            query_cleanup,
+            delete_incident
         ])
         .setup(|app| {
             setup_tray(app)?;

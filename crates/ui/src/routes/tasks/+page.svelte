@@ -18,7 +18,7 @@
 	} from 'lucide-svelte';
 
 	// Buffery na celou dostupnou historii (1 h retence surových vzorků).
-	const CAP = 3600;
+	const CAP = 90000; // 24 h: 1s vzorky (1 h) + 10s/1m agregáty kaskády
 	// Tabulka: hodnoty se mění každou sekundu, ale PŘESKUPUJE se nejvýš
 	// jednou za REORDER_MS — jinak list neustále tancuje (výkon i klid).
 	const REORDER_MS = 3000;
@@ -415,7 +415,7 @@
 
 	async function loadHistory(s, now) {
 		try {
-			const points = await invoke('query_system_history', { from: now - CAP, to: now - 1 });
+			const points = await invoke('query_system_history', { from: now - 86400, to: now - 1 });
 			if (!points.length) return;
 			const total = Math.max(s.mem_total_mb, 1);
 			const hTs = [], hCpu = [], hMem = [], hSys = [], hGpu = [], hDown = [], hUp = [];
@@ -441,7 +441,7 @@
 			// diskTot zarovnáme s hlavní osou: součty z disk historie per ts.
 			const totByTs = new Map();
 			try {
-				const dpts = await invoke('query_disk_history', { from: now - CAP, to: now - 1 });
+				const dpts = await invoke('query_disk_history', { from: now - 86400, to: now - 1 });
 				const series = {};
 				for (const [t, idx, r, w] of dpts) {
 					totByTs.set(t, (totByTs.get(t) ?? 0) + r + w);

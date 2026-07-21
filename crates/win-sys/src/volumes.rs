@@ -16,6 +16,56 @@ pub struct Volume {
     pub free_bytes: u64,
     /// Jen pevné disky (DRIVE_FIXED) mají true — síťové/USB se v UI liší.
     pub fixed: bool,
+    /// Index fyzického disku (IOCTL extents) — spojení s SMART kartou.
+    pub disk_index: Option<u32>,
+}
+
+/// IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS.
+const IOCTL_GET_EXTENTS: u32 = 0x0056_0000;
+
+/// Fyzický disk pod svazkem (první extent — spanned svazky jsou vzácné).
+fn disk_of(letter: char) -> Option<u32> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows::Win32::System::IO::DeviceIoControl;
+    let path: Vec<u16> = std::ffi::OsString::from(format!(r"\\.\{letter}:"))
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: standardní IOCTL čtení; handle se vždy zavře.
+    unsafe {
+        let h = CreateFileW(
+            PCWSTR(path.as_ptr()),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            None,
+        )
+        .ok()?;
+        // VOLUME_DISK_EXTENTS: NumberOfDiskExtents u32 + extents
+        // (DiskNumber u32 @ offset 8 prvního extentu).
+        let mut buf = [0u8; 0x70];
+        let mut ret = 0u32;
+        let ok = DeviceIoControl(
+            h,
+            IOCTL_GET_EXTENTS,
+            None,
+            0,
+            Some(buf.as_mut_ptr() as *mut _),
+            buf.len() as u32,
+            Some(&mut ret),
+            None,
+        );
+        let _ = CloseHandle(h);
+        ok.ok()?;
+        let n = u32::from_le_bytes(buf[0..4].try_into().ok()?);
+        (n >= 1).then(|| u32::from_le_bytes(buf[8..12].try_into().unwrap_or_default()))
+    }
 }
 
 /// Vyjmenuje připojené svazky (bez CD/RAM disků).
@@ -67,6 +117,7 @@ pub fn volumes() -> Vec<Volume> {
                 total_bytes: total,
                 free_bytes: free,
                 fixed: dtype == 3,
+                disk_index: disk_of(letter),
             });
         }
     }

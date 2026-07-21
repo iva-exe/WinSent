@@ -95,7 +95,11 @@ pub fn scan() -> Vec<AppEntry> {
         entry.publisher = entry.publisher.take().or(u.publisher);
         entry.version = entry.version.take().or(u.version);
         entry.install_ts = entry.install_ts.take().or(u.install_ts);
-        entry.icon_hint = entry.icon_hint.take().or(u.display_icon);
+        entry.icon_hint = entry
+            .icon_hint
+            .take()
+            .or(u.display_icon)
+            .or_else(|| u.uninstall_string.as_deref().and_then(exe_from_command));
 
         if let Some(loc) = u
             .install_location
@@ -252,6 +256,23 @@ struct UninstallEntry {
     install_location: Option<String>,
     install_ts: Option<i64>,
     display_icon: Option<String>,
+    uninstall_string: Option<String>,
+}
+
+/// Cesta k .exe z příkazu (UninstallString) — další zdroj ikony.
+fn exe_from_command(cmd: &str) -> Option<String> {
+    let cmd = cmd.trim();
+    let path = if let Some(rest) = cmd.strip_prefix('"') {
+        rest.split('"').next()?
+    } else {
+        // Bez uvozovek: vzít po „.exe“ včetně.
+        let lc = cmd.to_ascii_lowercase();
+        let end = lc.find(".exe")? + 4;
+        &cmd[..end]
+    };
+    let lc = path.to_ascii_lowercase();
+    // msiexec ikonu aplikace nenese.
+    (lc.ends_with(".exe") && !lc.contains("msiexec")).then(|| path.to_string())
 }
 
 /// Načte Uninstall záznamy ze tří kořenů. Systémové komponenty
@@ -297,6 +318,7 @@ fn uninstall_entries() -> Vec<UninstallEntry> {
                 install_location: read_string(root, &key, "InstallLocation"),
                 install_ts,
                 display_icon: read_string(root, &key, "DisplayIcon"),
+                uninstall_string: read_string(root, &key, "UninstallString"),
             });
         }
     }

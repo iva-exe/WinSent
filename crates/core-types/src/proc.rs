@@ -173,6 +173,8 @@ pub struct VolumeRow {
     pub total_bytes: u64,
     pub free_bytes: u64,
     pub fixed: bool,
+    /// Fyzický disk pod svazkem (spojení se SMART kartou).
+    pub disk_index: Option<u32>,
 }
 
 /// Zdraví fyzického disku (NVMe health log; SATA zatím None).
@@ -197,6 +199,17 @@ pub struct FileHit {
     /// FILE_ATTRIBUTE_* bity (adresář/skrytý/systémový → barvy v UI).
     pub attrs: u32,
     pub size_bytes: Option<u64>,
+}
+
+/// Výsledek úklidové analýzy disků (v4E).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CleanupReport {
+    /// (velikost, cesty) — potvrzené duplicity (jméno+velikost+hash).
+    pub dups: Vec<(u64, Vec<String>)>,
+    pub zero_byte: Vec<String>,
+    /// (cesta, velikost) — temp adresáře k úklidu.
+    pub junk: Vec<(String, u64)>,
+    pub finished_ts: i64,
 }
 
 /// Incident (zásek s viníkem, pád aplikace, BSOD) — SPEC kap. 16.

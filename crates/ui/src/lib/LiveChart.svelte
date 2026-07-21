@@ -31,7 +31,7 @@
 
 	const SPAN_DEFAULT = 180;
 	const SPAN_MIN = 30;
-	const SPAN_MAX = 3600;
+	const SPAN_MAX = 86400; // 24 h — osa vždy pokrývá poslední den
 
 	let el;
 	let u;
@@ -155,6 +155,65 @@
 			: colorForLoad(v);
 	}
 
+	// Šrafování úseků bez měření: mezera > 30 s mezi vzorky (kaskáda
+	// dává max 10s buckety uvnitř dne) = služba neběžela.
+	let hatchPat = null;
+	function hatchPattern(ctx, dpr) {
+		if (!hatchPat) {
+			const c = document.createElement('canvas');
+			const s = Math.round(8 * dpr);
+			c.width = s;
+			c.height = s;
+			const g = c.getContext('2d');
+			g.strokeStyle = 'rgba(255,255,255,0.07)';
+			g.lineWidth = dpr;
+			g.beginPath();
+			g.moveTo(-2, s + 2);
+			g.lineTo(s + 2, -2);
+			g.stroke();
+			hatchPat = ctx.createPattern(c, 'repeat');
+		}
+		return hatchPat;
+	}
+
+	function lowerBound(arr, v) {
+		let lo = 0;
+		let hi = arr.length;
+		while (lo < hi) {
+			const mid = (lo + hi) >> 1;
+			if (arr[mid] < v) lo = mid + 1;
+			else hi = mid;
+		}
+		return lo;
+	}
+
+	function drawGaps(uu) {
+		if (!ts.length) return;
+		const ctx = uu.ctx;
+		const { left, top, width, height } = uu.bbox;
+		const dpr = window.devicePixelRatio || 1;
+		const xMin = uu.scales.x.min;
+		const xMax = uu.scales.x.max;
+		const gaps = [];
+		if (ts[0] > xMin + 1) gaps.push([xMin, ts[0]]);
+		let i = Math.max(0, lowerBound(ts, xMin) - 1);
+		for (; i < ts.length - 1 && ts[i] <= xMax; i++) {
+			if (ts[i + 1] - ts[i] > 30) gaps.push([ts[i], ts[i + 1]]);
+		}
+		if (ts[ts.length - 1] < xMax - 30) gaps.push([ts[ts.length - 1], xMax]);
+		if (!gaps.length) return;
+		ctx.save();
+		ctx.fillStyle = hatchPattern(ctx, dpr);
+		for (const [a, b] of gaps) {
+			const x1 = Math.max(left, uu.valToPos(Math.max(a, xMin), 'x', true));
+			const x2 = Math.min(left + width, uu.valToPos(Math.min(b, xMax), 'x', true));
+			if (x2 - x1 > 2) {
+				ctx.fillRect(x1, top, x2 - x1, height);
+			}
+		}
+		ctx.restore();
+	}
+
 	// Markery incidentů — kreslí se přímo do canvasu grafu (draw hook),
 	// takže drží pozici při pan/zoomu bez DOM overlaye.
 	function drawMarkers(uu) {
@@ -214,8 +273,9 @@
 	function setEnd(end) {
 		const last = lastTs();
 		if (last == null) return;
-		const first = ts.length ? ts[0] : last;
-		end = Math.max(Math.min(end, last), Math.min(first + span, last));
+		// Osa reflektuje posledních 24 h — scrollovat jde i do úseků,
+		// kde se neměřilo (ty jsou vyšrafované).
+		end = Math.max(Math.min(end, last), last - SPAN_MAX + span);
 		endTs = end >= last - 0.5 ? null : end;
 	}
 
@@ -378,6 +438,7 @@
 					],
 					draw: [
 						(uu) => {
+							drawGaps(uu);
 							drawMarkers(uu);
 							positionPin();
 						}

@@ -116,6 +116,13 @@ pub fn recent_incidents(
     rows.collect()
 }
 
+/// Smaže záznam incidentu (mažeme jen VLASTNÍ DB záznam — žádná
+/// mutace systému; uživatel má právo vyčistit si seznam).
+pub fn delete_incident(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
+    conn.execute("DELETE FROM incident WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
 /// Existuje už incident daného druhu v čase ±tol? (dedup při startu —
 /// BSOD scan nesmí založit tentýž incident po každém restartu služby.)
 pub fn incident_exists(
