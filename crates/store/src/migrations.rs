@@ -79,6 +79,69 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE proc_names ADD COLUMN identity_key TEXT;
     ALTER TABLE proc_names ADD COLUMN app_name TEXT;
     ALTER TABLE proc_names ADD COLUMN publisher TEXT;",
+    // → verze 6 (v3): retenční kaskáda naostro (SPEC kap. 8) + event a
+    // incident tabulky (SPEC kap. 16.4). Agregáty nesou avg i max —
+    // špička nesmí zmizet průměrováním. ts agregátu = začátek bucketu.
+    // Odchylka od SPEC: incident.app_id → identity_key (tabulka app
+    // vznikne až s inventářem ve v4, pak se dá dopropojit).
+    "CREATE TABLE system_10s (
+        ts INTEGER PRIMARY KEY,
+        cpu_pct REAL, cpu_pct_max REAL,
+        mem_used_mb INTEGER,
+        net_rx_bps INTEGER, net_tx_bps INTEGER,
+        gpu_pct REAL, gpu_pct_max REAL,
+        gpu_temp_c REAL, cpu_clock_mhz INTEGER
+    ) WITHOUT ROWID;
+    CREATE TABLE system_1m (
+        ts INTEGER PRIMARY KEY,
+        cpu_pct REAL, cpu_pct_max REAL,
+        mem_used_mb INTEGER,
+        net_rx_bps INTEGER, net_tx_bps INTEGER,
+        gpu_pct REAL, gpu_pct_max REAL,
+        gpu_temp_c REAL, cpu_clock_mhz INTEGER
+    ) WITHOUT ROWID;
+    CREATE TABLE sample_10s (
+        ts INTEGER NOT NULL, proc_id INTEGER NOT NULL,
+        cpu_pm INTEGER, cpu_pm_max INTEGER,
+        ws_kb INTEGER, io_r INTEGER, io_w INTEGER,
+        PRIMARY KEY (ts, proc_id)
+    ) WITHOUT ROWID;
+    CREATE TABLE sample_1m (
+        ts INTEGER NOT NULL, proc_id INTEGER NOT NULL,
+        cpu_pm INTEGER, cpu_pm_max INTEGER,
+        ws_kb INTEGER, io_r INTEGER, io_w INTEGER,
+        PRIMARY KEY (ts, proc_id)
+    ) WITHOUT ROWID;
+    CREATE TABLE disk_10s (
+        ts INTEGER NOT NULL, disk INTEGER NOT NULL,
+        r_bps INTEGER, w_bps INTEGER,
+        PRIMARY KEY (ts, disk)
+    ) WITHOUT ROWID;
+    CREATE TABLE disk_1m (
+        ts INTEGER NOT NULL, disk INTEGER NOT NULL,
+        r_bps INTEGER, w_bps INTEGER,
+        PRIMARY KEY (ts, disk)
+    ) WITHOUT ROWID;
+    CREATE TABLE event (
+        id     INTEGER PRIMARY KEY,
+        ts     INTEGER NOT NULL,
+        kind   TEXT NOT NULL,
+        pid    INTEGER,
+        detail TEXT
+    );
+    CREATE INDEX ix_event_ts ON event(ts DESC);
+    CREATE TABLE incident (
+        id           INTEGER PRIMARY KEY,
+        ts           INTEGER NOT NULL,
+        kind         TEXT NOT NULL,
+        identity_key TEXT,
+        culprit      TEXT,
+        detail       TEXT,
+        etl_path     TEXT,
+        window_from  INTEGER,
+        window_to    INTEGER
+    );
+    CREATE INDEX ix_incident_ts ON incident(ts DESC);",
 ];
 
 /// Aplikuje všechny dosud neaplikované migrace. Bezpečné volat při

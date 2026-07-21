@@ -94,7 +94,14 @@ pub fn disk_history(
 ) -> Result<Vec<(i64, u32, u64, u64)>, rusqlite::Error> {
     let mut stmt = conn.prepare_cached(
         "SELECT ts, disk, r_bps, w_bps FROM disk_1s
-         WHERE ts BETWEEN ?1 AND ?2 ORDER BY ts, disk",
+         WHERE ts BETWEEN ?1 AND ?2
+         UNION ALL
+         SELECT ts, disk, r_bps, w_bps FROM disk_10s
+         WHERE ts BETWEEN ?1 AND ?2
+         UNION ALL
+         SELECT ts, disk, r_bps, w_bps FROM disk_1m
+         WHERE ts BETWEEN ?1 AND ?2
+         ORDER BY ts, disk",
     )?;
     let rows = stmt.query_map(params![from, to], |r| {
         Ok((
@@ -107,7 +114,9 @@ pub fn disk_history(
     rows.collect()
 }
 
-/// Systémové body v rozsahu [from, to] (unix s, včetně).
+/// Systémové body v rozsahu [from, to] (unix s, včetně). Čte napříč
+/// retenční kaskádou (1s → 10s → 1m) — úrovně se nepřekrývají (retence
+/// maže po agregaci), takže UNION ALL stačí; body jen řídnou s věkem.
 pub fn system_history(
     conn: &Connection,
     from: i64,
@@ -115,7 +124,14 @@ pub fn system_history(
 ) -> Result<Vec<SystemPoint>, rusqlite::Error> {
     let mut stmt = conn.prepare_cached(
         "SELECT ts, cpu_pct, mem_used_mb, net_rx_bps, net_tx_bps, gpu_pct
-         FROM system_1s WHERE ts BETWEEN ?1 AND ?2 ORDER BY ts",
+         FROM system_1s WHERE ts BETWEEN ?1 AND ?2
+         UNION ALL
+         SELECT ts, cpu_pct, mem_used_mb, net_rx_bps, net_tx_bps, gpu_pct
+         FROM system_10s WHERE ts BETWEEN ?1 AND ?2
+         UNION ALL
+         SELECT ts, cpu_pct, mem_used_mb, net_rx_bps, net_tx_bps, gpu_pct
+         FROM system_1m WHERE ts BETWEEN ?1 AND ?2
+         ORDER BY ts",
     )?;
     let rows = stmt.query_map(params![from, to], |r| {
         Ok(SystemPoint {
@@ -130,47 +146,54 @@ pub fn system_history(
     rows.collect()
 }
 
-/// Stav procesů v čase `ts` — nejbližší existující vzorek ±2 s.
+/// Stav procesů v čase `ts` — nejbližší existující vzorek. Hledá se
+/// napříč retenční kaskádou: 1s (±2 s), pak 10s bucket (±10 s), pak
+/// 1m bucket (±60 s) — starší náhled je z agregátů (avg za bucket).
 /// Vrací (skutečný ts vzorku, řádky); None když v okně nic není.
 pub fn procs_at(
     conn: &Connection,
     ts: i64,
 ) -> Result<Option<(i64, Vec<HistProcRow>)>, rusqlite::Error> {
-    // Nejbližší vzorek podle |odchylky|, max 2 s daleko.
-    let actual: Option<i64> = conn
-        .query_row(
-            "SELECT ts FROM system_1s WHERE ts BETWEEN ?1 - 2 AND ?1 + 2
-             ORDER BY ABS(ts - ?1) LIMIT 1",
-            params![ts],
-            |r| r.get(0),
-        )
-        .map(Some)
-        .unwrap_or(None);
-    let Some(actual) = actual else {
-        return Ok(None);
-    };
+    // Úrovně kaskády: (tabulka, tolerance hledání).
+    for (table, tol) in [("sample_1s", 2), ("sample_10s", 10), ("sample_1m", 60)] {
+        let actual: Option<i64> = conn
+            .query_row(
+                &format!(
+                    "SELECT ts FROM {table} WHERE ts BETWEEN ?1 - {tol} AND ?1 + {tol}
+                     ORDER BY ABS(ts - ?1) LIMIT 1"
+                ),
+                params![ts],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .unwrap_or(None);
+        let Some(actual) = actual else {
+            continue;
+        };
 
-    let mut stmt = conn.prepare_cached(
-        "SELECT s.proc_id, COALESCE(n.name, '(pid ' || s.proc_id || ')'),
-                s.cpu_pm, s.ws_kb, s.io_r, s.io_w,
-                n.identity_key, n.app_name, n.publisher
-         FROM sample_1s s LEFT JOIN proc_names n ON n.pid = s.proc_id
-         WHERE s.ts = ?1",
-    )?;
-    let rows = stmt
-        .query_map(params![actual], |r| {
-            Ok(HistProcRow {
-                pid: r.get::<_, i64>(0)? as u32,
-                name: r.get(1)?,
-                cpu_pct: r.get::<_, Option<i64>>(2)?.unwrap_or(0) as f32 / 10.0,
-                ws_bytes: r.get::<_, Option<i64>>(3)?.unwrap_or(0).max(0) as u64 * 1024,
-                disk_r_bps: r.get::<_, Option<i64>>(4)?.unwrap_or(0).max(0) as u64,
-                disk_w_bps: r.get::<_, Option<i64>>(5)?.unwrap_or(0).max(0) as u64,
-                identity_key: r.get(6)?,
-                app_name: r.get(7)?,
-                publisher: r.get(8)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(Some((actual, rows)))
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT s.proc_id, COALESCE(n.name, '(pid ' || s.proc_id || ')'),
+                    s.cpu_pm, s.ws_kb, s.io_r, s.io_w,
+                    n.identity_key, n.app_name, n.publisher
+             FROM {table} s LEFT JOIN proc_names n ON n.pid = s.proc_id
+             WHERE s.ts = ?1"
+        ))?;
+        let rows = stmt
+            .query_map(params![actual], |r| {
+                Ok(HistProcRow {
+                    pid: r.get::<_, i64>(0)? as u32,
+                    name: r.get(1)?,
+                    cpu_pct: r.get::<_, Option<i64>>(2)?.unwrap_or(0) as f32 / 10.0,
+                    ws_bytes: r.get::<_, Option<i64>>(3)?.unwrap_or(0).max(0) as u64 * 1024,
+                    disk_r_bps: r.get::<_, Option<i64>>(4)?.unwrap_or(0).max(0) as u64,
+                    disk_w_bps: r.get::<_, Option<i64>>(5)?.unwrap_or(0).max(0) as u64,
+                    identity_key: r.get(6)?,
+                    app_name: r.get(7)?,
+                    publisher: r.get(8)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(Some((actual, rows)));
+    }
+    Ok(None)
 }

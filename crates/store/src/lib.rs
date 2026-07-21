@@ -11,6 +11,7 @@ use std::time::Duration;
 // museli záviset na rusqlite napřímo.
 pub use rusqlite::Connection;
 
+pub mod events;
 pub mod history;
 pub mod migrations;
 pub mod retention;
