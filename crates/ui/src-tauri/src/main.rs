@@ -116,6 +116,30 @@ fn query_incidents(limit: u32) -> Result<Vec<core_types::proc::IncidentRow>, Str
     ipc::client::query_incidents(limit).map_err(|e| e.to_string())
 }
 
+/// Inventář aplikací (v4, SPEC kap. 5).
+#[tauri::command]
+fn query_apps() -> Result<Vec<core_types::proc::AppRow>, String> {
+    ipc::client::query_apps().map_err(|e| e.to_string())
+}
+
+/// Mapa souborů aplikace.
+#[tauri::command]
+fn query_app_map(identity_key: String) -> Result<Vec<core_types::proc::AppPathRow>, String> {
+    ipc::client::query_app_map(identity_key).map_err(|e| e.to_string())
+}
+
+/// Spočítá velikosti cest (pomalé — async přes spawn_blocking Tauri).
+#[tauri::command(async)]
+fn compute_app_sizes(identity_key: String) -> Result<Vec<core_types::proc::AppPathRow>, String> {
+    ipc::client::compute_app_sizes(identity_key).map_err(|e| e.to_string())
+}
+
+/// Vyžádá nový sken inventáře.
+#[tauri::command]
+fn rescan_apps() -> Result<(), String> {
+    ipc::client::rescan_apps().map_err(|e| e.to_string())
+}
+
 /// Vlastní spotřeba nástroje pro dlaždici v Settings (SPEC kap. 2.3).
 #[derive(Debug, Serialize)]
 struct SelfUsageDto {
@@ -196,7 +220,11 @@ fn main() {
             query_core_history,
             query_icon,
             query_events,
-            query_incidents
+            query_incidents,
+            query_apps,
+            query_app_map,
+            compute_app_sizes,
+            rescan_apps
         ])
         .setup(|app| {
             setup_tray(app)?;
