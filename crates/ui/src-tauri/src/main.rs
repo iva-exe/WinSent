@@ -104,6 +104,18 @@ fn query_icon(identity_key: String) -> Result<Option<core_types::proc::IconData>
     ipc::client::query_icon(identity_key).map_err(|e| e.to_string())
 }
 
+/// Události (záseky, pády) v rozsahu — markery na časové ose (v3).
+#[tauri::command]
+fn query_events(from: i64, to: i64) -> Result<Vec<core_types::proc::EventRow>, String> {
+    ipc::client::query_events(from, to).map_err(|e| e.to_string())
+}
+
+/// Poslední incidenty (v3, SPEC kap. 16).
+#[tauri::command]
+fn query_incidents(limit: u32) -> Result<Vec<core_types::proc::IncidentRow>, String> {
+    ipc::client::query_incidents(limit).map_err(|e| e.to_string())
+}
+
 /// Vlastní spotřeba nástroje pro dlaždici v Settings (SPEC kap. 2.3).
 #[derive(Debug, Serialize)]
 struct SelfUsageDto {
@@ -182,7 +194,9 @@ fn main() {
             query_detail_at,
             query_disk_history,
             query_core_history,
-            query_icon
+            query_icon,
+            query_events,
+            query_incidents
         ])
         .setup(|app| {
             setup_tray(app)?;

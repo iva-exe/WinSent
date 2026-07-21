@@ -27,6 +27,7 @@
 		Settings,
 		Minus,
 		Square,
+		TriangleAlert,
 		X
 	} from 'lucide-svelte';
 
@@ -36,6 +37,7 @@
 	const nav = [
 		{ href: '/home', label: 'Home', icon: House },
 		{ href: '/tasks', label: 'Tasks', icon: Activity },
+		{ href: '/incidents', label: 'Incidents', icon: TriangleAlert },
 		{ href: '/programs', label: 'Programs', icon: Blocks },
 		{ href: '/files', label: 'Files', icon: Files },
 		{ href: '/onstart', label: 'On start', icon: ListStart },

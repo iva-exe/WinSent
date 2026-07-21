@@ -22,6 +22,9 @@
 		mode = 'sys',
 		pinned = null,
 		labels = ['download', 'upload'],
+		// Incidenty na časové ose: [{ ts, kind }] — trojúhelníček dole
+		// (zásek žlutě, pád/BSOD červeně) + tečkovaná svislice.
+		markers = [],
 		onhover = () => {},
 		onpin = () => {}
 	} = $props();
@@ -150,6 +153,42 @@
 		pinDotEl.style.borderColor = isNet
 			? cssVar('--net-down') || '#7cc0ff'
 			: colorForLoad(v);
+	}
+
+	// Markery incidentů — kreslí se přímo do canvasu grafu (draw hook),
+	// takže drží pozici při pan/zoomu bez DOM overlaye.
+	function drawMarkers(uu) {
+		if (!markers.length) return;
+		const ctx = uu.ctx;
+		const { left, top, width, height } = uu.bbox;
+		const dpr = window.devicePixelRatio || 1;
+		const warn = cssVar('--warn') || '#f59e0b';
+		const danger = cssVar('--danger') || '#ef4444';
+		ctx.save();
+		for (const m of markers) {
+			const x = uu.valToPos(m.ts, 'x', true);
+			if (x < left || x > left + width) continue;
+			const color = m.kind === 'stall' ? warn : danger;
+			ctx.strokeStyle = color;
+			ctx.globalAlpha = 0.3;
+			ctx.lineWidth = dpr;
+			ctx.setLineDash([2 * dpr, 4 * dpr]);
+			ctx.beginPath();
+			ctx.moveTo(x, top);
+			ctx.lineTo(x, top + height);
+			ctx.stroke();
+			ctx.setLineDash([]);
+			ctx.globalAlpha = 1;
+			const s = 5 * dpr;
+			ctx.fillStyle = color;
+			ctx.beginPath();
+			ctx.moveTo(x, top + height - s);
+			ctx.lineTo(x - s * 0.8, top + height);
+			ctx.lineTo(x + s * 0.8, top + height);
+			ctx.closePath();
+			ctx.fill();
+		}
+		ctx.restore();
 	}
 
 	function nearestIdx(t) {
@@ -337,7 +376,12 @@
 							}
 						}
 					],
-					draw: [() => positionPin()]
+					draw: [
+						(uu) => {
+							drawMarkers(uu);
+							positionPin();
+						}
+					]
 				}
 			},
 			chartData(),
@@ -412,6 +456,12 @@
 	$effect(() => {
 		pinned;
 		untrack(() => positionPin());
+	});
+
+	$effect(() => {
+		// závislost: markery incidentů — jen překreslení canvasu
+		markers;
+		untrack(() => u?.redraw(false));
 	});
 </script>
 

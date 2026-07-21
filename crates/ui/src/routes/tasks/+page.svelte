@@ -555,15 +555,31 @@
 		}
 	}
 
+	// Incidenty jako markery na časové ose (v3) — poll 1×/30 s stačí.
+	let incidentMarkers = $state([]);
+	async function pollIncidents() {
+		try {
+			const rows = await invoke('query_incidents', { limit: 100 });
+			incidentMarkers = rows.map((i) => ({ ts: i.ts, kind: i.kind }));
+		} catch {
+			// služba bez v3 — markery prostě nebudou
+		}
+	}
+
 	onMount(() => {
 		loadStatics();
 		pollSystem();
 		pollProcs();
+		pollIncidents();
 		const t = setInterval(() => {
 			pollSystem();
 			pollProcs();
 		}, 1000);
-		return () => clearInterval(t);
+		const t2 = setInterval(pollIncidents, 30000);
+		return () => {
+			clearInterval(t);
+			clearInterval(t2);
+		};
 	});
 
 	const arrow = $derived(sortDir === -1 ? '↓' : '↑');
@@ -642,6 +658,7 @@
 				values2={chartValues2}
 				{mode}
 				{pinned}
+				markers={incidentMarkers}
 				onhover={(h) => (hover = h)}
 				onpin={(t) => (pinned = t)}
 			/>
