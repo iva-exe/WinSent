@@ -142,6 +142,30 @@ const MIGRATIONS: &[&str] = &[
         window_to    INTEGER
     );
     CREATE INDEX ix_incident_ts ON incident(ts DESC);",
+    // → verze 7 (v4): inventář aplikací + mapa souborů (SPEC kap. 5, 8).
+    // identity_key spojuje inventář s procesy (kaskáda v2) a ikonami.
+    "CREATE TABLE app (
+        id            INTEGER PRIMARY KEY,
+        identity_key  TEXT NOT NULL UNIQUE,
+        kind          TEXT NOT NULL,
+        display_name  TEXT NOT NULL,
+        publisher     TEXT,
+        version       TEXT,
+        install_date  INTEGER,
+        icon_blob     BLOB,
+        first_seen    INTEGER NOT NULL,
+        last_seen     INTEGER NOT NULL
+    );
+    CREATE TABLE app_path (
+        app_id      INTEGER NOT NULL REFERENCES app(id) ON DELETE CASCADE,
+        path        TEXT NOT NULL,
+        role        TEXT NOT NULL,
+        source      TEXT NOT NULL,
+        confidence  TEXT NOT NULL,
+        size_bytes  INTEGER,
+        size_ts     INTEGER,
+        PRIMARY KEY (app_id, path)
+    );",
 ];
 
 /// Aplikuje všechny dosud neaplikované migrace. Bezpečné volat při

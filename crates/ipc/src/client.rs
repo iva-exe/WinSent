@@ -223,6 +223,54 @@ pub fn query_incidents(limit: u32) -> Result<Vec<core_types::proc::IncidentRow>,
     }
 }
 
+/// Inventář aplikací (v4).
+pub fn query_apps() -> Result<Vec<core_types::proc::AppRow>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryApps)? {
+        Response::Apps(rows) => Ok(rows),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Mapa souborů aplikace.
+pub fn query_app_map(identity_key: String) -> Result<Vec<core_types::proc::AppPathRow>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryAppMap { identity_key })? {
+        Response::AppMap(rows) => Ok(rows),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Spočítá velikosti cest aplikace (pomalé, on-demand) a vrátí mapu.
+pub fn compute_app_sizes(identity_key: String) -> Result<Vec<core_types::proc::AppPathRow>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::ComputeAppSizes { identity_key })? {
+        Response::AppMap(rows) => Ok(rows),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Vyžádá nový sken inventáře.
+pub fn rescan_apps() -> Result<(), Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::RescanApps)? {
+        Response::Ack => Ok(()),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Aktuální systémové metriky ze sampleru služby.
 pub fn query_system() -> Result<SystemSnapshot, Error> {
     let mut stream = connect()?;

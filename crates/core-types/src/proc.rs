@@ -132,6 +132,38 @@ pub struct EventRow {
     pub detail: Option<String>,
 }
 
+/// Aplikace z inventáře (v4, SPEC kap. 5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppRow {
+    /// Klíč shodný s identitou procesů (`app:…` / `msix:…`) — spojuje
+    /// inventář s během i ikonami.
+    pub identity_key: String,
+    /// desktop | msix | os
+    pub kind: String,
+    pub display_name: String,
+    pub publisher: Option<String>,
+    pub version: Option<String>,
+    pub install_ts: Option<i64>,
+    /// Počet cest v mapě souborů (pro seznam bez načítání map).
+    pub path_count: u32,
+}
+
+/// Jedna cesta z mapy souborů aplikace (v4, SPEC 5.2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppPathRow {
+    /// Souborová cesta, nebo registry větev (role == "registry").
+    pub path: String,
+    /// install | config | data | cache | logs | registry
+    pub role: String,
+    /// msi | msix | registry | heuristic
+    pub source: String,
+    /// exact | high | guess — guess se v UI kreslí tečkovaně.
+    pub confidence: String,
+    /// Velikost (lazy, on-demand) + kdy byla spočtená.
+    pub size_bytes: Option<u64>,
+    pub size_ts: Option<i64>,
+}
+
 /// Incident (zásek s viníkem, pád aplikace, BSOD) — SPEC kap. 16.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IncidentRow {

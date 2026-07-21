@@ -100,6 +100,9 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     // blokovat na I/O (SPEC kap. 3.4). Události jdou týmž kanálem —
     // DB má jediného zapisovatele.
     let (sample_tx, sample_rx) = std::sync::mpsc::sync_channel::<crate::incidents::StoreMsg>(16);
+    // Klony pro inventární vlákno a IPC handler (lazy velikosti cest).
+    let inv_tx = sample_tx.clone();
+    let size_tx = sample_tx.clone();
 
     let store_handle = {
         let stop = Arc::clone(&stop);
@@ -294,6 +297,44 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             })?
     };
 
+    // Inventář aplikací (v4, SPEC kap. 5): sken na pozadí při startu
+    // a pak řídce (6 h); RescanApps ho vyžádá dřív. Nikdy v cyklu.
+    let rescan = Arc::new(AtomicBool::new(false));
+    let inv_handle = {
+        let stop = Arc::clone(&stop);
+        let rescan = Arc::clone(&rescan);
+        let tx = inv_tx;
+        std::thread::Builder::new()
+            .name("inventory".into())
+            .spawn(move || {
+                let _ = win_sys::threading::set_current_thread_below_normal();
+                let mut last_scan: Option<Instant> = None;
+                while !stop.load(Ordering::SeqCst) {
+                    let due = last_scan.is_none_or(|t| t.elapsed() > Duration::from_secs(6 * 3600))
+                        || rescan.swap(false, Ordering::SeqCst);
+                    if due {
+                        let t0 = Instant::now();
+                        let apps = collector_inv::scan();
+                        tracing::info!(
+                            apps = apps.len(),
+                            ms = t0.elapsed().as_millis() as u64,
+                            "sken inventáře hotový"
+                        );
+                        let scan: Vec<store::apps::ScanApp> =
+                            apps.into_iter().map(to_scan_app).collect();
+                        if tx
+                            .try_send(crate::incidents::StoreMsg::Inventory(scan))
+                            .is_err()
+                        {
+                            tracing::warn!("zápis inventáře se nevešel do kanálu");
+                        }
+                        last_scan = Some(Instant::now());
+                    }
+                    wait_or_stop(&stop, Duration::from_secs(2));
+                }
+            })?
+    };
+
     // IPC server: navázání na pipe je synchronní — kolize s jinou
     // instancí démona (běžící služba vs. --console) shodí start hned,
     // s jasnou chybou. Akceptační smyčka pak běží ve vlastním vlákně.
@@ -308,6 +349,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         let read_conn = std::sync::Mutex::new(store::open_readonly(&db_path)?);
         let statics = statics.clone();
         let icons = icon_store;
+        let rescan_flag = Arc::clone(&rescan);
         let handler: ipc::server::Handler = Arc::new(move |req| match req {
             Request::QuerySysInfo => Response::SysInfo(statics.clone()),
             Request::QueryIcon { identity_key } => {
@@ -435,6 +477,62 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     },
                 }
             }
+            // Inventář aplikací (v4, SPEC kap. 5).
+            Request::QueryApps => {
+                let conn = read_conn.lock().expect("read conn lock poisoned");
+                match store::apps::list_apps(&conn) {
+                    Ok(rows) => Response::Apps(rows),
+                    Err(e) => Response::Error {
+                        message: format!("čtení inventáře selhalo: {e}"),
+                    },
+                }
+            }
+            Request::QueryAppMap { identity_key } => {
+                let conn = read_conn.lock().expect("read conn lock poisoned");
+                match store::apps::app_map(&conn, &identity_key) {
+                    Ok(rows) => Response::AppMap(rows),
+                    Err(e) => Response::Error {
+                        message: format!("čtení mapy souborů selhalo: {e}"),
+                    },
+                }
+            }
+            // Lazy velikosti (SPEC 5.2): spočítat teď, vrátit čerstvé,
+            // uložit do cache přes zapisovací vlákno. Pomalé — ale
+            // on-demand na výslovnou žádost UI, v obslužném vlákně
+            // klienta, sběr dat to neblokuje.
+            Request::ComputeAppSizes { identity_key } => {
+                let map = {
+                    let conn = read_conn.lock().expect("read conn lock poisoned");
+                    store::apps::app_map(&conn, &identity_key)
+                };
+                match map {
+                    Ok(mut rows) => {
+                        let now = unix_now();
+                        for p in rows.iter_mut() {
+                            if p.role == "registry" {
+                                continue;
+                            }
+                            let size = collector_inv::dir_size(&p.path);
+                            p.size_bytes = Some(size);
+                            p.size_ts = Some(now);
+                            let _ = size_tx.try_send(crate::incidents::StoreMsg::PathSize {
+                                identity_key: identity_key.clone(),
+                                path: p.path.clone(),
+                                size_bytes: size,
+                                ts: now,
+                            });
+                        }
+                        Response::AppMap(rows)
+                    }
+                    Err(e) => Response::Error {
+                        message: format!("čtení mapy souborů selhalo: {e}"),
+                    },
+                }
+            }
+            Request::RescanApps => {
+                rescan_flag.store(true, Ordering::SeqCst);
+                Response::Ack
+            }
             Request::QueryIncidents { limit } => {
                 let conn = read_conn.lock().expect("read conn lock poisoned");
                 match store::events::recent_incidents(&conn, limit.min(500)) {
@@ -483,6 +581,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     ipc::server::wake();
     let _ = ipc_handle.join();
     let _ = sampler_handle.join();
+    let _ = inv_handle.join();
     let _ = store_handle.join();
     tracing::info!("démon ukončen čistě");
     Ok(())
@@ -551,6 +650,20 @@ fn store_msg(
     use crate::incidents::StoreMsg;
     match msg {
         StoreMsg::Tick(ts, procs, sys) => store::samples::insert_tick(conn, ts, &sys, &procs),
+        StoreMsg::Inventory(apps) => {
+            let n = apps.len();
+            let r = store::apps::replace_inventory(conn, &apps);
+            if r.is_ok() {
+                tracing::info!(apps = n, "inventář aplikací zapsán");
+            }
+            r
+        }
+        StoreMsg::PathSize {
+            identity_key,
+            path,
+            size_bytes,
+            ts,
+        } => store::apps::set_path_size(conn, &identity_key, &path, size_bytes, ts),
         StoreMsg::Event {
             ts,
             kind,
@@ -690,6 +803,29 @@ fn archive_blackbox(ts: i64) -> Option<String> {
             tracing::warn!(error = %e, "archivace černé skříňky selhala");
             None
         }
+    }
+}
+
+/// Převod výsledku skenu inventáře na store tvar (store nesmí záviset
+/// na kolektorech — oddělené cesty, SPEC kap. 2).
+fn to_scan_app(a: collector_inv::AppEntry) -> store::apps::ScanApp {
+    store::apps::ScanApp {
+        identity_key: a.identity_key,
+        kind: a.kind.to_string(),
+        display_name: a.display_name,
+        publisher: a.publisher,
+        version: a.version,
+        install_ts: a.install_ts,
+        paths: a
+            .paths
+            .into_iter()
+            .map(|p| store::apps::ScanPath {
+                path: p.path,
+                role: p.role.to_string(),
+                source: p.source.to_string(),
+                confidence: p.confidence.to_string(),
+            })
+            .collect(),
     }
 }
 

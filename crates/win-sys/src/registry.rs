@@ -7,7 +7,7 @@ use windows::Win32::System::Registry::{
     KEY_READ, RRF_RT_ANY, RRF_RT_REG_SZ,
 };
 
-pub use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+pub use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, HKEY_USERS};
 
 /// Přečte REG_SZ hodnotu (RegGetValueW zvládá i REG_EXPAND_SZ expanzi).
 pub fn read_string(root: HKEY, subkey: &str, value: &str) -> Option<String> {

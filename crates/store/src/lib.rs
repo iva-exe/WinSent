@@ -12,6 +12,7 @@ use std::time::Duration;
 pub use rusqlite::Connection;
 pub use rusqlite::Error as SqlError;
 
+pub mod apps;
 pub mod events;
 pub mod history;
 pub mod migrations;

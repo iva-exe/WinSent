@@ -8,6 +8,15 @@ use core_types::proc::{ProcRow, SystemSnapshot};
 /// kanálem, aby DB měla jediného zapisovatele.
 pub enum StoreMsg {
     Tick(i64, Vec<ProcRow>, SystemSnapshot),
+    /// Výsledek skenu inventáře (v4) — nahradí obsah app/app_path.
+    Inventory(Vec<store::apps::ScanApp>),
+    /// Spočtená velikost cesty aplikace (lazy cache).
+    PathSize {
+        identity_key: String,
+        path: String,
+        size_bytes: u64,
+        ts: i64,
+    },
     Event {
         ts: i64,
         kind: &'static str,

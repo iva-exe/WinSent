@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,6 +40,15 @@ pub enum Request {
     QueryEvents { from: i64, to: i64 },
     /// Poslední incidenty (nejnovější první), max `limit`.
     QueryIncidents { limit: u32 },
+    /// Inventář aplikací (v4, SPEC kap. 5).
+    QueryApps,
+    /// Mapa souborů aplikace.
+    QueryAppMap { identity_key: String },
+    /// Spočítá velikosti cest aplikace (pomalé — on-demand) a vrátí
+    /// čerstvou mapu; výsledky se cachují do DB.
+    ComputeAppSizes { identity_key: String },
+    /// Vyžádá nový sken inventáře na pozadí.
+    RescanApps,
 }
 
 /// Odpověď služba → UI.
@@ -82,6 +91,12 @@ pub enum Response {
     Events(Vec<crate::proc::EventRow>),
     /// Incidenty (v3).
     Incidents(Vec<crate::proc::IncidentRow>),
+    /// Inventář aplikací (v4).
+    Apps(Vec<crate::proc::AppRow>),
+    /// Mapa souborů aplikace (v4).
+    AppMap(Vec<crate::proc::AppPathRow>),
+    /// Potvrzení požadavku bez dat (RescanApps).
+    Ack,
     /// Chyba zpracování požadavku. Nic neselhává mlčky (SPEC kap. 22).
     Error {
         message: String,

@@ -12,6 +12,8 @@ pub mod gpu;
 pub mod gpubasic;
 pub mod gpuproc;
 pub mod icon;
+pub mod msi;
+pub mod msix;
 pub mod net;
 pub mod pdhq;
 pub mod proc;

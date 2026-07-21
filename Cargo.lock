@@ -3318,6 +3318,7 @@ version = "0.1.0"
 dependencies = [
  "collector-crash",
  "collector-etw",
+ "collector-inv",
  "collector-proc",
  "core-types",
  "ctrlc",
