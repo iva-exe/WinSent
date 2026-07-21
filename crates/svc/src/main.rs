@@ -7,6 +7,7 @@
 mod config;
 mod console;
 mod daemon;
+mod incidents;
 mod integrity;
 mod service;
 

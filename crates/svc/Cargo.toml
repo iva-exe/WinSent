@@ -17,6 +17,8 @@ win-sys = { workspace = true }
 store = { workspace = true }
 ipc = { workspace = true }
 collector-proc = { workspace = true }
+collector-etw = { workspace = true }
+collector-crash = { workspace = true }
 windows-service = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

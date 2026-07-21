@@ -7,11 +7,13 @@
 pub mod caps;
 pub mod cpuinfo;
 pub mod disk;
+pub mod etw;
 pub mod gpu;
 pub mod gpubasic;
 pub mod gpuproc;
 pub mod icon;
 pub mod net;
+pub mod pdhq;
 pub mod proc;
 pub mod procinfo;
 pub mod registry;

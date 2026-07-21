@@ -79,6 +79,8 @@ validate = { path = "crates/validate" }
 store = { path = "crates/store" }
 ipc = { path = "crates/ipc" }
 collector-proc = { path = "crates/collector-proc" }
+collector-etw = { path = "crates/collector-etw" }
+collector-crash = { path = "crates/collector-crash" }
 identity = { path = "crates/identity" }
 
 # externí — verze zamčené přes Cargo.lock, tady jen semver rozsahy

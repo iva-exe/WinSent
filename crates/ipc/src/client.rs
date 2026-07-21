@@ -199,6 +199,30 @@ pub fn query_disk_history(from: i64, to: i64) -> Result<Vec<(i64, u32, u64, u64)
     }
 }
 
+/// Události (záseky, pády) v rozsahu — markery na časové ose (v3).
+pub fn query_events(from: i64, to: i64) -> Result<Vec<core_types::proc::EventRow>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryEvents { from, to })? {
+        Response::Events(rows) => Ok(rows),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Poslední incidenty (nejnovější první).
+pub fn query_incidents(limit: u32) -> Result<Vec<core_types::proc::IncidentRow>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryIncidents { limit })? {
+        Response::Incidents(rows) => Ok(rows),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Aktuální systémové metriky ze sampleru služby.
 pub fn query_system() -> Result<SystemSnapshot, Error> {
     let mut stream = connect()?;

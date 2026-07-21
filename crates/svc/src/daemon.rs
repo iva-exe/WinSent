@@ -71,11 +71,35 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         tracing::warn!(error = %e, "zápis názvů disků selhal");
     }
 
+    // Nečisté vypnutí + BSOD sken (SPEC 16.2) — ještě hlavním spojením,
+    // před startem zapisovacího vlákna.
+    startup_crash_scan(&conn);
+
+    // ETW (v3, SPEC 3.2): realtime události procesů + černá skříňka.
+    // Selhání degraduje (bez pádů procesů), službu neshazuje.
+    let mut etw = match collector_etw::init(&cfg.read().expect("config lock poisoned")) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            tracing::warn!(error = %e, "ETW nedostupné — pády procesů se nezaznamenají");
+            None
+        }
+    };
+    let etl_path = etw.as_ref().and_then(|s| s.etl_path.clone());
+
+    // Heartbeat detekce záseku (SPEC 3.3) — TIME_CRITICAL vlákno.
+    let mut stall = match collector_proc::stall::Detector::start() {
+        Ok(d) => Some(d),
+        Err(e) => {
+            tracing::warn!(error = %e, "detektor záseků se nespustil");
+            None
+        }
+    };
+
     // Kanál sampler → zapisovací vlákno. Bounded: když zápis nestíhá
     // (disk saturovaný), vzorky se zahazují — sampler NIKDY nesmí
-    // blokovat na I/O (SPEC kap. 3.4).
-    let (sample_tx, sample_rx) =
-        std::sync::mpsc::sync_channel::<(i64, Vec<ProcRow>, SystemSnapshot)>(4);
+    // blokovat na I/O (SPEC kap. 3.4). Události jdou týmž kanálem —
+    // DB má jediného zapisovatele.
+    let (sample_tx, sample_rx) = std::sync::mpsc::sync_channel::<crate::incidents::StoreMsg>(16);
 
     let store_handle = {
         let stop = Arc::clone(&stop);
@@ -95,16 +119,156 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         std::thread::Builder::new()
             .name("sampler".into())
             .spawn(move || {
+                use crate::incidents::{classify_stall, is_crash_exit, json_str, StoreMsg};
+                // Jména/identity naposledy viděných PIDů — proces, který
+                // umřel, už v aktuálním vzorku není a jeho stop event
+                // navíc dorazí z ETW bufferů až o pár sekund později.
+                // Záznamy se proto drží 15 s po posledním spatření.
+                let mut seen: std::collections::HashMap<u32, (String, String, String, i64)> =
+                    std::collections::HashMap::new();
+                let mut last_stall_ts: i64 = 0;
+                let mut last_sent_ts: i64 = 0;
+                // Rate-limit incidentů: jedna aplikace max 1 incident
+                // pádu za 2 minuty (opakované pády = tentýž problém).
+                let mut last_crash: std::collections::HashMap<String, i64> =
+                    std::collections::HashMap::new();
+                // Po záseku 10 s burst na 10 Hz (SPEC 3.3) — jemnější
+                // živý obraz okna; do DB jde pořád max 1 vzorek/s.
+                let mut burst_until = Instant::now();
+
                 while !stop.load(Ordering::SeqCst) {
                     match collector_proc::tick(&mut state) {
                         Ok((procs, system)) => {
                             let ts = unix_now();
-                            // Plný kanál = zápis nestíhá; vzorek se zahodí
-                            // a zaloguje, sampler neblokuje.
-                            if let Err(std::sync::mpsc::TrySendError::Full(_)) =
-                                sample_tx.try_send((ts, procs.clone(), system.clone()))
-                            {
-                                tracing::warn!("zapisovací vlákno nestíhá — vzorek zahozen");
+                            // Pády procesů z ETW exit kódů (SPEC 16.1).
+                            if let Some(etw_state) = etw.as_mut() {
+                                for ev in collector_etw::drain(etw_state) {
+                                    if let collector_etw::ProcEvent::Stop { ts, pid, exit_code } =
+                                        ev
+                                    {
+                                        if is_crash_exit(exit_code) {
+                                            let (name, app, key, _) =
+                                                seen.get(&pid).cloned().unwrap_or_default();
+                                            let detail = format!(
+                                                "{{\"exit_code\":{exit_code},\"name\":\"{}\",\"app\":\"{}\"}}",
+                                                json_str(&name),
+                                                json_str(&app)
+                                            );
+                                            let _ = sample_tx.try_send(StoreMsg::Event {
+                                                ts,
+                                                kind: "proc_crash",
+                                                pid: Some(pid),
+                                                detail: detail.clone(),
+                                            });
+                                            // Incident jen pro proces, který sampler
+                                            // znal jménem (žil ≥ 1 tick) — filtruje
+                                            // sub-sekundové workery; a max 1×/2 min
+                                            // na aplikaci.
+                                            let rate_key =
+                                                if key.is_empty() { name.clone() } else { key.clone() };
+                                            let recently = last_crash
+                                                .get(&rate_key)
+                                                .is_some_and(|&t| ts - t < 120);
+                                            if !name.is_empty() && !recently {
+                                                last_crash.insert(rate_key, ts);
+                                                let _ = sample_tx.try_send(StoreMsg::Incident {
+                                                    ts,
+                                                    kind: "app_crash",
+                                                    identity_key: (!key.is_empty())
+                                                        .then_some(key),
+                                                    culprit: Some(if app.is_empty() {
+                                                        name
+                                                    } else {
+                                                        app
+                                                    }),
+                                                    detail,
+                                                    etl_path: etl_path.clone(),
+                                                    window_from: ts - 300,
+                                                    window_to: ts + 30,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // Záseky: heartbeat hity → klasifikace z metrik
+                            // aktuálního vzorku (SPEC 3.3).
+                            if let Some(det) = stall.as_mut() {
+                                for hit in det.drain() {
+                                    if hit.ts - last_stall_ts < 10 {
+                                        continue; // pokračování téhož záseku
+                                    }
+                                    last_stall_ts = hit.ts;
+                                    burst_until = Instant::now() + Duration::from_secs(10);
+                                    let v = classify_stall(&system, &procs);
+                                    let top: Vec<String> = v
+                                        .top
+                                        .iter()
+                                        .map(|(pid, name, val)| {
+                                            format!(
+                                                "{{\"pid\":{pid},\"name\":\"{}\",\"value\":{val:.0}}}",
+                                                json_str(name)
+                                            )
+                                        })
+                                        .collect();
+                                    let detail = format!(
+                                        "{{\"lag_ms\":{},\"cause\":\"{}\",\"top\":[{}]}}",
+                                        hit.lag_ms,
+                                        v.cause,
+                                        top.join(",")
+                                    );
+                                    tracing::warn!(
+                                        lag_ms = hit.lag_ms,
+                                        cause = v.cause,
+                                        "detekován zásek systému"
+                                    );
+                                    let _ = sample_tx.try_send(StoreMsg::Event {
+                                        ts: hit.ts,
+                                        kind: "stall",
+                                        pid: v.culprit.as_ref().map(|c| c.0),
+                                        detail: detail.clone(),
+                                    });
+                                    let _ = sample_tx.try_send(StoreMsg::Incident {
+                                        ts: hit.ts,
+                                        kind: "stall",
+                                        identity_key: v
+                                            .culprit
+                                            .as_ref()
+                                            .map(|c| c.2.clone())
+                                            .filter(|k| !k.is_empty()),
+                                        culprit: v.culprit.as_ref().map(|c| c.1.clone()),
+                                        detail,
+                                        etl_path: etl_path.clone(),
+                                        window_from: hit.ts - 10 - (hit.lag_ms / 1000) as i64,
+                                        window_to: hit.ts + 10,
+                                    });
+                                }
+                            }
+                            // Aktualizace mapy viděných PIDů až PO obsluze
+                            // stop událostí (umřelé procesy potřebují stará
+                            // jména); staré záznamy vypadnou po 15 s.
+                            for p in &procs {
+                                seen.insert(
+                                    p.pid,
+                                    (
+                                        p.name.clone(),
+                                        p.app_name.clone(),
+                                        p.identity_key.clone(),
+                                        ts,
+                                    ),
+                                );
+                            }
+                            seen.retain(|_, (_, _, _, last)| ts - *last < 15);
+                            // Do DB max 1 vzorek/s i během burstu.
+                            if ts != last_sent_ts {
+                                last_sent_ts = ts;
+                                // Plný kanál = zápis nestíhá; vzorek se
+                                // zahodí a zaloguje, sampler neblokuje.
+                                if let Err(std::sync::mpsc::TrySendError::Full(_)) = sample_tx
+                                    .try_send(StoreMsg::Tick(ts, procs.clone(), system.clone()))
+                                {
+                                    tracing::warn!("zapisovací vlákno nestíhá — vzorek zahozen");
+                                }
                             }
                             let mut slot = live.write().expect("live lock poisoned");
                             slot.procs = procs;
@@ -114,8 +278,17 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         // a další tick to zkusí znovu (SPEC kap. 22).
                         Err(e) => tracing::error!(error = %e, "tick sampleru selhal"),
                     }
-                    wait_or_stop(&stop, Duration::from_millis(1000));
+                    let interval = if Instant::now() < burst_until {
+                        Duration::from_millis(100)
+                    } else {
+                        Duration::from_millis(1000)
+                    };
+                    wait_or_stop(&stop, interval);
                 }
+                if let Some(s) = etw.take() {
+                    collector_etw::shutdown(s);
+                }
+                drop(stall.take());
                 collector_proc::shutdown(state);
                 // Drop sample_tx → zapisovací vlákno pozná konec.
             })?
@@ -242,6 +415,48 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     },
                 }
             }
+            // Události a incidenty (v3, SPEC kap. 16).
+            Request::QueryEvents { from, to } => {
+                let conn = read_conn.lock().expect("read conn lock poisoned");
+                match store::events::events_in(&conn, from, to) {
+                    Ok(rows) => Response::Events(
+                        rows.into_iter()
+                            .map(|e| core_types::proc::EventRow {
+                                id: e.id,
+                                ts: e.ts,
+                                kind: e.kind,
+                                pid: e.pid,
+                                detail: e.detail,
+                            })
+                            .collect(),
+                    ),
+                    Err(e) => Response::Error {
+                        message: format!("čtení událostí selhalo: {e}"),
+                    },
+                }
+            }
+            Request::QueryIncidents { limit } => {
+                let conn = read_conn.lock().expect("read conn lock poisoned");
+                match store::events::recent_incidents(&conn, limit.min(500)) {
+                    Ok(rows) => Response::Incidents(
+                        rows.into_iter()
+                            .map(|i| core_types::proc::IncidentRow {
+                                id: i.id,
+                                ts: i.ts,
+                                kind: i.kind,
+                                identity_key: i.identity_key,
+                                culprit: i.culprit,
+                                detail: i.detail,
+                                window_from: i.window_from,
+                                window_to: i.window_to,
+                            })
+                            .collect(),
+                    ),
+                    Err(e) => Response::Error {
+                        message: format!("čtení incidentů selhalo: {e}"),
+                    },
+                }
+            }
         });
         std::thread::Builder::new()
             .name("ipc-server".into())
@@ -279,7 +494,7 @@ fn store_loop(
     mut conn: store::Connection,
     cfg: Arc<RwLock<Config>>,
     stop: Arc<AtomicBool>,
-    rx: std::sync::mpsc::Receiver<(i64, Vec<ProcRow>, SystemSnapshot)>,
+    rx: std::sync::mpsc::Receiver<crate::incidents::StoreMsg>,
 ) {
     use std::sync::mpsc::RecvTimeoutError;
 
@@ -290,10 +505,10 @@ fn store_loop(
     let mut last_retention = Instant::now();
     loop {
         match rx.recv_timeout(Duration::from_millis(250)) {
-            Ok((ts, procs, sys)) => {
-                if let Err(e) = store::samples::insert_tick(&mut conn, ts, &sys, &procs) {
+            Ok(msg) => {
+                if let Err(e) = store_msg(&mut conn, msg) {
                     // Chyba zápisu nesmí shodit službu (SPEC kap. 22).
-                    tracing::error!(error = %e, "zápis vzorku selhal");
+                    tracing::error!(error = %e, "zápis do store selhal");
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -314,12 +529,166 @@ fn store_loop(
 
         if stop.load(Ordering::SeqCst) {
             // Doprázdnit kanál, ať poslední vzorky nezmizí, pak konec.
-            while let Ok((ts, procs, sys)) = rx.try_recv() {
-                if let Err(e) = store::samples::insert_tick(&mut conn, ts, &sys, &procs) {
-                    tracing::error!(error = %e, "zápis vzorku při ukončení selhal");
+            while let Ok(msg) = rx.try_recv() {
+                if let Err(e) = store_msg(&mut conn, msg) {
+                    tracing::error!(error = %e, "zápis při ukončení selhal");
                 }
             }
             break;
+        }
+    }
+    // Čisté ukončení — příští start pozná, že minule nešlo o pád.
+    if let Err(e) = store::meta_set(&conn, "clean_shutdown", "1") {
+        tracing::warn!(error = %e, "zápis clean_shutdown selhal");
+    }
+}
+
+/// Zapíše jednu zprávu do store.
+fn store_msg(
+    conn: &mut store::Connection,
+    msg: crate::incidents::StoreMsg,
+) -> Result<(), store::SqlError> {
+    use crate::incidents::StoreMsg;
+    match msg {
+        StoreMsg::Tick(ts, procs, sys) => store::samples::insert_tick(conn, ts, &sys, &procs),
+        StoreMsg::Event {
+            ts,
+            kind,
+            pid,
+            detail,
+        } => store::events::insert_event(conn, ts, kind, pid, Some(&detail)).map(|_| ()),
+        StoreMsg::Incident {
+            ts,
+            kind,
+            identity_key,
+            culprit,
+            detail,
+            etl_path,
+            window_from,
+            window_to,
+        } => store::events::insert_incident(
+            conn,
+            ts,
+            kind,
+            identity_key.as_deref(),
+            culprit.as_deref(),
+            Some(&detail),
+            etl_path.as_deref(),
+            Some(window_from),
+            Some(window_to),
+        )
+        .map(|_| ()),
+    }
+}
+
+/// Sken po startu (SPEC 16.2): nový minidump → incident BSOD; nečisté
+/// vypnutí s restartem stroje bez dumpu → incident bez dumpu. Dedup
+/// přes čas incidentu, aby restart služby nezakládal duplicity.
+fn startup_crash_scan(conn: &store::Connection) {
+    // Úklid dat ze starší verze: incidenty bez viníka (sub-sekundové
+    // workery) už nevznikají — staré záznamy jsou jen šum.
+    let _ = conn.execute(
+        "DELETE FROM incident WHERE kind = 'app_crash' AND (culprit IS NULL OR culprit = '')",
+        [],
+    );
+
+    let was_clean = store::meta_get(conn, "clean_shutdown").as_deref() == Some("1");
+    let _ = store::meta_set(conn, "clean_shutdown", "0");
+
+    let last_scan: i64 = store::meta_get(conn, "bsod_scan_ts")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut newest = last_scan;
+    let mut dump_found = false;
+    let mut archived_etl: Option<String> = None;
+    for f in collector_crash::scan_minidumps(last_scan) {
+        newest = newest.max(f.ts);
+        dump_found = true;
+        match store::events::incident_exists(conn, "bsod", f.ts, 120) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "dedup BSOD selhal");
+                continue;
+            }
+        }
+        if archived_etl.is_none() {
+            archived_etl = archive_blackbox(f.ts);
+        }
+        let detail = format!(
+            "{{\"bugcheck\":{},\"params\":[{},{},{},{}],\"dump\":\"{}\"}}",
+            f.bugcheck,
+            f.params[0],
+            f.params[1],
+            f.params[2],
+            f.params[3],
+            crate::incidents::json_str(&f.dump_path),
+        );
+        tracing::warn!(bugcheck = f.bugcheck, human = f.human, "nalezen BSOD");
+        if let Err(e) = store::events::insert_incident(
+            conn,
+            f.ts,
+            "bsod",
+            None,
+            Some(f.human),
+            Some(&detail),
+            archived_etl.as_deref(),
+            Some(f.ts - 300),
+            Some(f.ts + 60),
+        ) {
+            tracing::error!(error = %e, "zápis BSOD incidentu selhal");
+        }
+    }
+    if newest > last_scan {
+        let _ = store::meta_set(conn, "bsod_scan_ts", &newest.to_string());
+    }
+
+    // Nečisté vypnutí bez dumpu: jen když se stroj skutečně restartoval
+    // (boot je novější než poslední zapsaný vzorek) — jinak jde jen
+    // o tvrdé ukončení služby, ne pád systému.
+    if !was_clean && !dump_found {
+        let boot_ts = unix_now() - win_sys::sysinfo::system_uptime_s() as i64;
+        let last_sample: i64 = conn
+            .query_row("SELECT COALESCE(MAX(ts), 0) FROM system_1s", [], |r| {
+                r.get(0)
+            })
+            .unwrap_or(0);
+        if last_sample > 0 && boot_ts > last_sample {
+            let exists =
+                store::events::incident_exists(conn, "bsod", last_sample, 300).unwrap_or(true);
+            if !exists {
+                tracing::warn!("nečekané vypnutí bez dumpu (výpadek napájení / tvrdý pád)");
+                let etl = archive_blackbox(last_sample);
+                let _ = store::events::insert_incident(
+                    conn,
+                    last_sample,
+                    "bsod",
+                    None,
+                    Some("nečekané vypnutí — bez minidumpu (výpadek napájení?)"),
+                    Some("{\"no_dump\":true}"),
+                    etl.as_deref(),
+                    Some(last_sample - 300),
+                    Some(last_sample),
+                );
+            }
+        }
+    }
+}
+
+/// Archivuje .etl černé skříňky z minulého běhu (obsahuje okno pádu),
+/// než ji nová session přepíše. Vrací cestu k archivu.
+fn archive_blackbox(ts: i64) -> Option<String> {
+    let dir = store::data_dir().ok()?;
+    let src = dir.join("blackbox.etl");
+    if !src.exists() {
+        return None;
+    }
+    let dst = dir.join(format!("incident-{ts}.etl"));
+    match std::fs::rename(&src, &dst) {
+        Ok(()) => Some(dst.to_string_lossy().into_owned()),
+        Err(e) => {
+            tracing::warn!(error = %e, "archivace černé skříňky selhala");
+            None
         }
     }
 }

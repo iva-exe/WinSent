@@ -63,11 +63,18 @@ impl Drop for Disk {
     }
 }
 
-/// Kumulativní bajty disku.
+/// Kumulativní čítače disku. Časy jsou ve 100ns jednotkách — latence
+/// na operaci = Δ(time) / Δ(count); queue_depth je okamžitá hloubka
+/// fronty (pro klasifikaci záseku, SPEC kap. 3.3).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DiskCounters {
     pub read_bytes: u64,
     pub write_bytes: u64,
+    pub read_time_100ns: u64,
+    pub write_time_100ns: u64,
+    pub read_count: u32,
+    pub write_count: u32,
+    pub queue_depth: u32,
 }
 
 /// Otevře všechny dostupné fyzické disky (PhysicalDrive0–15).
@@ -125,6 +132,11 @@ pub fn counters(disk: &Disk) -> Result<DiskCounters, Error> {
     Ok(DiskCounters {
         read_bytes: perf.bytes_read.max(0) as u64,
         write_bytes: perf.bytes_written.max(0) as u64,
+        read_time_100ns: perf.read_time.max(0) as u64,
+        write_time_100ns: perf.write_time.max(0) as u64,
+        read_count: perf.read_count,
+        write_count: perf.write_count,
+        queue_depth: perf.queue_depth,
     })
 }
 

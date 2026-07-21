@@ -12,6 +12,8 @@ use std::time::Instant;
 use core_types::config::Config;
 use core_types::proc::{DiskDesc, DiskRate, ProcRow, StaticInfo, SystemSnapshot};
 
+pub mod stall;
+
 /// Chyby sampleru.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -48,6 +50,8 @@ pub struct State {
     gpu_proc: Option<win_sys::gpuproc::GpuPerProc>,
     /// Celková VRAM z registru (fallback pro detail bez NVML).
     gpu_vram_total_mb: Option<u64>,
+    /// Hard faulty/s přes PDH (signál paging, SPEC 3.3); None = není.
+    mem_faults: Option<win_sys::pdhq::MemFaults>,
     /// Statické info komponent — zjištěno jednou při init.
     statics: StaticInfo,
     /// Engine identity aplikací (v2, SPEC kap. 4) — cache + background.
@@ -133,6 +137,7 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
         prev_disks,
         gpu_proc: win_sys::gpuproc::GpuPerProc::init(),
         gpu_vram_total_mb: gpu_basic.vram_total_mb,
+        mem_faults: win_sys::pdhq::MemFaults::init(),
         statics,
         identity: identity::Engine::new(identity::load_tables()),
         n_cpus,
@@ -252,8 +257,13 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
         .collect();
     state.prev_cores = cores_now;
 
-    // Disky: delty kumulativních bajtů → B/s per disk.
+    // Disky: delty kumulativních bajtů → B/s per disk. Zároveň signály
+    // pro klasifikaci záseku (SPEC 3.3): max hloubka fronty a průměrná
+    // latence na operaci = Δ(busy čas) / Δ(počet operací).
     let mut disk_rates = Vec::with_capacity(state.disks.len());
+    let mut disk_qlen = 0u32;
+    let mut lat_time_100ns = 0u64;
+    let mut lat_ops = 0u64;
     for (i, d) in state.disks.iter().enumerate() {
         match win_sys::disk::counters(d) {
             Ok(now) => {
@@ -264,11 +274,31 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
                     w_bps: (now.write_bytes.saturating_sub(prev.write_bytes) as f64 / wall_s)
                         as u64,
                 });
+                disk_qlen = disk_qlen.max(now.queue_depth);
+                lat_time_100ns += now
+                    .read_time_100ns
+                    .saturating_sub(prev.read_time_100ns)
+                    .saturating_add(now.write_time_100ns.saturating_sub(prev.write_time_100ns));
+                lat_ops += (now.read_count.saturating_sub(prev.read_count)
+                    + now.write_count.saturating_sub(prev.write_count))
+                    as u64;
                 state.prev_disks[i] = now;
             }
             Err(e) => tracing::debug!(disk = d.index, error = %e, "čtení čítačů disku selhalo"),
         }
     }
+    let disk_lat_ms = if lat_ops > 0 {
+        (lat_time_100ns as f64 / lat_ops as f64 / 10_000.0) as f32
+    } else {
+        0.0
+    };
+
+    // Hard faulty/s (paging signál). 0 dokud PDH není primed.
+    let hard_flt_rate = state
+        .mem_faults
+        .as_mut()
+        .and_then(|m| m.sample())
+        .unwrap_or(0.0) as f32;
 
     // Takty CPU (stupeň 3 kaskády, SPEC 15.2) + uptime + součty.
     let (cpu_clock_mhz, cpu_clock_max_mhz) =
@@ -324,6 +354,14 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
         uptime_s: win_sys::sysinfo::system_uptime_s(),
         threads_total,
         handles_total,
+        hard_flt_rate,
+        disk_qlen: disk_qlen as f32,
+        disk_lat_ms,
+        // Heuristika throttlingu: takt výrazně pod maximem PŘI zátěži.
+        // Bez zátěže je nízký takt normální power management.
+        thermal_throttle: cpu_clock_max_mhz > 0
+            && cpu_clock_mhz < cpu_clock_max_mhz * 7 / 10
+            && cpu_pct > 50.0,
     };
     Ok((rows, snapshot))
 }

@@ -112,6 +112,37 @@ pub struct SystemSnapshot {
     /// Součty přes všechny procesy (parita se Správcem úloh).
     pub threads_total: u32,
     pub handles_total: u32,
+    /// Signály pro klasifikaci záseku (SPEC kap. 3.3, v3):
+    /// hard faulty/s (PDH Page Reads/sec), max hloubka fronty disků,
+    /// průměrná latence disku na operaci (ms), příznak thermal throttle.
+    pub hard_flt_rate: f32,
+    pub disk_qlen: f32,
+    pub disk_lat_ms: f32,
+    pub thermal_throttle: bool,
+}
+
+/// Událost na časové ose (zásek, pád procesu…) — markery v grafu.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventRow {
+    pub id: i64,
+    pub ts: i64,
+    pub kind: String,
+    pub pid: Option<u32>,
+    /// JSON s doplňky (exit code, lag_ms, klasifikace…).
+    pub detail: Option<String>,
+}
+
+/// Incident (zásek s viníkem, pád aplikace, BSOD) — SPEC kap. 16.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IncidentRow {
+    pub id: i64,
+    pub ts: i64,
+    pub kind: String,
+    pub identity_key: Option<String>,
+    pub culprit: Option<String>,
+    pub detail: Option<String>,
+    pub window_from: Option<i64>,
+    pub window_to: Option<i64>,
 }
 
 /// Rychlost jednoho fyzického disku v aktuálním vzorku.

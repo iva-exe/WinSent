@@ -10,6 +10,7 @@ use std::time::Duration;
 // Re-export: konzumenti store (svc) pracují se spojením, aniž by
 // museli záviset na rusqlite napřímo.
 pub use rusqlite::Connection;
+pub use rusqlite::Error as SqlError;
 
 pub mod events;
 pub mod history;
@@ -75,6 +76,25 @@ pub fn open_readonly(db_path: &Path) -> Result<Connection, Error> {
     )?;
     conn.busy_timeout(std::time::Duration::from_millis(250))?;
     Ok(conn)
+}
+
+/// Přečte hodnotu z meta tabulky (provozní údaje: clean_shutdown…).
+pub fn meta_get(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM meta WHERE key = ?1",
+        rusqlite::params![key],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+/// Zapíše hodnotu do meta tabulky.
+pub fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<(), Error> {
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![key, value],
+    )?;
+    Ok(())
 }
 
 /// Interval retenční smyčky z konfigurace.

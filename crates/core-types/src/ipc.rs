@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,6 +36,10 @@ pub enum Request {
     QueryCoreHistory { from: i64, to: i64 },
     /// Ikona aplikace podle identity_key (extrahovaná z .exe, cache).
     QueryIcon { identity_key: String },
+    /// Události (záseky, pády) v rozsahu — markery na časové ose (v3).
+    QueryEvents { from: i64, to: i64 },
+    /// Poslední incidenty (nejnovější první), max `limit`.
+    QueryIncidents { limit: u32 },
 }
 
 /// Odpověď služba → UI.
@@ -74,6 +78,10 @@ pub enum Response {
     CoreHistory(Vec<(i64, u32, f32)>),
     /// Ikona aplikace (None = zkoušeno, ikona není).
     Icon(Option<crate::proc::IconData>),
+    /// Události v rozsahu (v3).
+    Events(Vec<crate::proc::EventRow>),
+    /// Incidenty (v3).
+    Incidents(Vec<crate::proc::IncidentRow>),
     /// Chyba zpracování požadavku. Nic neselhává mlčky (SPEC kap. 22).
     Error {
         message: String,

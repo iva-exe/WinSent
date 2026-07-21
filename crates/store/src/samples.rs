@@ -28,8 +28,10 @@ pub fn insert_tick(
             "INSERT OR REPLACE INTO system_1s
                  (ts, cpu_pct, mem_used_mb, net_rx_bps, net_tx_bps, gpu_pct,
                   cpu_clock_mhz, cpu_clock_max_mhz,
-                  gpu_temp_c, gpu_vram_mb, gpu_power_w, gpu_clock_mhz)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                  gpu_temp_c, gpu_vram_mb, gpu_power_w, gpu_clock_mhz,
+                  disk_qlen, disk_lat_ms, hard_flt_rate, thermal_throttle)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                     ?13, ?14, ?15, ?16)",
             params![
                 ts,
                 sys.cpu_pct as f64,
@@ -43,6 +45,10 @@ pub fn insert_tick(
                 sys.gpu.and_then(|g| g.vram_used_mb).map(|v| v as i64),
                 sys.gpu.and_then(|g| g.power_w).map(|v| v as f64),
                 sys.gpu.and_then(|g| g.clock_mhz).map(|v| v as i64),
+                sys.disk_qlen as f64,
+                sys.disk_lat_ms as f64,
+                sys.hard_flt_rate as i64,
+                sys.thermal_throttle as i64,
             ],
         )?;
 

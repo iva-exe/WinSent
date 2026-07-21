@@ -3,6 +3,7 @@
 
 use windows::Win32::System::Threading::{
     GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+    THREAD_PRIORITY_TIME_CRITICAL,
 };
 
 use crate::Error;
@@ -11,6 +12,18 @@ use crate::Error;
 pub fn set_current_thread_below_normal() -> Result<(), Error> {
     // SAFETY: GetCurrentThread vrací pseudo-handle, který se nezavírá.
     let ok = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) };
+    ok.map_err(|e| Error::Win32 {
+        call: "SetThreadPriority",
+        code: e.code().0,
+    })
+}
+
+/// Zvedne prioritu aktuálního vlákna na TIME_CRITICAL — výhradně pro
+/// heartbeat detekce záseku (SPEC kap. 3.3): vlákno nesmí samo uvíznout
+/// za zátěží, kterou má měřit. NIKDY nepoužít pro pracovní vlákna.
+pub fn set_current_thread_time_critical() -> Result<(), Error> {
+    // SAFETY: GetCurrentThread vrací pseudo-handle, který se nezavírá.
+    let ok = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) };
     ok.map_err(|e| Error::Win32 {
         call: "SetThreadPriority",
         code: e.code().0,

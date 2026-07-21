@@ -52,24 +52,30 @@ pub fn insert_incident(
     identity_key: Option<&str>,
     culprit: Option<&str>,
     detail: Option<&str>,
+    etl_path: Option<&str>,
     window_from: Option<i64>,
     window_to: Option<i64>,
 ) -> Result<i64, rusqlite::Error> {
     conn.execute(
         "INSERT INTO incident
-             (ts, kind, identity_key, culprit, detail, window_from, window_to)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![ts, kind, identity_key, culprit, detail, window_from, window_to],
+             (ts, kind, identity_key, culprit, detail, etl_path, window_from, window_to)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            ts,
+            kind,
+            identity_key,
+            culprit,
+            detail,
+            etl_path,
+            window_from,
+            window_to
+        ],
     )?;
     Ok(conn.last_insert_rowid())
 }
 
 /// Události v rozsahu [from, to] — pro markery na časové ose.
-pub fn events_in(
-    conn: &Connection,
-    from: i64,
-    to: i64,
-) -> Result<Vec<EventRow>, rusqlite::Error> {
+pub fn events_in(conn: &Connection, from: i64, to: i64) -> Result<Vec<EventRow>, rusqlite::Error> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, ts, kind, pid, detail FROM event
          WHERE ts BETWEEN ?1 AND ?2 ORDER BY ts",

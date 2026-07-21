@@ -430,6 +430,7 @@ version = "0.1.0"
 dependencies = [
  "core-types",
  "thiserror 2.0.18",
+ "tracing",
  "win-sys",
 ]
 
@@ -3315,6 +3316,8 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 name = "svc"
 version = "0.1.0"
 dependencies = [
+ "collector-crash",
+ "collector-etw",
  "collector-proc",
  "core-types",
  "ctrlc",
@@ -4464,6 +4467,8 @@ version = "0.1.0"
 dependencies = [
  "core-types",
  "thiserror 2.0.18",
+ "tracing",
+ "tracing-subscriber",
  "windows",
 ]
 
