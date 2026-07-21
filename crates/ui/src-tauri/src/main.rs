@@ -170,6 +170,12 @@ fn search_files(
     ipc::client::search_files(letter, query, limit).map_err(|e| e.to_string())
 }
 
+/// Duplicity (v4D) — pomalé, async command.
+#[tauri::command(async)]
+fn find_duplicates(root: String, min_size: u64) -> Result<Vec<(u64, Vec<String>)>, String> {
+    ipc::client::find_duplicates(root, min_size).map_err(|e| e.to_string())
+}
+
 /// Otevře cestu v Průzkumníku (adresář přímo, soubor s /select).
 /// Jen otevření — žádná mutace; registry cesty sem nepatří.
 #[tauri::command]
@@ -276,7 +282,8 @@ fn main() {
             open_path,
             query_volumes,
             build_file_index,
-            search_files
+            search_files,
+            find_duplicates
         ])
         .setup(|app| {
             setup_tray(app)?;

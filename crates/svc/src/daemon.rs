@@ -665,6 +665,11 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     },
                 }
             }
+            // Duplicity (v4D, SPEC 11.3) — pomalé, on-demand, jen čte.
+            Request::FindDuplicates { root, min_size } => {
+                let groups = fs_index::find_duplicates(&root, min_size.max(1), 200_000);
+                Response::Duplicates(groups.into_iter().map(|g| (g.size, g.paths)).collect())
+            }
             Request::QueryIncidents { limit } => {
                 let conn = read_conn.lock().expect("read conn lock poisoned");
                 match store::events::recent_incidents(&conn, limit.min(500)) {

@@ -86,6 +86,31 @@
 		}
 	}
 
+	// Duplicity (SPEC 11.3): dvoufázová čtecí analýza on-demand.
+	let dupRoot = $state('');
+	let dups = $state(null);
+	let dupsRunning = $state(false);
+
+	async function runDups() {
+		if (dupsRunning || !dupRoot.trim()) return;
+		dupsRunning = true;
+		dups = null;
+		try {
+			dups = await invoke('find_duplicates', {
+				root: dupRoot.trim(),
+				minSize: 1024 * 1024 // 1 MB — menší soubory nestojí za řeč
+			});
+		} catch {
+			dups = [];
+		}
+		dupsRunning = false;
+	}
+
+	let dupWaste = $derived.by(() => {
+		if (!dups) return 0;
+		return dups.reduce((a, [size, paths]) => a + size * (paths.length - 1), 0);
+	});
+
 	function usedPct(v) {
 		return v.total_bytes ? ((v.total_bytes - v.free_bytes) / v.total_bytes) * 100 : 0;
 	}
@@ -214,6 +239,42 @@
 			</p>
 		{:else if indexLetter && query.trim() && !searching}
 			<p class="empty small">nic nenalezeno</p>
+		{/if}
+	</section>
+
+	<!-- ── Duplicity (čtecí analýza; mazání až v8) ── -->
+	<section class="card dups">
+		<div class="s-head">
+			<span class="label-tech">// duplicity (soubory ≥ 1 MB)</span>
+			<input
+				class="dup-input mono"
+				placeholder="kořen, např. C:\Users\IVA\Downloads"
+				bind:value={dupRoot}
+			/>
+			<button class="idx-btn dup-btn" disabled={dupsRunning} onclick={runDups}>
+				{dupsRunning ? 'analyzuji…' : 'Najít duplicity'}
+			</button>
+		</div>
+		{#if dups?.length}
+			<p class="legend">
+				{dups.length} skupin · zbytečně obsazeno {fmtSize(dupWaste)} — jen analýza,
+				mazání přijde později (bezpečně, do koše)
+			</p>
+			<ul class="hits">
+				{#each dups as [size, paths], gi (gi)}
+					<li class="dup-group">
+						<span class="dup-size mono">{fmtSize(size)} × {paths.length}</span>
+						{#each paths as p (p)}
+							<button class="hit" onclick={() => invoke('open_path', { path: p })}>
+								<FileText size={12} />
+								<span class="hit-path mono">{p}</span>
+							</button>
+						{/each}
+					</li>
+				{/each}
+			</ul>
+		{:else if dups && !dupsRunning}
+			<p class="empty small">žádné duplicity nad 1 MB</p>
 		{/if}
 	</section>
 </div>
@@ -405,6 +466,34 @@
 		font-size: 0.68rem;
 		color: var(--text-faint);
 		margin-top: 8px;
+	}
+	.dups {
+		max-height: 40vh;
+		overflow-y: auto;
+	}
+	.dup-input {
+		flex: 1;
+		background: var(--panel);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text);
+		font-size: 0.76rem;
+		padding: 5px 8px;
+		outline: none;
+	}
+	.dup-btn {
+		width: auto;
+		margin-top: 0;
+		white-space: nowrap;
+	}
+	.dup-group {
+		border-bottom: 1px dashed var(--border);
+		padding: 6px 0;
+	}
+	.dup-size {
+		font-size: 0.72rem;
+		color: var(--warn);
+		padding: 0 8px;
 	}
 	.mono {
 		font-family: var(--font-mono);

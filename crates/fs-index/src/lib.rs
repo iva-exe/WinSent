@@ -128,6 +128,90 @@ impl VolumeIndex {
     }
 }
 
+/// Skupina duplicitních souborů (stejná velikost + stejný obsah).
+#[derive(Debug, Clone)]
+pub struct DupGroup {
+    pub size: u64,
+    pub paths: Vec<String>,
+}
+
+/// Duplicity pod kořenem — dvoufázově (SPEC 11.3): nejdřív seskupení
+/// podle velikosti (zadarmo z metadat), hash obsahu se počítá JEN pro
+/// kandidáty se shodnou velikostí. Čtecí analýza, žádné mazání (v8).
+/// `max_files` je pojistka proti obřím stromům.
+pub fn find_duplicates(root: &str, min_size: u64, max_files: usize) -> Vec<DupGroup> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hasher;
+
+    // Fáze 1: velikost → cesty.
+    let mut by_size: HashMap<u64, Vec<std::path::PathBuf>> = HashMap::new();
+    let mut stack = vec![std::path::PathBuf::from(root)];
+    let mut seen_files = 0usize;
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let Ok(meta) = e.metadata() else { continue };
+            if meta.is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                stack.push(e.path());
+            } else if meta.len() >= min_size {
+                by_size.entry(meta.len()).or_default().push(e.path());
+                seen_files += 1;
+                if seen_files >= max_files {
+                    stack.clear();
+                    break;
+                }
+            }
+        }
+    }
+
+    // Fáze 2: hash obsahu kandidátů (po 1MB blocích; SipHash stačí na
+    // detekci — nejde o kryptografii, jen o „stejný obsah?").
+    let hash_file = |path: &std::path::Path| -> Option<u64> {
+        use std::io::Read;
+        let mut f = std::fs::File::open(path).ok()?;
+        let mut h = DefaultHasher::new();
+        let mut buf = vec![0u8; 1 << 20];
+        loop {
+            let n = f.read(&mut buf).ok()?;
+            if n == 0 {
+                break;
+            }
+            h.write(&buf[..n]);
+        }
+        Some(h.finish())
+    };
+
+    let mut out = Vec::new();
+    for (size, paths) in by_size {
+        if paths.len() < 2 {
+            continue;
+        }
+        let mut by_hash: HashMap<u64, Vec<String>> = HashMap::new();
+        for p in paths {
+            if let Some(h) = hash_file(&p) {
+                by_hash
+                    .entry(h)
+                    .or_default()
+                    .push(p.to_string_lossy().into_owned());
+            }
+        }
+        for (_, group) in by_hash {
+            if group.len() >= 2 {
+                out.push(DupGroup { size, paths: group });
+            }
+        }
+    }
+    // Největší plýtvání první: (počet-1) × velikost.
+    out.sort_by_key(|g| std::cmp::Reverse(g.size * (g.paths.len() as u64 - 1)));
+    out.truncate(100);
+    out
+}
+
 /// Podřetězec bez alokace: `needle_lc` už je lowercase.
 fn contains_ignore_ascii_case(haystack: &str, needle_lc: &str) -> bool {
     let h = haystack.as_bytes();

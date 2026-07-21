@@ -325,6 +325,18 @@ pub fn search_files(
     }
 }
 
+/// Duplicity pod kořenem (v4D): skupiny (velikost, cesty).
+pub fn find_duplicates(root: String, min_size: u64) -> Result<Vec<(u64, Vec<String>)>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::FindDuplicates { root, min_size })? {
+        Response::Duplicates(groups) => Ok(groups),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Aktuální systémové metriky ze sampleru služby.
 pub fn query_system() -> Result<SystemSnapshot, Error> {
     let mut stream = connect()?;

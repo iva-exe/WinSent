@@ -69,6 +69,39 @@
 		return d > 0 ? `${d} d ${h} h` : h > 0 ? `${h} h ${m} m` : `${m} m`;
 	}
 
+	// Badge zdraví na navigaci (SPEC 9.2): incidenty za 24 h → Incidents,
+	// plný disk / opotřebený SSD → Files. Jen upozornění, ne poplach.
+	let badges = $state({});
+	async function pollBadges() {
+		const b = {};
+		try {
+			const inc = await invoke('query_incidents', { limit: 50 });
+			const day = Date.now() / 1000 - 86400;
+			const recent = inc.filter((i) => i.ts > day);
+			if (recent.length) {
+				b['/incidents'] = {
+					count: recent.length,
+					color: recent.some((i) => i.kind === 'bsod') ? 'var(--danger)' : 'var(--warn)'
+				};
+			}
+		} catch {
+			/* služba mimo */
+		}
+		try {
+			const v = await invoke('query_volumes');
+			const full = v.volumes.some(
+				(x) => x.total_bytes && (x.total_bytes - x.free_bytes) / x.total_bytes >= 0.9
+			);
+			const worn = v.health.some((h) => (h.used_pct ?? 0) >= 80 || h.critical);
+			if (full || worn) {
+				b['/files'] = { count: null, color: worn ? 'var(--danger)' : 'var(--warn)' };
+			}
+		} catch {
+			/* služba mimo */
+		}
+		badges = b;
+	}
+
 	onMount(() => {
 		startDaemonPolling();
 		async function pollUptime() {
@@ -80,8 +113,13 @@
 			}
 		}
 		pollUptime();
+		pollBadges();
 		const t = setInterval(pollUptime, 5000);
-		return () => clearInterval(t);
+		const t2 = setInterval(pollBadges, 60000);
+		return () => {
+			clearInterval(t);
+			clearInterval(t2);
+		};
 	});
 </script>
 
@@ -127,6 +165,14 @@
 						<a href={item.href} class:active={page.url.pathname.startsWith(item.href)}>
 							<item.icon size={20} strokeWidth={1.75} />
 							<span>{item.label}</span>
+							{#if badges[item.href]}
+								<span
+									class="nav-badge"
+									style:background={badges[item.href].color}
+									title="vyžaduje pozornost"
+									>{badges[item.href].count ?? ''}</span
+								>
+							{/if}
 						</a>
 					</li>
 				{/each}
@@ -312,5 +358,26 @@
 	.route {
 		height: 100%;
 		min-height: 0;
+	}
+
+	/* Badge zdraví na navigaci (SPEC 9.2). */
+	.nav-badge {
+		margin-left: auto;
+		min-width: 8px;
+		height: 8px;
+		border-radius: 999px;
+		font-family: var(--font-mono);
+		font-size: 0.58rem;
+		line-height: 1;
+		color: #0e0f12;
+		padding: 0;
+		display: grid;
+		place-items: center;
+		box-shadow: 0 0 6px color-mix(in srgb, currentColor 50%, transparent);
+	}
+	.nav-badge:not(:empty) {
+		min-width: 15px;
+		height: 15px;
+		padding: 0 3px;
 	}
 </style>
