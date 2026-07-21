@@ -140,6 +140,36 @@ fn rescan_apps() -> Result<(), String> {
     ipc::client::rescan_apps().map_err(|e| e.to_string())
 }
 
+/// Svazky + zdraví disků (v4C).
+#[derive(Debug, Serialize)]
+struct VolumesDto {
+    volumes: Vec<core_types::proc::VolumeRow>,
+    health: Vec<core_types::proc::DiskHealthRow>,
+}
+
+#[tauri::command]
+fn query_volumes() -> Result<VolumesDto, String> {
+    ipc::client::query_volumes()
+        .map(|(volumes, health)| VolumesDto { volumes, health })
+        .map_err(|e| e.to_string())
+}
+
+/// Postaví MFT index svazku (sekundy — async, ať UI nezamrzne).
+#[tauri::command(async)]
+fn build_file_index(letter: char) -> Result<u64, String> {
+    ipc::client::build_file_index(letter).map_err(|e| e.to_string())
+}
+
+/// Hledání v MFT indexu.
+#[tauri::command(async)]
+fn search_files(
+    letter: char,
+    query: String,
+    limit: u32,
+) -> Result<Vec<core_types::proc::FileHit>, String> {
+    ipc::client::search_files(letter, query, limit).map_err(|e| e.to_string())
+}
+
 /// Otevře cestu v Průzkumníku (adresář přímo, soubor s /select).
 /// Jen otevření — žádná mutace; registry cesty sem nepatří.
 #[tauri::command]
@@ -243,7 +273,10 @@ fn main() {
             query_app_map,
             compute_app_sizes,
             rescan_apps,
-            open_path
+            open_path,
+            query_volumes,
+            build_file_index,
+            search_files
         ])
         .setup(|app| {
             setup_tray(app)?;

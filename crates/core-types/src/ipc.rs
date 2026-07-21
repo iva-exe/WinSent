@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -49,6 +49,17 @@ pub enum Request {
     ComputeAppSizes { identity_key: String },
     /// Vyžádá nový sken inventáře na pozadí.
     RescanApps,
+    /// Svazky + zdraví fyzických disků (v4, SPEC kap. 11.1).
+    QueryVolumes,
+    /// Postaví MFT index svazku (sekundy; index drží služba v paměti
+    /// a po 5 min nečinnosti ho uvolní).
+    BuildFileIndex { letter: char },
+    /// Hledání v MFT indexu svazku.
+    SearchFiles {
+        letter: char,
+        query: String,
+        limit: u32,
+    },
 }
 
 /// Odpověď služba → UI.
@@ -97,6 +108,18 @@ pub enum Response {
     AppMap(Vec<crate::proc::AppPathRow>),
     /// Potvrzení požadavku bez dat (RescanApps).
     Ack,
+    /// Svazky + zdraví disků (v4).
+    Volumes {
+        volumes: Vec<crate::proc::VolumeRow>,
+        health: Vec<crate::proc::DiskHealthRow>,
+    },
+    /// Index svazku postaven: (písmeno, počet záznamů).
+    IndexInfo {
+        letter: char,
+        entries: u64,
+    },
+    /// Nálezy hledání (v4).
+    Files(Vec<crate::proc::FileHit>),
     /// Chyba zpracování požadavku. Nic neselhává mlčky (SPEC kap. 22).
     Error {
         message: String,

@@ -82,6 +82,7 @@ collector-proc = { path = "crates/collector-proc" }
 collector-etw = { path = "crates/collector-etw" }
 collector-crash = { path = "crates/collector-crash" }
 collector-inv = { path = "crates/collector-inv" }
+fs-index = { path = "crates/fs-index" }
 identity = { path = "crates/identity" }
 
 # externí — verze zamčené přes Cargo.lock, tady jen semver rozsahy

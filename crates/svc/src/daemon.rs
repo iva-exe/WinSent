@@ -299,6 +299,14 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             })?
     };
 
+    // MFT indexy svazků (v4C, SPEC 11.2): staví se on-demand, drží se
+    // v paměti a po 5 min nečinnosti je janitor uvolní (paměťový
+    // rozpočet — velký svazek je ~50 MB indexu).
+    type FsIndexes =
+        Arc<std::sync::Mutex<std::collections::HashMap<char, (fs_index::VolumeIndex, Instant)>>>;
+    let fs_indexes: FsIndexes = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let fs_indexes_janitor = Arc::clone(&fs_indexes);
+
     // Inventář aplikací (v4, SPEC kap. 5): sken na pozadí při startu
     // a pak řídce (6 h); RescanApps ho vyžádá dřív. Nikdy v cyklu.
     let rescan = Arc::new(AtomicBool::new(false));
@@ -357,6 +365,20 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         }
                         last_scan = Some(Instant::now());
                     }
+                    // Janitor MFT indexů: nepoužité 5 min → pryč.
+                    fs_indexes_janitor.lock().expect("fs index lock").retain(
+                        |letter, (idx, last)| {
+                            let keep = last.elapsed() < Duration::from_secs(300);
+                            if !keep {
+                                tracing::info!(
+                                    volume = %letter,
+                                    entries = idx.len(),
+                                    "MFT index uvolněn (nečinnost)"
+                                );
+                            }
+                            keep
+                        },
+                    );
                     wait_or_stop(&stop, Duration::from_secs(2));
                 }
             })?
@@ -377,6 +399,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         let statics = statics.clone();
         let icons = icon_store;
         let rescan_flag = Arc::clone(&rescan);
+        let fs_idx = Arc::clone(&fs_indexes);
         let handler: ipc::server::Handler = Arc::new(move |req| match req {
             Request::QuerySysInfo => Response::SysInfo(statics.clone()),
             Request::QueryIcon { identity_key } => {
@@ -559,6 +582,88 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             Request::RescanApps => {
                 rescan_flag.store(true, Ordering::SeqCst);
                 Response::Ack
+            }
+            // Svazky + zdraví disků (v4C, SPEC 11.1). NVMe health log;
+            // SATA poctivě None (žádná vymyšlená čísla).
+            Request::QueryVolumes => {
+                let volumes = win_sys::volumes::volumes()
+                    .into_iter()
+                    .map(|v| core_types::proc::VolumeRow {
+                        letter: v.letter,
+                        label: v.label,
+                        fs: v.fs,
+                        total_bytes: v.total_bytes,
+                        free_bytes: v.free_bytes,
+                        fixed: v.fixed,
+                    })
+                    .collect();
+                let health = statics
+                    .disks
+                    .iter()
+                    .map(|d| {
+                        let h = win_sys::smart::nvme_health(d.index);
+                        core_types::proc::DiskHealthRow {
+                            index: d.index,
+                            model: d.model.clone(),
+                            temp_c: h.map(|x| x.temp_c),
+                            used_pct: h.map(|x| x.used_pct),
+                            spare_pct: h.map(|x| x.spare_pct),
+                            power_on_hours: h.map(|x| x.power_on_hours),
+                            critical: h.map(|x| x.critical_warning),
+                        }
+                    })
+                    .collect();
+                Response::Volumes { volumes, health }
+            }
+            // Stavba MFT indexu (sekundy) — blokuje jen toto spojení,
+            // sběr dat běží dál.
+            Request::BuildFileIndex { letter } => match fs_index::VolumeIndex::build(letter) {
+                Ok(idx) => {
+                    let entries = idx.len() as u64;
+                    fs_idx
+                        .lock()
+                        .expect("fs index lock")
+                        .insert(letter, (idx, Instant::now()));
+                    tracing::info!(volume = %letter, entries, "MFT index postaven");
+                    Response::IndexInfo { letter, entries }
+                }
+                Err(e) => Response::Error {
+                    message: format!("stavba indexu selhala: {e}"),
+                },
+            },
+            Request::SearchFiles {
+                letter,
+                query,
+                limit,
+            } => {
+                let mut map = fs_idx.lock().expect("fs index lock");
+                match map.get_mut(&letter) {
+                    Some((idx, last)) => {
+                        *last = Instant::now();
+                        let hits = idx.search(&query, limit.min(300) as usize);
+                        drop(map);
+                        let rows = hits
+                            .into_iter()
+                            .map(|h| {
+                                // Velikost jen u souborů (metadata je levné
+                                // pro pár set nálezů).
+                                let size = (h.attrs & fs_index::ATTR_DIR == 0)
+                                    .then(|| std::fs::metadata(&h.path).ok().map(|m| m.len()))
+                                    .flatten();
+                                core_types::proc::FileHit {
+                                    path: h.path,
+                                    name: h.name,
+                                    attrs: h.attrs,
+                                    size_bytes: size,
+                                }
+                            })
+                            .collect();
+                        Response::Files(rows)
+                    }
+                    None => Response::Error {
+                        message: "index svazku není postavený".into(),
+                    },
+                }
             }
             Request::QueryIncidents { limit } => {
                 let conn = read_conn.lock().expect("read conn lock poisoned");

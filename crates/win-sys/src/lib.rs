@@ -19,11 +19,14 @@ pub mod pdhq;
 pub mod proc;
 pub mod procinfo;
 pub mod registry;
+pub mod smart;
 pub mod smbios;
 pub mod sysinfo;
 pub mod threading;
 pub mod trust;
+pub mod usn;
 pub mod verinfo;
+pub mod volumes;
 
 /// Chyby win-sys vrstvy. Každé selhání Win32 volání nese kód, nic
 /// neselhává mlčky (SPEC kap. 22).

@@ -3322,6 +3322,7 @@ dependencies = [
  "collector-proc",
  "core-types",
  "ctrlc",
+ "fs-index",
  "ipc",
  "notify",
  "store",

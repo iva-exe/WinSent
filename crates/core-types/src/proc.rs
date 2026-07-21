@@ -164,6 +164,41 @@ pub struct AppPathRow {
     pub size_ts: Option<i64>,
 }
 
+/// Logický svazek (v4, SPEC kap. 11.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VolumeRow {
+    pub letter: char,
+    pub label: String,
+    pub fs: String,
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+    pub fixed: bool,
+}
+
+/// Zdraví fyzického disku (NVMe health log; SATA zatím None).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiskHealthRow {
+    pub index: u32,
+    pub model: String,
+    pub temp_c: Option<i32>,
+    /// Opotřebení (0 = nový, 100+ = za návrhovou životností).
+    pub used_pct: Option<u8>,
+    pub spare_pct: Option<u8>,
+    pub power_on_hours: Option<u64>,
+    /// NVMe critical warning bity (0 = OK).
+    pub critical: Option<u8>,
+}
+
+/// Nález hledání v MFT indexu (v4, SPEC kap. 11.2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileHit {
+    pub path: String,
+    pub name: String,
+    /// FILE_ATTRIBUTE_* bity (adresář/skrytý/systémový → barvy v UI).
+    pub attrs: u32,
+    pub size_bytes: Option<u64>,
+}
+
 /// Incident (zásek s viníkem, pád aplikace, BSOD) — SPEC kap. 16.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IncidentRow {

@@ -271,6 +271,60 @@ pub fn rescan_apps() -> Result<(), Error> {
     }
 }
 
+/// Svazky + zdraví fyzických disků (v4C).
+#[allow(clippy::type_complexity)]
+pub fn query_volumes() -> Result<
+    (
+        Vec<core_types::proc::VolumeRow>,
+        Vec<core_types::proc::DiskHealthRow>,
+    ),
+    Error,
+> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryVolumes)? {
+        Response::Volumes { volumes, health } => Ok((volumes, health)),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Postaví MFT index svazku; vrací počet záznamů.
+pub fn build_file_index(letter: char) -> Result<u64, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::BuildFileIndex { letter })? {
+        Response::IndexInfo { entries, .. } => Ok(entries),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Hledání v MFT indexu svazku.
+pub fn search_files(
+    letter: char,
+    query: String,
+    limit: u32,
+) -> Result<Vec<core_types::proc::FileHit>, Error> {
+    let mut stream = connect()?;
+    match request(
+        &mut stream,
+        &Request::SearchFiles {
+            letter,
+            query,
+            limit,
+        },
+    )? {
+        Response::Files(rows) => Ok(rows),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Aktuální systémové metriky ze sampleru služby.
 pub fn query_system() -> Result<SystemSnapshot, Error> {
     let mut stream = connect()?;
