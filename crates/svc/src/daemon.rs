@@ -800,6 +800,86 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 Err(result) => Response::ActionResult(result),
             },
             Request::ExecuteAction { plan_id } => Response::ActionResult(orch.execute(plan_id)),
+            // Startup položky (v6): čtení 6 backendů + spárování
+            // s aplikací z inventáře (přes .exe cestu).
+            Request::QueryStartup => {
+                // Task Scheduler jde přes COM — obslužné vlákno pipe
+                // ho musí mít inicializované (idempotentní).
+                win_sys::wic::init_com_for_thread();
+                let items = collector_boot::scan();
+                let conn = read_conn.lock().expect("read conn lock poisoned");
+                let apps = store::apps::list_apps(&conn).unwrap_or_default();
+                // Instalační cesty aplikací pro párování. Obecné kořeny
+                // (Windows, System32, Program Files) se vyhazují —
+                // jinak by „vlastnily“ půlku systému.
+                let too_generic = |p: &str| {
+                    let depth = p.matches('\\').count();
+                    depth < 2
+                        || matches!(
+                            p,
+                            r"c:\windows"
+                                | r"c:\windows\system32"
+                                | r"c:\windows\syswow64"
+                                | r"c:\program files"
+                                | r"c:\program files (x86)"
+                                | r"c:\programdata"
+                        )
+                };
+                let maps: Vec<(String, Vec<String>)> = apps
+                    .iter()
+                    .map(|a| {
+                        let paths = store::apps::app_map(&conn, &a.identity_key)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|p| p.role == "install")
+                            .map(|p| p.path.to_lowercase())
+                            .filter(|p| !too_generic(p))
+                            .collect();
+                        (a.identity_key.clone(), paths)
+                    })
+                    .collect();
+                drop(conn);
+                let rows = items
+                    .into_iter()
+                    .map(|it| {
+                        // Aplikace, pod jejíž instalační cestu .exe spadá.
+                        // Nejdelší SHODNÝ prefix vyhrává (nejspecifičtější
+                        // instalace, ne aplikace s nejdelší cestou vůbec).
+                        let key = it.exe_path.as_ref().and_then(|exe| {
+                            let lc = exe.to_lowercase();
+                            maps.iter()
+                                .filter_map(|(k, paths)| {
+                                    paths
+                                        .iter()
+                                        .filter(|p| {
+                                            lc.starts_with(p.as_str())
+                                                && lc.as_bytes().get(p.len()) == Some(&b'\\')
+                                        })
+                                        .map(|p| p.len())
+                                        .max()
+                                        .map(|len| (k.clone(), len))
+                                })
+                                .max_by_key(|(_, len)| *len)
+                                .map(|(k, _)| k)
+                        });
+                        let app = key
+                            .as_ref()
+                            .and_then(|k| apps.iter().find(|a| &a.identity_key == k));
+                        core_types::proc::StartupRow {
+                            id: it.id,
+                            name: it.name,
+                            source: it.source.as_str().to_string(),
+                            command: it.command,
+                            enabled: it.enabled,
+                            toggleable: it.source.toggleable(),
+                            identity_key: key,
+                            app_name: app.map(|a| a.display_name.clone()),
+                            publisher: app.and_then(|a| a.publisher.clone()),
+                        }
+                    })
+                    .collect();
+                Response::Startup(rows)
+            }
             Request::QueryAudit { limit } => {
                 let conn = read_conn.lock().expect("read conn lock poisoned");
                 match store::audit::recent(&conn, limit.min(500)) {

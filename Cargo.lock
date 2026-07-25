@@ -3318,6 +3318,7 @@ name = "svc"
 version = "0.1.0"
 dependencies = [
  "actor-toggle",
+ "collector-boot",
  "collector-crash",
  "collector-etw",
  "collector-inv",

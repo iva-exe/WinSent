@@ -58,7 +58,107 @@ pub fn plan(action: &Action) -> Vec<PlanStep> {
             description: format!("ověřit proces {pid} (bez mutace)"),
             reversible: true,
         }],
+        Action::StartupToggle { id, on } => vec![PlanStep {
+            description: format!(
+                "{} položku {id} (vratné opačným přepnutím)",
+                if *on { "povolit" } else { "zakázat" }
+            ),
+            reversible: true,
+        }],
     }
+}
+
+/// Zápis startup položky (v6, SPEC kap. 7) — NIKDY mazání hodnoty:
+/// Run/složky přes StartupApproved, úlohy přes Enabled, služby přes
+/// start typ. Volá se jen po `Verdict::Allow`.
+fn apply_startup(id: &str, on: bool) -> Result<String, String> {
+    let Some((source, name)) = id.split_once('|') else {
+        return Err("neplatný identifikátor".into());
+    };
+    match source {
+        "run_user" | "run_machine" | "folder_user" | "folder_common" => {
+            let machine = source == "run_machine";
+            let sub = if source.starts_with("run") {
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+            } else {
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder"
+            };
+            let root = if machine {
+                win_sys::registry::HKEY_LOCAL_MACHINE
+            } else {
+                win_sys::registry::HKEY_CURRENT_USER
+            };
+            // 12 bajtů: [0] = 0x02 povoleno / 0x03 zakázáno,
+            // [4..12] = FILETIME okamžiku zákazu (0 u povolení).
+            let mut data = [0u8; 12];
+            data[0] = if on { 0x02 } else { 0x03 };
+            if !on {
+                let ft = filetime_now();
+                data[4..12].copy_from_slice(&ft.to_le_bytes());
+            }
+            win_sys::registry::write_binary(root, sub, name, &data).map_err(|e| e.to_string())?;
+            Ok(format!(
+                "StartupApproved {name} = {}",
+                if on { "on" } else { "off" }
+            ))
+        }
+        "task" => {
+            win_sys::tasksched::set_task_enabled(name, on).map_err(|e| e.to_string())?;
+            Ok(format!("úloha {name} enabled={on}"))
+        }
+        "service" => {
+            win_sys::services::set_service_auto_start(name, on).map_err(|e| e.to_string())?;
+            Ok(format!(
+                "služba {name} start={}",
+                if on { "auto" } else { "ruční" }
+            ))
+        }
+        other => Err(format!("zdroj {other} nelze přepínat")),
+    }
+}
+
+/// Aktuální stav startup položky (fáze ověření — čte se ZNOVU z OS).
+fn read_startup_state(id: &str) -> Option<bool> {
+    let (source, name) = id.split_once('|')?;
+    match source {
+        "run_user" | "run_machine" | "folder_user" | "folder_common" => {
+            let machine = source == "run_machine";
+            let sub = if source.starts_with("run") {
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+            } else {
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder"
+            };
+            let root = if machine {
+                win_sys::registry::HKEY_LOCAL_MACHINE
+            } else {
+                win_sys::registry::HKEY_CURRENT_USER
+            };
+            // Chybí-li hodnota, položka je povolená.
+            Some(
+                win_sys::registry::read_binary(root, sub, name)
+                    .and_then(|d| d.first().map(|b| b & 0x01 == 0))
+                    .unwrap_or(true),
+            )
+        }
+        "task" => win_sys::tasksched::task_enabled(name),
+        "service" => win_sys::registry::read_u64(
+            win_sys::registry::HKEY_LOCAL_MACHINE,
+            &format!(r"SYSTEM\CurrentControlSet\Services\{name}"),
+            "Start",
+        )
+        .map(|t| t == 2),
+        _ => None,
+    }
+}
+
+/// Windows FILETIME (100ns od 1601) pro razítko zákazu.
+fn filetime_now() -> u64 {
+    const EPOCH_DIFF_100NS: u64 = 116_444_736_000_000_000;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    EPOCH_DIFF_100NS + secs * 10_000_000
 }
 
 /// Výsledek fáze 3 — PROVEDENÍ.
@@ -115,6 +215,19 @@ pub fn execute(action: &Action) -> ExecOutcome {
             rolled_back: false,
             detail: format!("proces {pid} ověřen, žádná mutace"),
         },
+        Action::StartupToggle { id, on } => match apply_startup(id, *on) {
+            Ok(detail) => ExecOutcome {
+                ok: true,
+                rolled_back: false,
+                detail,
+            },
+            // Jediný krok — není co vracet, stav zůstal původní.
+            Err(reason) => ExecOutcome {
+                ok: false,
+                rolled_back: false,
+                detail: format!("zápis selhal: {reason}"),
+            },
+        },
     }
 }
 
@@ -127,6 +240,8 @@ pub fn verify(action: &Action) -> bool {
         // ho nepřepisuje; CheckProc nic neměnil.
         Action::TestOp { .. } => true,
         Action::CheckProc { .. } => true,
+        // Přečíst ZNOVU z OS — nikdy se netvářit, že zápis prošel.
+        Action::StartupToggle { id, on } => read_startup_state(id) == Some(*on),
     }
 }
 
@@ -136,6 +251,10 @@ pub fn reversible_hint(action: &Action) -> Option<String> {
         Action::TestToggle { key, on } => Some(format!("přepnout {key} zpět na {}", !on)),
         Action::TestOp { .. } => Some("kroky mají undo (testovací)".into()),
         Action::CheckProc { .. } => None, // nic se nemění
+        Action::StartupToggle { id, on } => Some(format!(
+            "přepnout {id} zpět na {}",
+            if *on { "vypnuto" } else { "zapnuto" }
+        )),
     }
 }
 

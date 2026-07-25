@@ -22,13 +22,21 @@ pub enum Action {
     /// čerstvého stavu OS: existence (pid + create_time) a třída
     /// ochrany. Základ pro kill ve v7.
     CheckProc { pid: u32, create_time: i64 },
+    /// T0: startup položka on/off (v6, SPEC kap. 7). Vratná —
+    /// zápis přes StartupApproved / Enabled / start typ služby,
+    /// NIKDY mazání hodnoty.
+    StartupToggle {
+        /// `{source}|{name}` z collector-boot.
+        id: String,
+        on: bool,
+    },
 }
 
 impl Action {
     /// Třída akce (SPEC 17.2): T0 rychlá a vratná, T1 těžká.
     pub fn class(&self) -> ActionClass {
         match self {
-            Action::TestToggle { .. } => ActionClass::T0,
+            Action::TestToggle { .. } | Action::StartupToggle { .. } => ActionClass::T0,
             Action::TestOp { .. } | Action::CheckProc { .. } => ActionClass::T1,
         }
     }
@@ -39,6 +47,7 @@ impl Action {
             Action::TestToggle { key, on } => format!("{key}={on}"),
             Action::TestOp { target, .. } => target.clone(),
             Action::CheckProc { pid, create_time } => format!("pid {pid} @{create_time}"),
+            Action::StartupToggle { id, on } => format!("{id}={on}"),
         }
     }
 
@@ -48,6 +57,7 @@ impl Action {
             Action::TestToggle { .. } => "test_toggle",
             Action::TestOp { .. } => "test_op",
             Action::CheckProc { .. } => "check_proc",
+            Action::StartupToggle { .. } => "startup_toggle",
         }
     }
 }

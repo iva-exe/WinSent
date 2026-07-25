@@ -75,6 +75,9 @@ impl Orchestrator {
             let id = self.audit(&action, "deny", Some(&reason), None, None);
             return deny_result(reason, t0, id);
         }
+        // Startup položky sahají na Task Scheduler přes COM — obslužné
+        // vlákno pipe ho potřebuje inicializované (idempotentní).
+        win_sys::wic::init_com_for_thread();
         let mut ctx = validate::LiveContext::new();
         if let validate::Verdict::Deny { reason } = validate::validate(&action, &mut ctx) {
             let id = self.audit(&action, "deny", Some(&reason), None, None);

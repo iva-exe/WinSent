@@ -189,6 +189,25 @@ fn query_cleanup() -> Result<CleanupDto, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Startup položky (v6, SPEC kap. 7).
+#[tauri::command(async)]
+fn query_startup() -> Result<Vec<core_types::proc::StartupRow>, String> {
+    ipc::client::query_startup().map_err(|e| e.to_string())
+}
+
+/// Přepnutí startup položky — T0 přes validační vrstvu (v6).
+#[tauri::command(async)]
+fn toggle_startup(id: String, on: bool) -> Result<core_types::action::ActionResult, String> {
+    ipc::client::toggle_action(core_types::action::Action::StartupToggle { id, on })
+        .map_err(|e| e.to_string())
+}
+
+/// Auditní záznamy (v5) — historie zásahů do systému.
+#[tauri::command]
+fn query_audit(limit: u32) -> Result<Vec<core_types::action::AuditRow>, String> {
+    ipc::client::query_audit(limit).map_err(|e| e.to_string())
+}
+
 /// Smaže záznam incidentu (vlastní DB záznam).
 #[tauri::command]
 fn delete_incident(id: i64) -> Result<(), String> {
@@ -310,7 +329,10 @@ fn main() {
             search_files,
             find_duplicates,
             query_cleanup,
-            delete_incident
+            delete_incident,
+            query_startup,
+            toggle_startup,
+            query_audit
         ])
         .setup(|app| {
             setup_tray(app)?;

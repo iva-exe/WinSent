@@ -72,6 +72,56 @@ pub fn validate(action: &Action, ctx: &mut LiveContext) -> Verdict {
             Verdict::Allow
         }
 
+        // ── T0: startup položka (v6, SPEC 7 + 17.5): zdroj musí být
+        // známý a přepínatelný, položka musí EXISTOVAT teď (čerstvé
+        // čtení registru/služeb — ne to, co ukazuje UI). Vrstva zná
+        // jen tvar id, ne kolektor (izolace 17.1).
+        Action::StartupToggle { id, .. } => {
+            let Some((source, name)) = id.split_once('|') else {
+                return Verdict::deny("neplatný identifikátor položky");
+            };
+            if name.trim().is_empty() {
+                return Verdict::deny("prázdný název položky");
+            }
+            match source {
+                // Winlogon hooky se nikdy nepřepínají — jen varují.
+                "shell" => Verdict::deny(
+                    "položky Winlogon (Userinit/Shell) se nepřepínají — jsou jen k náhledu",
+                ),
+                "run_user" | "run_machine" => {
+                    if startup_run_exists(name, source == "run_machine") {
+                        Verdict::Allow
+                    } else {
+                        Verdict::deny(format!("položka „{name}“ v Run klíči neexistuje"))
+                    }
+                }
+                "folder_user" | "folder_common" => {
+                    if startup_folder_exists(name, source == "folder_common") {
+                        Verdict::Allow
+                    } else {
+                        Verdict::deny(format!("soubor „{name}“ ve složce po spuštění neexistuje"))
+                    }
+                }
+                "task" => {
+                    if win_sys::tasksched::task_enabled(name).is_some() {
+                        Verdict::Allow
+                    } else {
+                        Verdict::deny(format!("naplánovaná úloha „{name}“ neexistuje"))
+                    }
+                }
+                "service" => match service_start_type(name) {
+                    None => Verdict::deny(format!("služba „{name}“ neexistuje")),
+                    // 0/1 = boot/system driver, 4 = disabled — na ty nesaháme.
+                    Some(t) if t < 2 => {
+                        Verdict::deny(format!("„{name}“ je systémový ovladač — akce zamčena"))
+                    }
+                    Some(4) => Verdict::deny(format!("služba „{name}“ je zakázaná správcem")),
+                    Some(_) => Verdict::Allow,
+                },
+                other => Verdict::deny(format!("neznámý zdroj startup položky „{other}“")),
+            }
+        }
+
         // ── T1: kontrola živého procesu — ČERSTVÉ čtení OS, žádná
         // cache. Vzor pro kill ve v7.
         Action::CheckProc { pid, create_time } => {
@@ -103,11 +153,143 @@ pub fn validate(action: &Action, ctx: &mut LiveContext) -> Verdict {
     }
 }
 
+/// Existuje hodnota v Run klíči? (čerstvě, obě architektury)
+fn startup_run_exists(name: &str, machine: bool) -> bool {
+    use win_sys::registry::{enum_values, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    let root = if machine {
+        HKEY_LOCAL_MACHINE
+    } else {
+        HKEY_CURRENT_USER
+    };
+    const SUBS: &[&str] = &[
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+    ];
+    SUBS.iter().any(|sub| {
+        enum_values(root, sub)
+            .iter()
+            .any(|(n, _)| n.eq_ignore_ascii_case(name))
+    })
+}
+
+/// Existuje soubor ve Startup složce?
+fn startup_folder_exists(name: &str, common: bool) -> bool {
+    let base = if common {
+        std::env::var("ProgramData").ok()
+    } else {
+        std::env::var("APPDATA").ok()
+    };
+    base.map(|b| {
+        std::path::Path::new(&format!(
+            r"{b}\Microsoft\Windows\Start Menu\Programs\Startup\{name}"
+        ))
+        .exists()
+    })
+    .unwrap_or(false)
+}
+
+/// Start typ služby z registru (2 = auto, 3 = ruční, 4 = zakázáno).
+fn service_start_type(name: &str) -> Option<u64> {
+    // Jméno služby nesmí obsahovat cestu — jinak by šlo číst cizí klíče.
+    if name.contains('\\') || name.contains('/') {
+        return None;
+    }
+    win_sys::registry::read_u64(
+        win_sys::registry::HKEY_LOCAL_MACHINE,
+        &format!(r"SYSTEM\CurrentControlSet\Services\{name}"),
+        "Start",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // ── Cesty selhání se testují víc než cesty úspěchu (brána v5) ──
+
+    #[test]
+    fn startup_shell_hook_denied() {
+        let mut ctx = LiveContext::new();
+        let v = validate(
+            &Action::StartupToggle {
+                id: "shell|Userinit".into(),
+                on: false,
+            },
+            &mut ctx,
+        );
+        assert!(matches!(v, Verdict::Deny { .. }), "Winlogon je zamčený");
+    }
+
+    #[test]
+    fn startup_unknown_source_denied() {
+        let mut ctx = LiveContext::new();
+        let v = validate(
+            &Action::StartupToggle {
+                id: "vymyslene|neco".into(),
+                on: true,
+            },
+            &mut ctx,
+        );
+        assert!(matches!(v, Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn startup_malformed_id_denied() {
+        let mut ctx = LiveContext::new();
+        for id in ["bez-oddelovace", "run_user|", "run_user|   "] {
+            let v = validate(
+                &Action::StartupToggle {
+                    id: id.into(),
+                    on: true,
+                },
+                &mut ctx,
+            );
+            assert!(matches!(v, Verdict::Deny { .. }), "{id} musí být zamítnut");
+        }
+    }
+
+    #[test]
+    fn startup_nonexistent_item_denied() {
+        let mut ctx = LiveContext::new();
+        let v = validate(
+            &Action::StartupToggle {
+                id: "run_user|UrciteNeexistujiciPolozka123".into(),
+                on: false,
+            },
+            &mut ctx,
+        );
+        assert!(matches!(v, Verdict::Deny { .. }));
+    }
+
+    // Živá data: kritický systémový ovladač nelze přepnout.
+    #[test]
+    fn startup_boot_driver_denied() {
+        let mut ctx = LiveContext::new();
+        // disk.sys = Start 0 (boot driver) na každém Windows.
+        let v = validate(
+            &Action::StartupToggle {
+                id: "service|disk".into(),
+                on: false,
+            },
+            &mut ctx,
+        );
+        assert!(matches!(v, Verdict::Deny { .. }), "boot driver je zamčený");
+    }
+
+    // Ochrana proti podvrženému jménu služby s cestou.
+    #[test]
+    fn startup_service_path_traversal_denied() {
+        let mut ctx = LiveContext::new();
+        let v = validate(
+            &Action::StartupToggle {
+                id: r"service|..\..\Foo".into(),
+                on: false,
+            },
+            &mut ctx,
+        );
+        assert!(matches!(v, Verdict::Deny { .. }));
+    }
 
     #[test]
     fn toggle_unknown_key_denied() {

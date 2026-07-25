@@ -20,6 +20,7 @@ collector-proc = { workspace = true }
 collector-etw = { workspace = true }
 collector-crash = { workspace = true }
 collector-inv = { workspace = true }
+collector-boot = { workspace = true }
 fs-index = { workspace = true }
 validate = { workspace = true }
 actor-toggle = { workspace = true }

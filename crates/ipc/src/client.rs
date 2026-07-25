@@ -367,6 +367,18 @@ pub fn execute_action(plan_id: u64) -> Result<core_types::action::ActionResult, 
     }
 }
 
+/// Startup položky (v6).
+pub fn query_startup() -> Result<Vec<core_types::proc::StartupRow>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryStartup)? {
+        Response::Startup(rows) => Ok(rows),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Auditní záznamy (v5).
 pub fn query_audit(limit: u32) -> Result<Vec<core_types::action::AuditRow>, Error> {
     let mut stream = connect()?;

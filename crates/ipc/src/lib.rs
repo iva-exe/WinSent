@@ -13,9 +13,11 @@ pub mod server;
 pub const PIPE_NAME: &str = r"\\.\pipe\syswatch";
 
 /// Maximální velikost rámce. Pojistka proti podvrženému prefixu délky —
-/// pipe je útočná plocha (SPEC kap. 21 bod 10). v0 zprávy mají desítky
-/// bajtů; limit se zvedne, až protokol poroste.
-pub const MAX_FRAME_LEN: u32 = 64 * 1024;
+/// pipe je útočná plocha (SPEC kap. 21 bod 10). Od v6 posílá protokol
+/// i velké seznamy (500 aplikací, ~300 startup položek, MFT nálezy),
+/// takže limit je 8 MB — pořád o řád pod tím, co by ohrozilo paměť,
+/// a stále brání alokaci podle podvrženého prefixu.
+pub const MAX_FRAME_LEN: u32 = 8 * 1024 * 1024;
 
 /// Chyby IPC vrstvy.
 #[derive(Debug, thiserror::Error)]

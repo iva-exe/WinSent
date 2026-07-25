@@ -212,6 +212,25 @@ pub struct CleanupReport {
     pub finished_ts: i64,
 }
 
+/// Startup položka (v6, SPEC kap. 7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StartupRow {
+    /// `{source}|{name}` — klíč pro přepnutí.
+    pub id: String,
+    pub name: String,
+    /// run_user | run_machine | folder_user | folder_common | task |
+    /// service | msix | shell
+    pub source: String,
+    pub command: String,
+    pub enabled: bool,
+    /// Lze přepínat? (Winlogon hooky ne — jen varování.)
+    pub toggleable: bool,
+    /// Identita aplikace, která položku vlastní (ikona + seskupení).
+    pub identity_key: Option<String>,
+    pub app_name: Option<String>,
+    pub publisher: Option<String>,
+}
+
 /// Incident (zásek s viníkem, pád aplikace, BSOD) — SPEC kap. 16.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IncidentRow {
