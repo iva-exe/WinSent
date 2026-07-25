@@ -27,6 +27,7 @@ pub mod trust;
 pub mod usn;
 pub mod verinfo;
 pub mod volumes;
+pub mod wic;
 
 /// Chyby win-sys vrstvy. Každé selhání Win32 volání nese kód, nic
 /// neselhává mlčky (SPEC kap. 22).

@@ -15,8 +15,45 @@
 		ScrollText,
 		BookKey,
 		Scale,
-		ExternalLink
+		ExternalLink,
+		ShieldCheck
 	} from 'lucide-svelte';
+
+	// Povinná součást Windows / Microsoft runtime — neodinstalovávat.
+	// Heuristika nad vydavatelem + rodinou balíčku / názvem.
+	function isMandatory(a) {
+		const pub2 = (a.publisher ?? '').toLowerCase();
+		if (!pub2.includes('microsoft')) return false;
+		if (a.identity_key.startsWith('msix:')) {
+			const fam = a.identity_key.slice(5).toLowerCase();
+			return [
+				'microsoft.windows',
+				'microsoftwindows',
+				'microsoft.vclibs',
+				'microsoft.net',
+				'microsoft.ui.xaml',
+				'microsoft.windowsappruntime',
+				'microsoft.sechealthui',
+				'microsoft.aad',
+				'microsoft.accountscontrol',
+				'microsoft.lockapp',
+				'microsoft.win32webviewhost',
+				'microsoft.windowsstore',
+				'microsoft.storepurchaseapp',
+				'microsoft.desktopappinstaller'
+			].some((p) => fam.startsWith(p));
+		}
+		const n = a.display_name.toLowerCase();
+		return (
+			n.includes('visual c++') ||
+			n.includes('.net') ||
+			n.includes('webview2') ||
+			n.includes('universal crt') ||
+			n.includes('windows software development kit') ||
+			n.includes('windows sdk') ||
+			n.includes('update health')
+		);
+	}
 
 	let apps = $state([]);
 	let procs = $state([]);
@@ -297,7 +334,16 @@
 									<span class="app-icon ph"></span>
 								{/if}
 								<span class="row-main">
-									<span class="row-title">{a.display_name}</span>
+									<span class="row-title">
+										{a.display_name}
+										{#if isMandatory(a)}
+											<span
+												class="mand"
+												title="Povinná součást Windows / Microsoft — neodinstalovávat"
+												><ShieldCheck size={13} /></span
+											>
+										{/if}
+									</span>
 									<span class="row-pub">{a.publisher ?? '—'}</span>
 								</span>
 								{#if run > 0}
@@ -321,7 +367,14 @@
 							<span class="app-icon big ph"></span>
 						{/if}
 						<div class="d-title">
-							<h2>{selected.display_name}</h2>
+							<h2>
+								{selected.display_name}
+								{#if isMandatory(selected)}
+									<span class="mand big" title="Povinná součást Windows / Microsoft">
+										<ShieldCheck size={16} /> součást Windows
+									</span>
+								{/if}
+							</h2>
 							<span class="d-meta">
 								{selected.publisher ?? '—'} · {selected.version ?? '—'} ·
 								instalace {fmtDate(selected.install_ts)}
@@ -490,6 +543,28 @@
 	.sort:hover {
 		color: var(--text);
 		border-color: var(--border-strong);
+	}
+	/* Rozbalený seznam — WebView2 jinak kreslí bílé pozadí. */
+	.sort option {
+		background-color: #16171c;
+		color: var(--text);
+	}
+	.mand {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		color: var(--net-down);
+		vertical-align: -2px;
+		margin-left: 4px;
+	}
+	.mand.big {
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		border: 1px solid color-mix(in srgb, var(--net-down) 40%, transparent);
+		border-radius: 999px;
+		padding: 2px 8px;
+		margin-left: 8px;
 	}
 	.grp-head {
 		position: sticky;

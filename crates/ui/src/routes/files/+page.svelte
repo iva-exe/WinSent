@@ -5,18 +5,7 @@
 	// mazání přijde v v8 (bezpečně, do koše).
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
-	import {
-		HardDrive,
-		Search,
-		Folder,
-		FileText,
-		Thermometer,
-		Activity,
-		Copy,
-		FileX,
-		Trash2,
-		Loader
-	} from 'lucide-svelte';
+	import { HardDrive, Thermometer, Activity, Copy, FileX, Loader } from 'lucide-svelte';
 
 	let volumes = $state([]);
 	let health = $state([]);
@@ -67,50 +56,7 @@
 		const d = cleanup?.report?.dups ?? [];
 		return d.reduce((a, [size, paths]) => a + size * (paths.length - 1), 0);
 	});
-	let junkTotal = $derived.by(() =>
-		(cleanup?.report?.junk ?? []).reduce((a, [, s]) => a + s, 0)
-	);
 	let indexingDone = $derived.by(() => (cleanup?.indexing ?? []).every((i) => i[2]));
-
-	// Hledání (bonus) — přes indexy postavené službou.
-	let searchLetter = $state(null);
-	let query = $state('');
-	let hits = $state([]);
-	let searching = $state(false);
-	let searchNote = $state('');
-	let debounce;
-	let readyVolumes = $derived.by(() =>
-		(cleanup?.indexing ?? []).filter((i) => i[2]).map((i) => i[0])
-	);
-
-	function onQueryInput() {
-		clearTimeout(debounce);
-		debounce = setTimeout(runSearch, 200);
-	}
-	async function runSearch() {
-		const letter = searchLetter ?? readyVolumes[0];
-		if (!letter || !query.trim()) {
-			hits = [];
-			return;
-		}
-		searching = true;
-		searchNote = '';
-		try {
-			hits = await invoke('search_files', { letter, query: query.trim(), limit: 200 });
-		} catch {
-			// Index mohl po nečinnosti vypršet — postavit znovu a zkusit.
-			searchNote = 'index se obnovuje…';
-			try {
-				await invoke('build_file_index', { letter });
-				hits = await invoke('search_files', { letter, query: query.trim(), limit: 200 });
-				searchNote = '';
-			} catch (e2) {
-				searchNote = String(e2);
-				hits = [];
-			}
-		}
-		searching = false;
-	}
 
 	async function openPath(path) {
 		try {
@@ -207,7 +153,7 @@
 				<span class="c-status"><Loader size={14} class="spin" /> analyzuji obsah disků…</span>
 			{:else if cleanup?.report}
 				<span class="c-status dim">
-					analýza hotová · zbytečně obsazeno ~{fmtSize(dupWaste + junkTotal)}
+					analýza hotová · v duplicitách zbytečně ~{fmtSize(dupWaste)}
 				</span>
 			{:else}
 				<span class="c-status dim">služba analýzu spustí sama krátce po startu…</span>
@@ -217,18 +163,6 @@
 		{#if cleanup?.report}
 			{@const r = cleanup.report}
 			<div class="c-cols">
-				<!-- Temp junk -->
-				<div class="c-block">
-					<h3><Trash2 size={14} /> Temp adresáře — {fmtSize(junkTotal)}</h3>
-					{#each r.junk as [path, size] (path)}
-						<button class="row" onclick={() => openPath(path)} title="Otevřít v Průzkumníku">
-							<span class="r-path mono">{path}</span>
-							<span class="r-size mono">{fmtSize(size)}</span>
-						</button>
-					{/each}
-					<p class="note">obsah temp adresářů jde většinou bezpečně smazat</p>
-				</div>
-
 				<!-- Duplicity -->
 				<div class="c-block">
 					<h3>
@@ -270,48 +204,6 @@
 				Zatím jen ukazujeme — mazání přijde v další verzi bezpečně (do koše, s náhledem).
 				Klik = otevřít v Průzkumníku a uklidit ručně.
 			</p>
-		{/if}
-	</section>
-
-	<!-- ── Rychlé hledání (bonus) ── -->
-	<section class="card search">
-		<div class="s-head">
-			<Search size={15} />
-			{#if readyVolumes.length > 1}
-				<select class="sel" bind:value={searchLetter}>
-					{#each readyVolumes as l (l)}
-						<option value={l}>{l}:</option>
-					{/each}
-				</select>
-			{/if}
-			<input
-				placeholder={readyVolumes.length
-					? 'rychlé hledání souboru na celém disku…'
-					: 'hledání bude dostupné po dokončení indexace…'}
-				bind:value={query}
-				oninput={onQueryInput}
-				disabled={!readyVolumes.length}
-			/>
-			{#if searching}<span class="dim label-tech">hledám…</span>{/if}
-			{#if searchNote}<span class="dim label-tech">{searchNote}</span>{/if}
-		</div>
-		{#if hits.length}
-			<ul class="hits">
-				{#each hits as h (h.path)}
-					<li>
-						<button
-							class="row"
-							class:hidden-f={h.attrs & ATTR_HIDDEN}
-							class:system-f={h.attrs & ATTR_SYSTEM}
-							onclick={() => openPath(h.path)}
-						>
-							{#if h.attrs & ATTR_DIR}<Folder size={14} />{:else}<FileText size={14} />{/if}
-							<span class="r-path mono">{h.path}</span>
-							<span class="r-size mono">{h.attrs & ATTR_DIR ? '' : fmtSize(h.size_bytes)}</span>
-						</button>
-					</li>
-				{/each}
-			</ul>
 		{/if}
 	</section>
 </div>

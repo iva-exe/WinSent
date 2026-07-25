@@ -413,6 +413,8 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             .name("inventory".into())
             .spawn(move || {
                 let _ = win_sys::threading::set_current_thread_below_normal();
+                // COM pro WIC dekódování PNG log (MSIX ikony).
+                win_sys::wic::init_com_for_thread();
                 let mut last_scan: Option<Instant> = None;
                 while !stop.load(Ordering::SeqCst) {
                     let due = last_scan.is_none_or(|t| t.elapsed() > Duration::from_secs(6 * 3600))
@@ -426,9 +428,9 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             "sken inventáře hotový"
                         );
                         // Ikony i pro aplikace, jejichž proces neběží —
-                        // z DisplayIcon / instalačního adresáře. Jednou
-                        // na klíč, na BELOW_NORMAL, výsledky do sdílené
-                        // cache (odkud je čte QueryIcon).
+                        // z DisplayIcon / zástupce / instalace / MSIX
+                        // loga. Jednou na klíč, na BELOW_NORMAL.
+                        let lnk_index = build_lnk_index();
                         let mut icons_added = 0u32;
                         for app in &apps {
                             if stop.load(Ordering::SeqCst) {
@@ -441,7 +443,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             if !missing {
                                 continue;
                             }
-                            if let Some(ico) = inventory_icon(app) {
+                            if let Some(ico) = inventory_icon(app, &lnk_index) {
                                 icon_store_inv
                                     .lock()
                                     .expect("icon cache lock")
@@ -1056,23 +1058,129 @@ fn archive_blackbox(ts: i64) -> Option<String> {
     }
 }
 
-/// Ikona aplikace z inventáře: DisplayIcon spec → .exe v instalačních
-/// adresářích. Pro aplikace, jejichž proces neběží (identity worker
-/// je nikdy nepotká).
-fn inventory_icon(app: &collector_inv::AppEntry) -> Option<core_types::proc::IconData> {
+/// Index zástupců ze Start Menu: název (lc, bez .lnk) → cesta k .lnk.
+/// Zástupce je nejspolehlivější zdroj ikony — instalátor ho vytvořil
+/// přesně pro tu aplikaci a shell z něj ikonu vyřeší sám.
+fn build_lnk_index() -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let mut roots: Vec<String> = Vec::new();
+    if let Ok(pd) = std::env::var("ProgramData") {
+        roots.push(format!(r"{pd}\Microsoft\Windows\Start Menu\Programs"));
+    }
+    let users = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()) + r"\Users";
+    if let Ok(rd) = std::fs::read_dir(&users) {
+        for e in rd.flatten() {
+            roots.push(format!(
+                r"{}\AppData\Roaming\Microsoft\Windows\Start Menu\Programs",
+                e.path().to_string_lossy()
+            ));
+        }
+    }
+    let mut stack: Vec<(std::path::PathBuf, u8)> =
+        roots.into_iter().map(|r| (r.into(), 0u8)).collect();
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if depth < 3 {
+                    stack.push((p, depth + 1));
+                }
+            } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("lnk")) {
+                if let Some(stem) = p.file_stem() {
+                    map.entry(stem.to_string_lossy().to_lowercase())
+                        .or_insert_with(|| p.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Ikona aplikace z inventáře — řetěz zdrojů: DisplayIcon/UninstallString
+/// → zástupce ze Start Menu (shell vyřeší cíl) → .exe v instalaci
+/// (i o úroveň hlouběji) → PNG logo MSIX balíčku (WIC).
+fn inventory_icon(
+    app: &collector_inv::AppEntry,
+    lnk_index: &std::collections::HashMap<String, String>,
+) -> Option<core_types::proc::IconData> {
     if let Some(hint) = app.icon_hint.as_deref() {
         let trimmed = hint.trim().trim_matches('"');
-        if std::path::Path::new(trimmed).is_dir() {
-            if let Some(i) = icon_from_dir(trimmed) {
-                return Some(i);
+        if !std::path::Path::new(trimmed).is_dir() {
+            if let Some(i) = win_sys::icon::extract_spec(hint) {
+                return Some(to_icon_data(i));
             }
-        } else if let Some(i) = win_sys::icon::extract_spec(hint) {
+        }
+    }
+    // Zástupce dle názvu aplikace (přesná shoda jména).
+    if let Some(lnk) = lnk_index.get(&app.display_name.to_lowercase()) {
+        if let Some(i) = win_sys::icon::extract(lnk) {
             return Some(to_icon_data(i));
         }
     }
-    for p in app.paths.iter().filter(|p| p.role == "install") {
-        if let Some(i) = icon_from_dir(&p.path) {
+    let mut dirs: Vec<&str> = app
+        .paths
+        .iter()
+        .filter(|p| p.role == "install")
+        .map(|p| p.path.as_str())
+        .collect();
+    if let Some(hint) = app.icon_hint.as_deref() {
+        if std::path::Path::new(hint).is_dir() {
+            dirs.insert(0, hint);
+        }
+    }
+    for d in &dirs {
+        if let Some(i) = icon_from_dir(d) {
             return Some(i);
+        }
+    }
+    // MSIX: PNG logo z assetů balíčku (WIC dekódování).
+    if app.kind == "msix" {
+        for d in &dirs {
+            if let Some(i) = msix_logo(d) {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
+/// Najde logo PNG v adresáři MSIX balíčku (Assets\*logo*.png apod.).
+fn msix_logo(dir: &str) -> Option<core_types::proc::IconData> {
+    let mut candidates: Vec<(u32, std::path::PathBuf)> = Vec::new();
+    for base in [format!("{dir}\\Assets"), dir.to_string()] {
+        let Ok(rd) = std::fs::read_dir(&base) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.extension().is_some_and(|x| x.eq_ignore_ascii_case("png")) {
+                continue;
+            }
+            let n = p
+                .file_name()
+                .map(|x| x.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            let score = if n.contains("square44") {
+                0
+            } else if n.contains("storelogo") {
+                1
+            } else if n.contains("square150") {
+                2
+            } else if n.contains("logo") {
+                3
+            } else {
+                continue;
+            };
+            candidates.push((score * 1000 + n.len() as u32, p));
+        }
+    }
+    candidates.sort_by_key(|(s, _)| *s);
+    for (_, p) in candidates.into_iter().take(3) {
+        if let Some(i) = win_sys::wic::decode(&p.to_string_lossy()) {
+            return Some(to_icon_data(i));
         }
     }
     None
