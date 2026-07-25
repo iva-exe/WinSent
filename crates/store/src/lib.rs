@@ -13,6 +13,7 @@ pub use rusqlite::Connection;
 pub use rusqlite::Error as SqlError;
 
 pub mod apps;
+pub mod audit;
 pub mod events;
 pub mod history;
 pub mod migrations;

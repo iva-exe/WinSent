@@ -4,6 +4,7 @@
 //!   `syswatch.exe --service` → Windows služba pod SCM (produkce)
 //!   `syswatch.exe --console` → konzolový proces se stdout logy (vývoj)
 
+mod actions;
 mod config;
 mod console;
 mod daemon;

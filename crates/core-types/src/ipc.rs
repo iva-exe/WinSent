@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,6 +66,14 @@ pub enum Request {
     QueryCleanup,
     /// Smaže záznam incidentu (jen náš DB záznam, žádná mutace OS).
     DeleteIncident { id: i64 },
+    /// T0 akce: validace + provedení + ověření v jednom (v5, SPEC 17.2).
+    ToggleAction { action: crate::action::Action },
+    /// T1 fáze 1: sestavit plán (vrací kroky + expires_ts).
+    PlanAction { action: crate::action::Action },
+    /// T1 fáze 2–4: provést potvrzený plán (expirovaný = zamítnut).
+    ExecuteAction { plan_id: u64 },
+    /// Poslední auditní záznamy (SPEC 17.6).
+    QueryAudit { limit: u32 },
 }
 
 /// Odpověď služba → UI.
@@ -126,6 +134,12 @@ pub enum Response {
     },
     /// Nálezy hledání (v4).
     Files(Vec<crate::proc::FileHit>),
+    /// Výsledek akce (T0 i T1 Execute) — s auditní stopou (v5).
+    ActionResult(crate::action::ActionResult),
+    /// Plán T1 akce k potvrzení (v5).
+    PlanReady(crate::action::ActionPlan),
+    /// Auditní záznamy (v5).
+    Audit(Vec<crate::action::AuditRow>),
     /// Skupiny duplicit: (velikost, cesty).
     Duplicates(Vec<(u64, Vec<String>)>),
     /// Stav úklidu: indexace svazků (písmeno, záznamů, hotovo),

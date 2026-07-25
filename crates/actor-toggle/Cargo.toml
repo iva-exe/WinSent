@@ -10,3 +10,4 @@ core-types = { workspace = true }
 win-sys = { workspace = true }
 validate = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }

@@ -166,6 +166,21 @@ const MIGRATIONS: &[&str] = &[
         size_ts     INTEGER,
         PRIMARY KEY (app_id, path)
     );",
+    // → verze 8 (v5): audit mutací (SPEC 17.6) — každá akce, schválená
+    // i zamítnutá, nechává trvalou stopu; `reversible` drží cestu zpět.
+    "CREATE TABLE audit (
+        id          INTEGER PRIMARY KEY,
+        ts          INTEGER NOT NULL,
+        action      TEXT NOT NULL,
+        target      TEXT NOT NULL,
+        class       TEXT NOT NULL,
+        verdict     TEXT NOT NULL,
+        deny_reason TEXT,
+        outcome     TEXT,
+        reversible  TEXT,
+        detail      TEXT
+    );
+    CREATE INDEX ix_audit_ts ON audit(ts DESC);",
 ];
 
 /// Aplikuje všechny dosud neaplikované migrace. Bezpečné volat při

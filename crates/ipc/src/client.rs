@@ -325,6 +325,60 @@ pub fn search_files(
     }
 }
 
+/// T0 akce (v5): validace + provedení + ověření v jednom.
+pub fn toggle_action(
+    action: core_types::action::Action,
+) -> Result<core_types::action::ActionResult, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::ToggleAction { action })? {
+        Response::ActionResult(r) => Ok(r),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// T1 fáze 1 (v5): plán, nebo rovnou deny výsledek.
+#[allow(clippy::result_large_err)]
+pub fn plan_action(
+    action: core_types::action::Action,
+) -> Result<Result<core_types::action::ActionPlan, core_types::action::ActionResult>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::PlanAction { action })? {
+        Response::PlanReady(p) => Ok(Ok(p)),
+        Response::ActionResult(r) => Ok(Err(r)),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// T1 fáze 2–4 (v5): provedení potvrzeného plánu.
+pub fn execute_action(plan_id: u64) -> Result<core_types::action::ActionResult, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::ExecuteAction { plan_id })? {
+        Response::ActionResult(r) => Ok(r),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Auditní záznamy (v5).
+pub fn query_audit(limit: u32) -> Result<Vec<core_types::action::AuditRow>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryAudit { limit })? {
+        Response::Audit(rows) => Ok(rows),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Stav auto-úklidu (v4E): indexace, běh analýzy, výsledek.
 #[allow(clippy::type_complexity)]
 pub fn query_cleanup() -> Result<

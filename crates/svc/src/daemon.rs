@@ -481,6 +481,14 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             })?
     };
 
+    // Orchestrátor mutací (v5, SPEC 17): vlastní zapisovací spojení
+    // pro synchronní audit; mutace jsou vzácné, busy_timeout stačí.
+    let orch = {
+        let conn = store::open(&db_path)?;
+        let _ = conn.busy_timeout(std::time::Duration::from_millis(2000));
+        Arc::new(crate::actions::Orchestrator::new(conn))
+    };
+
     // IPC server: navázání na pipe je synchronní — kolize s jinou
     // instancí démona (běžící služba vs. --console) shodí start hned,
     // s jasnou chybou. Akceptační smyčka pak běží ve vlastním vlákně.
@@ -498,6 +506,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         let rescan_flag = Arc::clone(&rescan);
         let fs_idx = Arc::clone(&fs_indexes);
         let cleanup_state = cleanup_ipc;
+        let orch = Arc::clone(&orch);
         let handler: ipc::server::Handler = Arc::new(move |req| match req {
             Request::QuerySysInfo => Response::SysInfo(statics.clone()),
             Request::QueryIcon { identity_key } => {
@@ -782,6 +791,23 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             Request::DeleteIncident { id } => {
                 let _ = size_tx.try_send(crate::incidents::StoreMsg::DeleteIncident(id));
                 Response::Ack
+            }
+            // ── Mutační cesta (v5, SPEC 17) — vše přes orchestrátor,
+            // nic se nespustí bez Verdict::Allow z validate/.
+            Request::ToggleAction { action } => Response::ActionResult(orch.toggle(action)),
+            Request::PlanAction { action } => match orch.plan(action) {
+                Ok(plan) => Response::PlanReady(plan),
+                Err(result) => Response::ActionResult(result),
+            },
+            Request::ExecuteAction { plan_id } => Response::ActionResult(orch.execute(plan_id)),
+            Request::QueryAudit { limit } => {
+                let conn = read_conn.lock().expect("read conn lock poisoned");
+                match store::audit::recent(&conn, limit.min(500)) {
+                    Ok(rows) => Response::Audit(rows),
+                    Err(e) => Response::Error {
+                        message: format!("čtení auditu selhalo: {e}"),
+                    },
+                }
             }
             Request::QueryIncidents { limit } => {
                 let conn = read_conn.lock().expect("read conn lock poisoned");
