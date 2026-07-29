@@ -22,6 +22,15 @@ pub enum Action {
     /// čerstvého stavu OS: existence (pid + create_time) a třída
     /// ochrany. Základ pro kill ve v7.
     CheckProc { pid: u32, create_time: i64 },
+    /// T1: ukončení procesu (v7, SPEC 17.5). NEVRATNÉ → plán +
+    /// potvrzení. Identita je (pid, create_time), ne holý PID —
+    /// ten Windows recykluje.
+    KillProc {
+        pid: u32,
+        create_time: i64,
+        /// Ukončit i potomky (strom), nebo jen tento proces.
+        tree: bool,
+    },
     /// T0: startup položka on/off (v6, SPEC kap. 7). Vratná —
     /// zápis přes StartupApproved / Enabled / start typ služby,
     /// NIKDY mazání hodnoty.
@@ -37,7 +46,9 @@ impl Action {
     pub fn class(&self) -> ActionClass {
         match self {
             Action::TestToggle { .. } | Action::StartupToggle { .. } => ActionClass::T0,
-            Action::TestOp { .. } | Action::CheckProc { .. } => ActionClass::T1,
+            Action::TestOp { .. } | Action::CheckProc { .. } | Action::KillProc { .. } => {
+                ActionClass::T1
+            }
         }
     }
 
@@ -48,6 +59,14 @@ impl Action {
             Action::TestOp { target, .. } => target.clone(),
             Action::CheckProc { pid, create_time } => format!("pid {pid} @{create_time}"),
             Action::StartupToggle { id, on } => format!("{id}={on}"),
+            Action::KillProc {
+                pid,
+                create_time,
+                tree,
+            } => format!(
+                "pid {pid} @{create_time}{}",
+                if *tree { " (strom)" } else { "" }
+            ),
         }
     }
 
@@ -58,6 +77,7 @@ impl Action {
             Action::TestOp { .. } => "test_op",
             Action::CheckProc { .. } => "check_proc",
             Action::StartupToggle { .. } => "startup_toggle",
+            Action::KillProc { .. } => "kill",
         }
     }
 }

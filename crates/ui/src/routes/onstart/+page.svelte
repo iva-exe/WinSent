@@ -14,8 +14,21 @@
 		Package,
 		TriangleAlert,
 		ShieldCheck,
-		History
+		History,
+		ChevronDown,
+		ChevronUp
 	} from 'lucide-svelte';
+
+	/// Kolik položek se v kartě ukáže před rozkliknutím (karty tak mají
+	/// jednotnou výšku a stránka se nesype dlouhými seznamy).
+	const COLLAPSED = 5;
+	let expanded = $state(new Set());
+	function toggleGroup(label) {
+		const s = new Set(expanded);
+		if (s.has(label)) s.delete(label);
+		else s.add(label);
+		expanded = s;
+	}
 
 	let items = $state([]);
 	let filter = $state('');
@@ -37,18 +50,34 @@
 		ctx.putImageData(new ImageData(new Uint8ClampedArray(icon.rgba), icon.w, icon.h), 0, 0);
 		return c.toDataURL();
 	}
-	async function fetchIcon(key) {
-		if (!key || iconState.get(key) === 'done' || (iconState.get(key) ?? 0) >= 4) return;
-		iconState.set(key, (iconState.get(key) ?? 0) + 1);
-		try {
-			const icon = await invoke('query_icon', { identityKey: key });
-			if (icon) {
-				iconUrls[key] = rgbaToUrl(icon);
-				iconState.set(key, 'done');
+	// Ikony se tahají POSTUPNĚ a jen pro unikátní klíče — 360 položek
+	// × paralelní IPC při každém pollu dřív sekalo celou stránku.
+	let iconQueue = [];
+	let iconRunning = false;
+	async function drainIcons() {
+		if (iconRunning) return;
+		iconRunning = true;
+		while (iconQueue.length) {
+			const key = iconQueue.shift();
+			try {
+				const icon = await invoke('query_icon', { identityKey: key });
+				if (icon) {
+					iconUrls[key] = rgbaToUrl(icon);
+					iconState.set(key, 'done');
+				}
+			} catch {
+				/* služba mimo */
 			}
-		} catch {
-			/* služba mimo */
 		}
+		iconRunning = false;
+	}
+	function queueIcons(keys) {
+		for (const key of keys) {
+			if (!key || iconState.has(key)) continue;
+			iconState.set(key, 'queued');
+			iconQueue.push(key);
+		}
+		drainIcons();
 	}
 
 	const sources = {
@@ -99,7 +128,7 @@
 		try {
 			items = await invoke('query_startup');
 			loadError = '';
-			for (const i of items) fetchIcon(i.identity_key);
+			queueIcons(new Set(items.map((i) => i.identity_key).filter(Boolean)));
 		} catch (e) {
 			loadError = String(e);
 		}
@@ -218,6 +247,8 @@
 	{:else}
 		<div class="groups">
 			{#each groups as g (g.label)}
+				{@const open = expanded.has(g.label)}
+				{@const visible = open ? g.items : g.items.slice(0, COLLAPSED)}
 				<section class="card grp">
 					<header class="g-head">
 						{#if g.identity_key && iconUrls[g.identity_key]}
@@ -228,8 +259,8 @@
 						<span class="g-name">{g.label}</span>
 						<span class="g-count label-tech">{g.items.length}</span>
 					</header>
-					<ul class="items">
-						{#each g.items as i (i.id)}
+					<ul class="items" class:fade={!open && g.items.length > COLLAPSED}>
+						{#each visible as i (i.id)}
 							{@const s = srcOf(i.source)}
 							<li class="item" class:off={!i.enabled}>
 								<span class="i-src" title={s.label}><s.icon size={15} /></span>
@@ -257,6 +288,15 @@
 							</li>
 						{/each}
 					</ul>
+					{#if g.items.length > COLLAPSED}
+						<button class="more" onclick={() => toggleGroup(g.label)}>
+							{#if open}
+								<ChevronUp size={14} /> sbalit
+							{:else}
+								<ChevronDown size={14} /> zobrazit všech {g.items.length}
+							{/if}
+						</button>
+					{/if}
 				</section>
 			{/each}
 		</div>
@@ -462,10 +502,37 @@
 	.g-count {
 		font-size: 0.68rem;
 	}
+	/* Karty mají jednotnou výšku; delší seznam se sbalí s fadem. */
+	.grp {
+		display: flex;
+		flex-direction: column;
+	}
 	.items {
 		list-style: none;
 		margin: 0;
 		padding: 0;
+		flex: 1;
+	}
+	.items.fade {
+		-webkit-mask-image: linear-gradient(to bottom, #000 62%, transparent 100%);
+		mask-image: linear-gradient(to bottom, #000 62%, transparent 100%);
+	}
+	.more {
+		margin-top: 6px;
+		align-self: flex-start;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		background: none;
+		border: none;
+		color: var(--text-dim);
+		font: inherit;
+		font-size: 0.76rem;
+		cursor: pointer;
+		padding: 2px 0;
+	}
+	.more:hover {
+		color: var(--text);
 	}
 	.item {
 		display: grid;

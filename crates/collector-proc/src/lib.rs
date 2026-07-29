@@ -196,6 +196,7 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
         rows.push(ProcRow {
             pid: p.pid,
             parent_pid: p.parent_pid,
+            create_time: p.create_time,
             name: p.name.clone(),
             cpu_pct: cpu_pct.clamp(0.0, 100.0),
             ws_bytes: p.ws_bytes,

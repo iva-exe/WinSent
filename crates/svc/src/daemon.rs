@@ -385,6 +385,24 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     ms = t0.elapsed().as_millis() as u64,
                     "úklidová analýza hotová"
                 );
+                // Největší soubory a složky po svazcích (v4F) — jeden
+                // průchod stromem, velikosti z directory enumerace.
+                let mut big_files = Vec::new();
+                let mut big_dirs = Vec::new();
+                for &letter in &letters {
+                    if stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let t = Instant::now();
+                    let b = fs_index::largest_items(&format!("{letter}:\\"), 15, 800_000);
+                    tracing::info!(
+                        volume = %letter,
+                        ms = t.elapsed().as_millis() as u64,
+                        "největší položky spočteny"
+                    );
+                    big_files.extend(b.files.into_iter().map(|(p, s)| (letter, p, s)));
+                    big_dirs.extend(b.dirs.into_iter().map(|(p, s)| (letter, p, s)));
+                }
                 {
                     let mut c = cleanup.lock().expect("cleanup lock");
                     c.running = false;
@@ -393,6 +411,8 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         zero_byte: rep.zero_byte,
                         junk: rep.junk,
                         finished_ts: unix_now(),
+                        big_files,
+                        big_dirs,
                     });
                 }
                 let mut map = fs_indexes_auto.lock().expect("fs index lock");
@@ -938,7 +958,12 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     let _ = ipc_handle.join();
     let _ = sampler_handle.join();
     let _ = inv_handle.join();
-    let _ = cleanup_handle.join();
+    // Úklidová analýza se ZÁMĚRNĚ nejoinuje: běží minuty (hashování
+    // duplicit, průchod stromem) a čekání na ni by protahovalo vypnutí
+    // služby o celou tu dobu — SCM by hlásil Stopped, ale proces by
+    // dál držel binárku. Výsledek je jen cache v paměti; zahodit ho
+    // při vypnutí nic nestojí. Vlákno skončí s procesem.
+    drop(cleanup_handle);
     let _ = store_handle.join();
     tracing::info!("démon ukončen čistě");
     Ok(())

@@ -122,8 +122,29 @@ pub fn validate(action: &Action, ctx: &mut LiveContext) -> Verdict {
             }
         }
 
+        // ── T1: ukončení procesu (v7). Stejná kontrola jako CheckProc
+        // + zákaz sebevraždy: démon nesmí zabít sám sebe (přišli
+        // bychom o monitoring i o auditní zápis výsledku).
+        Action::KillProc {
+            pid, create_time, ..
+        } => {
+            if *pid == std::process::id() {
+                return Verdict::deny("Winsent nemůže ukončit sám sebe");
+            }
+            if *pid <= 4 {
+                return Verdict::deny("jádro systému (pid 0/4) nelze ukončit");
+            }
+            validate(
+                &Action::CheckProc {
+                    pid: *pid,
+                    create_time: *create_time,
+                },
+                ctx,
+            )
+        }
+
         // ── T1: kontrola živého procesu — ČERSTVÉ čtení OS, žádná
-        // cache. Vzor pro kill ve v7.
+        // cache. Sdílený základ pro kill.
         Action::CheckProc { pid, create_time } => {
             let procs = match win_sys::proc::snapshot_processes(&mut ctx.buf) {
                 Ok(p) => p,
@@ -139,6 +160,17 @@ pub fn validate(action: &Action, ctx: &mut LiveContext) -> Verdict {
                     "proces {pid} není tentýž (instance nesouhlasí — PID byl recyklován)"
                 ));
             }
+            // Tvrdý seznam jmen NAVÍC k příznakům OS (SPEC v7): některé
+            // kritické procesy nemají BreakOnTermination ani PPL podle
+            // konfigurace stroje (např. lsass bez RunAsPPL), a přesto je
+            // jejich ukončení okamžitý BSOD. Jméno se bere z čerstvého
+            // snapshotu, ne z UI.
+            if is_critical_name(&p.name) {
+                return Verdict::deny(format!(
+                    "{} je nezbytný pro chod Windows — ukončení shodí systém",
+                    p.name
+                ));
+            }
             // Třída ochrany ČERSTVĚ z OS, ne z identity cache.
             match win_sys::procinfo::protection(*pid, &p.name) {
                 win_sys::procinfo::Protection::Critical => {
@@ -151,6 +183,32 @@ pub fn validate(action: &Action, ctx: &mut LiveContext) -> Verdict {
             }
         }
     }
+}
+
+/// Procesy, jejichž ukončení systém neustojí — nezávisle na tom, co
+/// hlásí příznaky OS (BreakOnTermination/PPL nejsou zapnuté všude).
+/// Poslední záchranná brzda; kontroluje se před jakýmkoli voláním.
+const CRITICAL_NAMES: &[&str] = &[
+    "system",
+    "registry",
+    "idle",
+    "smss.exe",
+    "csrss.exe",
+    "wininit.exe",
+    "winlogon.exe",
+    "services.exe",
+    "lsass.exe",
+    "lsaiso.exe",
+    "memory compression",
+    "memcompression",
+    "ntoskrnl.exe",
+    "securesystem",
+];
+
+/// Je jméno procesu na tvrdém seznamu kritických?
+fn is_critical_name(name: &str) -> bool {
+    let n = name.trim().to_ascii_lowercase();
+    CRITICAL_NAMES.iter().any(|c| *c == n)
 }
 
 /// Existuje hodnota v Run klíči? (čerstvě, obě architektury)
@@ -275,6 +333,81 @@ mod tests {
             &mut ctx,
         );
         assert!(matches!(v, Verdict::Deny { .. }), "boot driver je zamčený");
+    }
+
+    // Brána v7: kill kritického procesu musí být zamítnutý PŘED
+    // jakýmkoli voláním (System, pid 4).
+    #[test]
+    fn kill_critical_denied() {
+        let mut ctx = LiveContext::new();
+        let ct = {
+            let procs = win_sys::proc::snapshot_processes(&mut ctx.buf).expect("snapshot");
+            procs
+                .iter()
+                .find(|p| p.pid == 4)
+                .expect("System")
+                .create_time
+        };
+        let v = validate(
+            &Action::KillProc {
+                pid: 4,
+                create_time: ct,
+                tree: false,
+            },
+            &mut ctx,
+        );
+        assert!(matches!(v, Verdict::Deny { .. }));
+    }
+
+    // Brána v7: kritická jména jsou zamčená i bez příznaků OS
+    // (lsass bez RunAsPPL, csrss bez BreakOnTermination…).
+    #[test]
+    fn critical_names_locked() {
+        for n in ["lsass.exe", "csrss.exe", "WinLogon.exe", "System"] {
+            assert!(is_critical_name(n), "{n} musí být na tvrdém seznamu");
+        }
+        for n in ["notepad.exe", "chrome.exe", ""] {
+            assert!(!is_critical_name(n), "{n} na seznamu být nemá");
+        }
+    }
+
+    // Démon nesmí zabít sám sebe.
+    #[test]
+    fn kill_self_denied() {
+        let mut ctx = LiveContext::new();
+        let pid = std::process::id();
+        let ct = {
+            let procs = win_sys::proc::snapshot_processes(&mut ctx.buf).expect("snapshot");
+            procs
+                .iter()
+                .find(|p| p.pid == pid)
+                .expect("self")
+                .create_time
+        };
+        let v = validate(
+            &Action::KillProc {
+                pid,
+                create_time: ct,
+                tree: false,
+            },
+            &mut ctx,
+        );
+        assert!(matches!(v, Verdict::Deny { .. }));
+    }
+
+    // Recyklovaný PID: kill se špatnou instancí zamítnut.
+    #[test]
+    fn kill_wrong_instance_denied() {
+        let mut ctx = LiveContext::new();
+        let v = validate(
+            &Action::KillProc {
+                pid: std::process::id(),
+                create_time: 999,
+                tree: true,
+            },
+            &mut ctx,
+        );
+        assert!(matches!(v, Verdict::Deny { .. }));
     }
 
     // Ochrana proti podvrženému jménu služby s cestou.

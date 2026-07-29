@@ -386,6 +386,99 @@ pub fn cleanup_analysis(indexes: &[&VolumeIndex]) -> CleanupReport {
     report
 }
 
+/// Největší soubory a složky svazku (v4F): jeden průchod stromem,
+/// velikosti z directory enumerace (na Windows je `metadata()` na
+/// DirEntry zdarma — data pocházejí z FindNextFile). Složkám se
+/// přičítá velikost potomků jen do `DIR_DEPTH` úrovní, ať to má
+/// vypovídací hodnotu a nežere paměť.
+pub struct BigItems {
+    /// (cesta, velikost) — největší jednotlivé soubory.
+    pub files: Vec<(String, u64)>,
+    /// (cesta, velikost) — největší složky (součet obsahu).
+    pub dirs: Vec<(String, u64)>,
+}
+
+/// Do jaké hloubky se agregují velikosti složek.
+const DIR_DEPTH: usize = 4;
+
+/// Projde svazek a vrátí top N souborů a složek dle velikosti.
+pub fn largest_items(root: &str, top_n: usize, max_entries: usize) -> BigItems {
+    let mut files: Vec<(String, u64)> = Vec::new();
+    let mut dirs: HashMap<String, u64> = HashMap::new();
+    // Práh pro udržení souboru v kandidátech (roste, ať Vec nepřeteče).
+    let mut min_file: u64 = 1_000_000;
+    let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(root.into(), 0)];
+    let mut seen = 0usize;
+
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            seen += 1;
+            if seen > max_entries {
+                stack.clear();
+                break;
+            }
+            let Ok(m) = e.metadata() else { continue };
+            if m.is_symlink() {
+                continue;
+            }
+            let path = e.path();
+            if m.is_dir() {
+                // Systémové/servisní stromy do „největších" nepatří.
+                let lc = path.to_string_lossy().to_ascii_lowercase();
+                if lc.contains("\\$recycle") || lc.contains("\\windows\\winsxs") {
+                    continue;
+                }
+                stack.push((path, depth + 1));
+            } else {
+                let size = m.len();
+                if size >= min_file {
+                    files.push((path.to_string_lossy().into_owned(), size));
+                    if files.len() > top_n * 4 {
+                        files.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
+                        files.truncate(top_n);
+                        min_file = files.last().map(|(_, s)| *s).unwrap_or(min_file);
+                    }
+                }
+                // Přičíst do všech předků do DIR_DEPTH úrovní.
+                let mut cur = path.parent().map(|p| p.to_path_buf());
+                let mut level = depth;
+                while let Some(p) = cur {
+                    if level == 0 || level > DIR_DEPTH {
+                        break;
+                    }
+                    *dirs.entry(p.to_string_lossy().into_owned()).or_insert(0) += size;
+                    cur = p.parent().map(|x| x.to_path_buf());
+                    level -= 1;
+                }
+            }
+        }
+    }
+
+    files.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
+    files.truncate(top_n);
+    let mut dirs: Vec<(String, u64)> = dirs.into_iter().collect();
+    dirs.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
+    // Vyhodit složky, které jsou jen předkem už uvedené větší složky
+    // se stejnou velikostí (jinak by seznam byl řetěz jedné cesty).
+    let mut kept: Vec<(String, u64)> = Vec::new();
+    for (p, s) in dirs {
+        let redundant = kept.iter().any(|(kp, ks)| {
+            (p.len() < kp.len() && kp.starts_with(&p) && *ks * 10 > s * 9)
+                || (kp.len() < p.len() && p.starts_with(kp.as_str()) && s * 10 > *ks * 9)
+        });
+        if !redundant {
+            kept.push((p, s));
+        }
+        if kept.len() >= top_n {
+            break;
+        }
+    }
+    BigItems { files, dirs: kept }
+}
+
 /// Velikost adresáře s pojistkou na počet položek.
 fn dir_size_bounded(path: &str, max_entries: usize) -> u64 {
     let mut total = 0u64;

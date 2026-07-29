@@ -5,7 +5,16 @@
 	// mazání přijde v v8 (bezpečně, do koše).
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
-	import { HardDrive, Thermometer, Activity, Copy, FileX, Loader } from 'lucide-svelte';
+	import {
+		HardDrive,
+		Thermometer,
+		Activity,
+		Copy,
+		FileX,
+		Loader,
+		FileType2,
+		FolderTree
+	} from 'lucide-svelte';
 
 	let volumes = $state([]);
 	let health = $state([]);
@@ -56,6 +65,21 @@
 		const d = cleanup?.report?.dups ?? [];
 		return d.reduce((a, [size, paths]) => a + size * (paths.length - 1), 0);
 	});
+	// Největší soubory/složky — přepínač svazku podle dat v reportu.
+	let bigVolume = $state(null);
+	let bigVolumes = $derived.by(() => {
+		const r = cleanup?.report;
+		if (!r) return [];
+		return [...new Set([...r.big_dirs, ...r.big_files].map((x) => x[0]))].sort();
+	});
+	let bigShown = $derived(bigVolume ?? bigVolumes[0] ?? null);
+	let bigDirs = $derived.by(() =>
+		(cleanup?.report?.big_dirs ?? []).filter((x) => x[0] === bigShown)
+	);
+	let bigFiles = $derived.by(() =>
+		(cleanup?.report?.big_files ?? []).filter((x) => x[0] === bigShown)
+	);
+
 	let indexingDone = $derived.by(() => (cleanup?.indexing ?? []).every((i) => i[2]));
 
 	async function openPath(path) {
@@ -206,6 +230,40 @@
 			</p>
 		{/if}
 	</section>
+
+	<!-- ── Co zabírá nejvíc místa ── -->
+	{#if bigVolumes.length}
+		<section class="card">
+			<div class="c-head">
+				<span class="label-tech">// co zabírá nejvíc místa</span>
+				<div class="vol-seg">
+					{#each bigVolumes as l (l)}
+						<button class:active={bigShown === l} onclick={() => (bigVolume = l)}>{l}:</button>
+					{/each}
+				</div>
+			</div>
+			<div class="c-cols">
+				<div class="c-block">
+					<h3><FolderTree size={14} /> Největší složky</h3>
+					{#each bigDirs as [, path, size] (path)}
+						<button class="row" onclick={() => openPath(path)} title="Otevřít v Průzkumníku">
+							<span class="r-path mono">{path}</span>
+							<span class="r-size mono">{fmtSize(size)}</span>
+						</button>
+					{/each}
+				</div>
+				<div class="c-block">
+					<h3><FileType2 size={14} /> Největší soubory</h3>
+					{#each bigFiles as [, path, size] (path)}
+						<button class="row" onclick={() => openPath(path)} title="Otevřít v Průzkumníku">
+							<span class="r-path mono">{path}</span>
+							<span class="r-size mono">{fmtSize(size)}</span>
+						</button>
+					{/each}
+				</div>
+			</div>
+		</section>
+	{/if}
 </div>
 
 <style>
@@ -317,6 +375,29 @@
 		gap: 8px;
 		font-size: 0.86rem;
 		color: var(--text-dim);
+	}
+	.vol-seg {
+		display: flex;
+		gap: 2px;
+		margin-left: auto;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		padding: 2px;
+	}
+	.vol-seg button {
+		background: none;
+		border: none;
+		color: var(--text-dim);
+		font: inherit;
+		font-family: var(--font-mono);
+		font-size: 0.76rem;
+		padding: 3px 10px;
+		border-radius: 3px;
+		cursor: pointer;
+	}
+	.vol-seg button.active {
+		background: var(--surface-hover);
+		color: var(--text);
 	}
 	:global(.spin) {
 		animation: spin 1.1s linear infinite;

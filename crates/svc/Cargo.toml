@@ -24,6 +24,7 @@ collector-boot = { workspace = true }
 fs-index = { workspace = true }
 validate = { workspace = true }
 actor-toggle = { workspace = true }
+actor-proc = { workspace = true }
 windows-service = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

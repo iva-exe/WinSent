@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 pub struct ProcRow {
     pub pid: u32,
     pub parent_pid: u32,
+    /// Čas vzniku procesu — s PID tvoří stabilní identitu instance
+    /// (PID se recykluje; každá mutace se validuje proti téhle dvojici).
+    pub create_time: i64,
     /// Jméno image (bez cesty). Prázdné jméno u pid 0 = System Idle.
     pub name: String,
     /// CPU v % celkové kapacity všech jader (0–100), z delty vzorků.
@@ -210,6 +213,9 @@ pub struct CleanupReport {
     /// (cesta, velikost) — temp adresáře k úklidu.
     pub junk: Vec<(String, u64)>,
     pub finished_ts: i64,
+    /// Největší soubory a složky po svazcích: (písmeno, cesta, velikost).
+    pub big_files: Vec<(char, String, u64)>,
+    pub big_dirs: Vec<(char, String, u64)>,
 }
 
 /// Startup položka (v6, SPEC kap. 7).

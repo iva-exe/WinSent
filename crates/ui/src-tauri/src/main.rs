@@ -202,6 +202,34 @@ fn toggle_startup(id: String, on: bool) -> Result<core_types::action::ActionResu
         .map_err(|e| e.to_string())
 }
 
+/// T1 plán ukončení procesu (v7) — vrací kroky k potvrzení, nebo deny.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum PlanOrDeny {
+    Plan(core_types::action::ActionPlan),
+    Deny(core_types::action::ActionResult),
+}
+
+#[tauri::command(async)]
+fn plan_kill(pid: u32, create_time: i64, tree: bool) -> Result<PlanOrDeny, String> {
+    ipc::client::plan_action(core_types::action::Action::KillProc {
+        pid,
+        create_time,
+        tree,
+    })
+    .map(|r| match r {
+        Ok(p) => PlanOrDeny::Plan(p),
+        Err(d) => PlanOrDeny::Deny(d),
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Provedení potvrzeného plánu (v5/v7).
+#[tauri::command(async)]
+fn execute_plan(plan_id: u64) -> Result<core_types::action::ActionResult, String> {
+    ipc::client::execute_action(plan_id).map_err(|e| e.to_string())
+}
+
 /// Auditní záznamy (v5) — historie zásahů do systému.
 #[tauri::command]
 fn query_audit(limit: u32) -> Result<Vec<core_types::action::AuditRow>, String> {
@@ -332,7 +360,9 @@ fn main() {
             delete_incident,
             query_startup,
             toggle_startup,
-            query_audit
+            query_audit,
+            plan_kill,
+            execute_plan
         ])
         .setup(|app| {
             setup_tray(app)?;

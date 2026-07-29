@@ -83,17 +83,16 @@ impl Orchestrator {
             let id = self.audit(&action, "deny", Some(&reason), None, None);
             return deny_result(reason, t0, id);
         }
-        let out = actor_toggle::execute(&action);
-        // Fáze 4: ověření proti stavu — nikdy mlčky (SPEC 17.4).
-        let verified = out.ok && actor_toggle::verify(&action);
+        // Fáze 3 + 4: ověření proti stavu — nikdy mlčky (SPEC 17.4).
+        let (verified, rolled_back, detail) = execute_for(&action);
         let outcome = if verified {
             "ok"
-        } else if out.rolled_back {
+        } else if rolled_back {
             "rolled_back"
         } else {
             "failed"
         };
-        let id = self.audit(&action, "allow", None, Some(outcome), Some(&out.detail));
+        let id = self.audit(&action, "allow", None, Some(outcome), Some(&detail));
         ActionResult {
             verdict: "allow".into(),
             deny_reason: None,
@@ -112,7 +111,7 @@ impl Orchestrator {
             let id = self.audit(&action, "deny", Some(&reason), None, None);
             return Err(deny_result(reason, t0, id));
         }
-        let steps = actor_toggle::plan(&action);
+        let steps = plan_for(&action);
         let plan = ActionPlan {
             plan_id: self.next_id.fetch_add(1, Ordering::SeqCst),
             class: action.class(),
@@ -155,22 +154,46 @@ impl Orchestrator {
             }
         }
         // Fáze 3 + 4.
-        let out = actor_toggle::execute(&action);
-        let verified = out.ok && actor_toggle::verify(&action);
+        let (verified, rolled_back, detail) = execute_for(&action);
         let outcome = if verified {
             "ok"
-        } else if out.rolled_back {
+        } else if rolled_back {
             "rolled_back"
         } else {
             "failed"
         };
-        let id = self.audit(&action, "allow", None, Some(outcome), Some(&out.detail));
+        let id = self.audit(&action, "allow", None, Some(outcome), Some(&detail));
         ActionResult {
             verdict: "allow".into(),
             deny_reason: None,
             outcome: Some(outcome.into()),
             duration_ms: t0.elapsed().as_millis() as u64,
             audit_id: id,
+        }
+    }
+}
+
+/// Plán podle typu akce — exekutor si vybírá orchestrátor, ne UI.
+fn plan_for(action: &Action) -> Vec<core_types::action::PlanStep> {
+    match action {
+        Action::KillProc { .. } => actor_proc::plan(action),
+        _ => actor_toggle::plan(action),
+    }
+}
+
+/// Provedení + ověření podle typu akce (fáze 3 a 4).
+/// Vrací (ok, rolled_back, detail).
+fn execute_for(action: &Action) -> (bool, bool, String) {
+    match action {
+        Action::KillProc { .. } => {
+            let out = actor_proc::execute(action);
+            let verified = out.ok && actor_proc::verify(action);
+            (verified, false, out.detail)
+        }
+        _ => {
+            let out = actor_toggle::execute(action);
+            let verified = out.ok && actor_toggle::verify(action);
+            (verified, out.rolled_back, out.detail)
         }
     }
 }

@@ -65,6 +65,8 @@ pub fn plan(action: &Action) -> Vec<PlanStep> {
             ),
             reversible: true,
         }],
+        // Ukončování procesů má vlastní exekutor (actor-proc).
+        Action::KillProc { .. } => Vec::new(),
     }
 }
 
@@ -228,6 +230,13 @@ pub fn execute(action: &Action) -> ExecOutcome {
                 detail: format!("zápis selhal: {reason}"),
             },
         },
+        // Kill patří actor-proc — sem se nikdy nedostane (orchestrátor
+        // vybírá exekutor podle typu akce).
+        Action::KillProc { .. } => ExecOutcome {
+            ok: false,
+            rolled_back: false,
+            detail: "špatný exekutor pro ukončení procesu".into(),
+        },
     }
 }
 
@@ -242,6 +251,7 @@ pub fn verify(action: &Action) -> bool {
         Action::CheckProc { .. } => true,
         // Přečíst ZNOVU z OS — nikdy se netvářit, že zápis prošel.
         Action::StartupToggle { id, on } => read_startup_state(id) == Some(*on),
+        Action::KillProc { .. } => false,
     }
 }
 
@@ -255,6 +265,8 @@ pub fn reversible_hint(action: &Action) -> Option<String> {
             "přepnout {id} zpět na {}",
             if *on { "vypnuto" } else { "zapnuto" }
         )),
+        // Ukončený proces se nevrátí — audit to musí říct rovnou.
+        Action::KillProc { .. } => None,
     }
 }
 

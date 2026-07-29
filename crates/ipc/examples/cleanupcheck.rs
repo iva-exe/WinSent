@@ -27,6 +27,17 @@ fn main() {
                 for (p, s) in &r.junk {
                     println!("  junk {:.1} MB  {}", *s as f64 / 1e6, p);
                 }
+                println!(
+                    "nejvetsi: {} slozek, {} souboru",
+                    r.big_dirs.len(),
+                    r.big_files.len()
+                );
+                for (l, p, s) in r.big_dirs.iter().take(4) {
+                    println!("  dir  [{l}] {:.1} GB  {}", *s as f64 / 1e9, p);
+                }
+                for (l, p, s) in r.big_files.iter().take(4) {
+                    println!("  file [{l}] {:.1} GB  {}", *s as f64 / 1e9, p);
+                }
             } else {
                 println!("report: jeste neni");
             }

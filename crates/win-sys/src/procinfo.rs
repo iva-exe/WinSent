@@ -16,6 +16,26 @@ use windows::Win32::System::Threading::{
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
+/// Ukončí proces (v7, SPEC 17.5 — T1 akce). Volá se VÝHRADNĚ
+/// z exekutoru po `Verdict::Allow`; sama žádnou kontrolu nedělá.
+/// Handle se otevírá s minimálním právem PROCESS_TERMINATE.
+pub fn terminate(pid: u32) -> Result<(), crate::Error> {
+    use windows::Win32::System::Threading::{TerminateProcess, PROCESS_TERMINATE};
+    // SAFETY: handle se vždy zavírá; exit kód 1 = ukončeno zvenčí.
+    unsafe {
+        let h = OpenProcess(PROCESS_TERMINATE, false, pid).map_err(|e| crate::Error::Win32 {
+            call: "OpenProcess(TERMINATE)",
+            code: e.code().0,
+        })?;
+        let r = TerminateProcess(h, 1);
+        let _ = CloseHandle(h);
+        r.map_err(|e| crate::Error::Win32 {
+            call: "TerminateProcess",
+            code: e.code().0,
+        })
+    }
+}
+
 // NtQueryInformationProcess — nedokumentované třídy pro ochranné třídy.
 #[link(name = "ntdll")]
 extern "system" {

@@ -602,9 +602,88 @@
 	});
 
 	const arrow = $derived(sortDir === -1 ? '↓' : '↑');
+
+	// ── Ukončení procesu (v7): plán → potvrzení → provedení. Nevratné,
+	// takže vždy s dialogem; zamítnutí vrstvy se ukáže i s důvodem.
+	let killPlan = $state(null); // { plan, target } | { deny, target }
+	let killBusy = $state(false);
+	let killToast = $state(null);
+
+	async function askKill(p, tree) {
+		if (!p?.create_time) return;
+		killBusy = true;
+		try {
+			const r = await invoke('plan_kill', {
+				pid: p.pid,
+				createTime: p.create_time,
+				tree
+			});
+			if (r.plan_id != null) killPlan = { plan: r, target: p, tree };
+			else killPlan = { deny: r, target: p, tree };
+		} catch (e) {
+			killToast = { kind: 'deny', text: String(e) };
+		}
+		killBusy = false;
+	}
+
+	async function confirmKill() {
+		if (!killPlan?.plan || killBusy) return;
+		killBusy = true;
+		try {
+			const r = await invoke('execute_plan', { planId: killPlan.plan.plan_id });
+			killToast =
+				r.verdict === 'allow' && r.outcome === 'ok'
+					? { kind: 'ok', text: `${killPlan.target.name} ukončen` }
+					: { kind: 'deny', text: r.deny_reason ?? `nepodařilo se (${r.outcome})` };
+		} catch (e) {
+			killToast = { kind: 'deny', text: String(e) };
+		}
+		killBusy = false;
+		killPlan = null;
+		setTimeout(() => (killToast = null), 4000);
+	}
 </script>
 
 <svelte:window onclick={onWindowClick} />
+
+<!-- ── Ukončení procesu: plán → potvrzení (v7, T1) ── -->
+{#if killPlan}
+	<div
+		class="kill-backdrop"
+		role="presentation"
+		onclick={() => (killPlan = null)}
+		onkeydown={() => {}}
+	>
+		<div class="kill-dialog" role="dialog" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
+			{#if killPlan.deny}
+				<h2>Nelze ukončit</h2>
+				<p class="k-target">{killPlan.target.name} (pid {killPlan.target.pid})</p>
+				<p class="k-deny">{killPlan.deny.deny_reason}</p>
+				<div class="k-actions">
+					<button class="k-btn" onclick={() => (killPlan = null)}>Zavřít</button>
+				</div>
+			{:else}
+				<h2>Ukončit {killPlan.tree ? 'proces se stromem' : 'proces'}?</h2>
+				<p class="k-target">{killPlan.target.name} (pid {killPlan.target.pid})</p>
+				<ul class="k-steps">
+					{#each killPlan.plan.steps as s, i (i)}
+						<li>{s.description}</li>
+					{/each}
+				</ul>
+				<p class="k-warn">Neuložená data se ztratí. Ukončení nejde vzít zpět.</p>
+				<div class="k-actions">
+					<button class="k-btn" onclick={() => (killPlan = null)}>Zrušit</button>
+					<button class="k-btn danger" disabled={killBusy} onclick={confirmKill}>
+						{killBusy ? 'ukončuji…' : `Ukončit (${killPlan.plan.steps.length})`}
+					</button>
+				</div>
+			{/if}
+		</div>
+	</div>
+{/if}
+{#if killToast}
+	<div class="kill-toast {killToast.kind}">{killToast.text}</div>
+{/if}
 
 <div class="tasks">
 	<!-- ── Hlavní časový graf ── -->
@@ -993,7 +1072,7 @@
 						{#each groups as g (g.key)}
 							{@const single = g.children.length === 1}
 							{@const open = expanded.has(g.key)}
-							<tr class="grp" data-idkey={g.key} class:clickable={!single} onclick={() => !single && toggleGroup(g.key)}>
+							<tr class="grp" data-idkey={g.key} class:clickable={!single} onclick={() => !single && toggleGroup(g.key)} oncontextmenu={(e) => { e.preventDefault(); askKill(g.children[0], !single); }}>
 								<td class="t-dot">
 									<span
 										class="load-dot"
@@ -1031,7 +1110,7 @@
 							</tr>
 							{#if !single && open}
 								{#each g.children as p (p.pid)}
-									<tr class="child" class:crit={p.protection === 'critical'}>
+									<tr class="child" class:crit={p.protection === "critical"} oncontextmenu={(e) => { e.preventDefault(); askKill(p, false); }}>
 										<td class="t-dot"></td>
 										<td class="t-name child-name">{p.name}</td>
 										<td class="t-pub"></td>
@@ -1055,7 +1134,7 @@
 					{:else}
 						<!-- Plochý seznam procesů (původní view) -->
 						{#each visibleRows as p (p.pid)}
-							<tr data-idkey={p.identity_key}>
+							<tr data-idkey={p.identity_key} oncontextmenu={(e) => { e.preventDefault(); askKill(p, false); }}>
 								<td class="t-dot">
 									<span
 										class="load-dot"
@@ -1556,5 +1635,104 @@
 		45% {
 			background: color-mix(in srgb, var(--accent) 16%, transparent);
 		}
+	}
+
+	/* Potvrzení ukončení procesu (v7, T1 — nevratná akce). */
+	.kill-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.55);
+		display: grid;
+		place-items: center;
+		z-index: 100;
+	}
+	.kill-dialog {
+		width: min(560px, 92vw);
+		background: #16171c;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-lg);
+		padding: 20px 22px;
+		box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+	}
+	.kill-dialog h2 {
+		font-size: 1.05rem;
+		font-weight: 600;
+		margin-bottom: 4px;
+	}
+	.k-target {
+		font-family: var(--font-mono);
+		font-size: 0.84rem;
+		color: var(--text-dim);
+		margin-bottom: 12px;
+	}
+	.k-steps {
+		list-style: none;
+		margin: 0 0 12px;
+		padding: 10px 12px;
+		max-height: 34vh;
+		overflow-y: auto;
+		background: var(--panel);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		font-size: 0.84rem;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.k-warn {
+		font-size: 0.82rem;
+		color: var(--warn);
+		margin-bottom: 14px;
+	}
+	.k-deny {
+		font-size: 0.9rem;
+		color: var(--danger);
+		margin-bottom: 14px;
+	}
+	.k-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+	}
+	.k-btn {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text);
+		font: inherit;
+		font-size: 0.86rem;
+		padding: 7px 14px;
+		cursor: pointer;
+	}
+	.k-btn:hover {
+		border-color: var(--border-strong);
+	}
+	.k-btn.danger {
+		border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+		color: var(--danger);
+	}
+	.k-btn:disabled {
+		opacity: 0.6;
+		cursor: wait;
+	}
+	.kill-toast {
+		position: fixed;
+		bottom: 22px;
+		left: 50%;
+		transform: translateX(-50%);
+		background: #16171c;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius);
+		padding: 9px 16px;
+		font-size: 0.86rem;
+		z-index: 101;
+	}
+	.kill-toast.ok {
+		border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+		color: var(--ok);
+	}
+	.kill-toast.deny {
+		border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+		color: var(--danger);
 	}
 </style>

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
