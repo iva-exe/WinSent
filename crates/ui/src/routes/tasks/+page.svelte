@@ -1023,7 +1023,7 @@
 				     blíž k názvu a má prostor i pro delší podpisy. -->
 				<colgroup>
 					<col style="width: 26px" />
-					<col style="width: 240px" />
+					<col style="min-width: 190px" />
 					<col />
 					<col style="width: 66px" />
 					<col style="width: 62px" />
@@ -1470,8 +1470,10 @@
 		   se tečkovaná linka při scrollu na místech ztrácela */
 		border-collapse: separate;
 		border-spacing: 0;
-		/* fixed + colgroup: šířky sloupců se nemění podle obsahu */
-		table-layout: fixed;
+		/* auto + colgroup: číselné sloupce mají pevnou šířku, název si
+		   vezme co potřebuje a vydavatel se posune podle nejdelšího
+		   řádku — nikdy nesmí zmizet počet procesů ani šipka */
+		table-layout: auto;
 		font-size: 0.86rem;
 	}
 	thead th {
@@ -1514,10 +1516,24 @@
 		color: var(--text);
 	}
 	.tw {
-		display: inline-flex;
+		display: flex;
 		align-items: center;
 		gap: 0.45rem;
 		min-width: 0;
+	}
+	/* Ořez jen jména; ostatní prvky řádku se nesmí zmenšit ani zmizet. */
+	.tw .app-name {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.tw .app-icon,
+	.tw .count,
+	.tw .caret,
+	.tw :global(.lock-ico),
+	.tw :global(.sysb) {
+		flex: none;
 	}
 	/* Caret až za názvem — rozbalovací šipka aplikace. */
 	.caret {
@@ -1603,11 +1619,10 @@
 		border-radius: 50%;
 		vertical-align: middle;
 	}
+	/* Buňka se NEOŘEZÁVÁ — ořez patří jen textu jména (.app-name),
+	   aby zámek, počet procesů a šipka zůstaly vždy vidět. */
 	.t-name {
-		width: 100%;
-		max-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
+		max-width: 520px;
 	}
 	td.t-name {
 		color: var(--text);

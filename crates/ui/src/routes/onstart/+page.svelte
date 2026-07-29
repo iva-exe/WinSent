@@ -130,11 +130,20 @@
 		off: items.filter((i) => !i.enabled).length
 	}));
 
+	// Podpis seznamu — poll nesmí překreslit 360 řádků, když se nic
+	// nezměnilo (to bylo vidět jako záseky při scrollování).
+	let lastSig = '';
+
 	async function load() {
 		try {
-			items = await invoke('query_startup');
+			const fresh = await invoke('query_startup');
 			loadError = '';
-			queueIcons(new Set(items.map((i) => i.identity_key).filter(Boolean)));
+			const sig = fresh.map((i) => `${i.id}:${i.enabled}`).join('|');
+			if (sig !== lastSig) {
+				lastSig = sig;
+				items = fresh;
+				queueIcons(new Set(fresh.map((i) => i.identity_key).filter(Boolean)));
+			}
 		} catch (e) {
 			loadError = String(e);
 		}
@@ -149,6 +158,7 @@
 			const r = await invoke('toggle_startup', { id: item.id, on: want });
 			if (r.verdict === 'allow' && r.outcome === 'ok') {
 				items = items.map((i) => (i.id === item.id ? { ...i, enabled: want } : i));
+				lastSig = items.map((i) => `${i.id}:${i.enabled}`).join("|");
 				toast = {
 					kind: 'ok',
 					text: `${item.name}: ${want ? 'zapnuto' : 'vypnuto'} (${r.duration_ms} ms)`
@@ -467,10 +477,15 @@
 	.g-count {
 		font-size: 0.68rem;
 	}
-	/* Karty mají jednotnou výšku; delší seznam se sbalí s fadem. */
+	/* Karty mají jednotnou výšku; delší seznam se sbalí s fadem.
+	   content-visibility: prohlížeč neskládá karty mimo výřez —
+	   bez toho scroll přes 30+ karet s ikonami trhal. */
 	.grp {
 		display: flex;
 		flex-direction: column;
+		content-visibility: auto;
+		contain-intrinsic-size: auto 260px;
+		overflow: hidden;
 	}
 	.items {
 		list-style: none;
@@ -479,17 +494,22 @@
 		flex: 1;
 	}
 	/* Fade přes pseudoelement, ne mask-image: maska nutí prohlížeč
-	   skládat každou kartu zvlášť a scrollování 360 položek se sekalo. */
+	   skládat každou kartu zvlášť a scrollování 360 položek se sekalo.
+	   Negativní okraje = přesah přes padding karty, ať jde od kraje
+	   do kraje (uvnitř obsahu vypadal jako pruh doprostřed). */
 	.items.fade {
 		position: relative;
 	}
 	.items.fade::after {
 		content: '';
 		position: absolute;
-		inset: auto 0 0 0;
-		height: 42px;
+		left: -16px;
+		right: -16px;
+		bottom: -1px;
+		height: 46px;
 		pointer-events: none;
-		background: linear-gradient(to bottom, transparent, rgba(20, 21, 26, 0.92));
+		background: linear-gradient(to bottom, rgba(22, 23, 28, 0), rgba(22, 23, 28, 0.97));
+		border-radius: 0 0 var(--radius) var(--radius);
 	}
 	.more {
 		margin-top: 6px;

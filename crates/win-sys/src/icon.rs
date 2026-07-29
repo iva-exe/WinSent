@@ -26,6 +26,13 @@ pub struct IconRgba {
 
 /// Extrahuje ikonu binárky. None = nemá ikonu / nelze načíst.
 pub fn extract(path: &str) -> Option<IconRgba> {
+    // PŘEDNOSTNĚ z PE resource: služba běží jako SYSTEM v session 0,
+    // kde shell (SHGetFileInfo) vrací GENERICKOU ikonu — proto dřív
+    // většina aplikací dostala default „okýnko". Čtení resource na
+    // shellu ani na session nezávisí.
+    if let Some(i) = extract_pe(path) {
+        return Some(i);
+    }
     let wide: Vec<u16> = std::path::Path::new(path)
         .as_os_str()
         .encode_wide()
@@ -47,6 +54,112 @@ pub fn extract(path: &str) -> Option<IconRgba> {
         }
         let result = icon_to_rgba(info.hIcon);
         let _ = DestroyIcon(info.hIcon);
+        result
+    }
+}
+
+/// Ikona přímo z PE resource binárky (RT_GROUP_ICON → nejlepší
+/// velikost → RT_ICON → HICON). Funguje i v session 0 (služba),
+/// protože nesahá na shell ani na ikonové cache.
+pub fn extract_pe(path: &str) -> Option<IconRgba> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::FreeLibrary;
+    use windows::Win32::System::LibraryLoader::{
+        EnumResourceNamesW, FindResourceW, LoadLibraryExW, LoadResource, LockResource,
+        SizeofResource, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateIconFromResourceEx, LookupIconIdFromDirectoryEx, LR_DEFAULTCOLOR, RT_GROUP_ICON,
+        RT_ICON,
+    };
+
+    let wide: Vec<u16> = std::path::Path::new(path)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // Callback pro EnumResourceNamesW — vezme PRVNÍ group icon
+    // (u .exe je to ikona aplikace) a uloží její id do kontextu.
+    unsafe extern "system" fn first_name(
+        _module: windows::Win32::Foundation::HMODULE,
+        _ty: PCWSTR,
+        name: PCWSTR,
+        param: isize,
+    ) -> windows::core::BOOL {
+        let slot = param as *mut usize;
+        if !slot.is_null() {
+            *slot = name.0 as usize;
+        }
+        // false = přestat enumerovat (máme první).
+        false.into()
+    }
+
+    // SAFETY: modul se načítá jen jako data (nespouští se žádný kód),
+    // handle se vždy uvolní; resource ukazatele žijí po dobu modulu.
+    unsafe {
+        let module = LoadLibraryExW(
+            PCWSTR(wide.as_ptr()),
+            None,
+            LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE,
+        )
+        .ok()?;
+
+        let mut group_name: usize = 0;
+        let _ = EnumResourceNamesW(
+            Some(module),
+            RT_GROUP_ICON,
+            Some(first_name),
+            &mut group_name as *mut usize as isize,
+        );
+        if group_name == 0 {
+            let _ = FreeLibrary(module);
+            return None;
+        }
+
+        let result = (|| {
+            // Group icon direktář → id nejlepší varianty pro 32×32.
+            let group = FindResourceW(
+                Some(module),
+                PCWSTR(group_name as *const u16),
+                RT_GROUP_ICON,
+            );
+            if group.is_invalid() {
+                return None;
+            }
+            let g_res = LoadResource(Some(module), group).ok()?;
+            let g_ptr = LockResource(g_res) as *const u8;
+            if g_ptr.is_null() {
+                return None;
+            }
+            let g_len = SizeofResource(Some(module), group) as usize;
+            let dir = std::slice::from_raw_parts(g_ptr, g_len);
+            let id = LookupIconIdFromDirectoryEx(dir.as_ptr(), true, 32, 32, LR_DEFAULTCOLOR);
+            if id == 0 {
+                return None;
+            }
+
+            // Konkrétní ikona podle id (id je číselné → PCWSTR z čísla).
+            let icon = FindResourceW(Some(module), PCWSTR(id as u16 as *const u16), RT_ICON);
+            if icon.is_invalid() {
+                return None;
+            }
+            let i_res = LoadResource(Some(module), icon).ok()?;
+            let i_ptr = LockResource(i_res) as *const u8;
+            if i_ptr.is_null() {
+                return None;
+            }
+            let i_len = SizeofResource(Some(module), icon) as usize;
+            let bytes = std::slice::from_raw_parts(i_ptr, i_len);
+            // 0x00030000 = verze formátu ikony (dokumentovaná konstanta).
+            let hicon =
+                CreateIconFromResourceEx(bytes, true, 0x0003_0000, 32, 32, LR_DEFAULTCOLOR).ok()?;
+            let rgba = icon_to_rgba(hicon);
+            let _ = DestroyIcon(hicon);
+            rgba
+        })();
+
+        let _ = FreeLibrary(module);
         result
     }
 }
