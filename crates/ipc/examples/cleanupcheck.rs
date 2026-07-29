@@ -3,8 +3,8 @@
 fn main() {
     match ipc::client::query_cleanup() {
         Ok((indexing, running, report)) => {
-            for (l, n, done) in &indexing {
-                println!("index {l}: {n} zaznamu, hotovo={done}");
+            for (l, n, done, err) in &indexing {
+                println!("index {l}: {n} zaznamu, hotovo={done}, chyba={err:?}");
             }
             println!("analyza bezi: {running}");
             if let Some(r) = report {

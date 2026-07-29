@@ -12,9 +12,12 @@
 		Copy,
 		FileX,
 		Loader,
+		TriangleAlert,
 		FileType2,
 		FolderTree
 	} from 'lucide-svelte';
+	import SystemBadge from '$lib/SystemBadge.svelte';
+	import { isSystemPath } from '$lib/mandatory.js';
 
 	let volumes = $state([]);
 	let health = $state([]);
@@ -169,8 +172,8 @@
 				<span class="c-status">
 					<Loader size={14} class="spin" />
 					indexuji disky —
-					{#each cleanup.indexing as [l, n, done] (l)}
-						<span class="mono">{l}: {done ? '✓' : n.toLocaleString('cs-CZ')}</span>
+					{#each cleanup.indexing as [l, n, done, err] (l)}
+						<span class="mono" class:err={!!err}>{l}: {done ? '✓' : n.toLocaleString('cs-CZ')}</span>
 					{/each}
 				</span>
 			{:else if cleanup?.running}
@@ -183,6 +186,14 @@
 				<span class="c-status dim">služba analýzu spustí sama krátce po startu…</span>
 			{/if}
 		</div>
+
+		<!-- Svazky, které nešly zindexovat — s důvodem, ne mlčky. -->
+		{#each (cleanup?.indexing ?? []).filter((i) => i[3]) as [l, , , err] (l)}
+			<p class="idx-err">
+				<TriangleAlert size={14} />
+				<b>{l}:</b> disk nebylo možné prohledat — {err}
+			</p>
+		{/each}
 
 		{#if cleanup?.report}
 			{@const r = cleanup.report}
@@ -225,8 +236,9 @@
 				</div>
 			</div>
 			<p class="note big">
-				Zatím jen ukazujeme — mazání přijde v další verzi bezpečně (do koše, s náhledem).
-				Klik = otevřít v Průzkumníku a uklidit ručně.
+				Winsent ukáže, co zabírá místo — mazat necháme na tobě. Klik otevře složku
+				v Průzkumníku, kde soubor uvidíš v kontextu a smažeš vědomě. Žádná appka
+				za tebe nemá rozhodovat, co je tvoje data a co smetí.
 			</p>
 		{/if}
 	</section>
@@ -243,20 +255,22 @@
 				</div>
 			</div>
 			<div class="c-cols">
-				<div class="c-block">
-					<h3><FolderTree size={14} /> Největší složky</h3>
+				<div class="c-block tall">
+					<h3><FolderTree size={14} /> Největší složky <em>{bigDirs.length}</em></h3>
 					{#each bigDirs as [, path, size] (path)}
 						<button class="row" onclick={() => openPath(path)} title="Otevřít v Průzkumníku">
 							<span class="r-path mono">{path}</span>
+							{#if isSystemPath(path)}<SystemBadge compact />{/if}
 							<span class="r-size mono">{fmtSize(size)}</span>
 						</button>
 					{/each}
 				</div>
-				<div class="c-block">
-					<h3><FileType2 size={14} /> Největší soubory</h3>
+				<div class="c-block tall">
+					<h3><FileType2 size={14} /> Největší soubory <em>{bigFiles.length}</em></h3>
 					{#each bigFiles as [, path, size] (path)}
 						<button class="row" onclick={() => openPath(path)} title="Otevřít v Průzkumníku">
 							<span class="r-path mono">{path}</span>
+							{#if isSystemPath(path)}<SystemBadge compact />{/if}
 							<span class="r-size mono">{fmtSize(size)}</span>
 						</button>
 					{/each}
@@ -424,10 +438,14 @@
 		font-weight: 500;
 		margin: 0 0 8px;
 	}
+	.c-block.tall {
+		max-height: 60vh;
+	}
 	.c-block {
 		min-width: 0;
 		max-height: 44vh;
 		overflow-y: auto;
+		scrollbar-gutter: stable;
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		background: var(--panel);
@@ -479,6 +497,23 @@
 		font-size: 0.74rem;
 		color: var(--text-faint);
 		margin: 6px 0 0;
+	}
+	.c-block h3 em {
+		font-style: normal;
+		font-family: var(--font-mono);
+		font-size: 0.68rem;
+		color: var(--text-faint);
+	}
+	.idx-err {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin: 10px 0 0;
+		font-size: 0.82rem;
+		color: var(--warn);
+	}
+	.mono.err {
+		color: var(--warn);
 	}
 	.note.big {
 		font-size: 0.8rem;

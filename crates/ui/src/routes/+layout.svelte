@@ -25,6 +25,7 @@
 		Router,
 		Shield,
 		Settings,
+		History,
 		Minus,
 		Square,
 		TriangleAlert,
@@ -181,6 +182,16 @@
 				<a href="/settings" class:active={page.url.pathname.startsWith('/settings')}>
 					<Settings size={20} strokeWidth={1.75} />
 					<span>Settings</span>
+				</a>
+				<!-- Historie zásahů do systému (audit) — vedle nastavení. -->
+				<a
+					href="/history"
+					class="hist"
+					class:active={page.url.pathname.startsWith('/history')}
+					title="Historie zásahů do systému"
+				>
+					<History size={20} strokeWidth={1.75} />
+					<span>Historie</span>
 				</a>
 			</div>
 		</nav>

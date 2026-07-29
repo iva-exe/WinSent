@@ -38,7 +38,7 @@ struct LiveSample {
 #[derive(Default)]
 struct CleanupState {
     /// (svazek, záznamů zatím, hotovo).
-    indexing: Vec<(char, u64, bool)>,
+    indexing: Vec<(char, u64, bool, Option<String>)>,
     running: bool,
     report: Option<core_types::proc::CleanupReport>,
 }
@@ -344,7 +344,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     .collect();
                 {
                     let mut c = cleanup.lock().expect("cleanup lock");
-                    c.indexing = letters.iter().map(|&l| (l, 0, false)).collect();
+                    c.indexing = letters.iter().map(|&l| (l, 0, false, None)).collect();
                 }
                 let mut built = Vec::new();
                 for &letter in &letters {
@@ -362,12 +362,19 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             let entries = idx.len() as u64;
                             let mut c = cleanup.lock().expect("cleanup lock");
                             if let Some(e) = c.indexing.iter_mut().find(|e| e.0 == letter) {
-                                *e = (letter, entries, true);
+                                *e = (letter, entries, true, None);
                             }
                             tracing::info!(volume = %letter, entries, "auto-index hotový");
                             built.push(idx);
                         }
                         Err(e) => {
+                            // Chybu si pamatujeme a řekneme ji v UI —
+                            // „disk chybí" je horší než „nešel a proč".
+                            let mut c = cleanup.lock().expect("cleanup lock");
+                            if let Some(slot) = c.indexing.iter_mut().find(|s| s.0 == letter) {
+                                *slot = (letter, 0, true, Some(index_error_human(&e)));
+                            }
+                            drop(c);
                             tracing::warn!(volume = %letter, error = %e, "auto-index selhal")
                         }
                     }
@@ -394,7 +401,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         break;
                     }
                     let t = Instant::now();
-                    let b = fs_index::largest_items(&format!("{letter}:\\"), 15, 800_000);
+                    let b = fs_index::largest_items(&format!("{letter}:\\"), 60, 900_000);
                     tracing::info!(
                         volume = %letter,
                         ms = t.elapsed().as_millis() as u64,
@@ -1186,6 +1193,25 @@ fn archive_blackbox(ts: i64) -> Option<String> {
             tracing::warn!(error = %e, "archivace černé skříňky selhala");
             None
         }
+    }
+}
+
+/// Lidský důvod, proč se svazek nepodařilo zindexovat — uživatel má
+/// vědět proč, ne jen „nejde".
+fn index_error_human(e: &fs_index::Error) -> String {
+    let s = e.to_string();
+    // Kódy z CreateFileW na svazek: 5 = odepřen přístup (bez elevace),
+    // 1 = nepodporováno (ne-NTFS), 32 = uzamčeno jiným procesem.
+    if s.contains("code: 5") {
+        "přístup odepřen — služba potřebuje práva správce".into()
+    } else if s.contains("code: 1") || s.contains("code: 50") {
+        "svazek nepodporuje USN žurnál (jen NTFS)".into()
+    } else if s.contains("code: 32") {
+        "svazek je uzamčený jiným programem".into()
+    } else if s.contains("code: 21") {
+        "zařízení není připravené (odpojený disk?)".into()
+    } else {
+        format!("nepodařilo se přečíst MFT ({s})")
     }
 }
 

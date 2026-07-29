@@ -6,6 +6,27 @@ use core_types::proc::Confidence;
 
 use crate::{parent_dir, under_system_root, Identity, Tables};
 
+/// Identita vlastních procesů. Poznává se podle jména binárky nebo
+/// instalačního adresáře služby — WebView2 renderery se poznají podle
+/// toho, že leží v našem instalačním stromu.
+fn own_identity(path: &str, image_name: &str) -> Option<Identity> {
+    const OWN_EXES: &[&str] = &["syswatch.exe", "winsent.exe", "ui.exe"];
+    let lc = path.to_ascii_lowercase();
+    let name_lc = image_name.to_ascii_lowercase();
+    let own_dir = lc.contains("\\programdata\\syswatch\\")
+        || lc.contains("\\winsent\\target\\debug\\")
+        || lc.contains("\\winsent\\target\\release\\");
+    if !(OWN_EXES.contains(&name_lc.as_str()) || own_dir) {
+        return None;
+    }
+    Some(Identity {
+        identity_key: "app:winsent".into(),
+        app_name: "Winsent".into(),
+        publisher: Some("Winsent".into()),
+        confidence: Confidence::Exact,
+    })
+}
+
 /// Vyhodnotí kaskádu pro jeden proces (běží na background vlákně).
 pub fn resolve(pid: u32, image_name: &str, path: Option<&str>, tables: &Tables) -> Identity {
     // 1. MSIX/AppX — PackageFamilyName.
@@ -27,6 +48,13 @@ pub fn resolve(pid: u32, image_name: &str, path: Option<&str>, tables: &Tables) 
             confidence: Confidence::Guess,
         };
     };
+
+    // 1b. Vlastní procesy — služba (syswatch.exe), UI (winsent.exe)
+    //     i WebView2 potomci UI patří pod JEDNU aplikaci „Winsent".
+    //     Jinak by se ve vývoji rozpadly na tři různé řádky podle cest.
+    if let Some(id) = own_identity(path, image_name) {
+        return id;
+    }
 
     // Podpis (potřebný pro krok 2 i 4) — zjistíme jednou.
     let signer = win_sys::trust::signer_subject(std::path::Path::new(path));

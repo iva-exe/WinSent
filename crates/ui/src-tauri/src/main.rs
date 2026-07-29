@@ -173,7 +173,7 @@ fn search_files(
 /// Stav auto-úklidu (v4E).
 #[derive(Debug, Serialize)]
 struct CleanupDto {
-    indexing: Vec<(char, u64, bool)>,
+    indexing: Vec<(char, u64, bool, Option<String>)>,
     running: bool,
     report: Option<core_types::proc::CleanupReport>,
 }

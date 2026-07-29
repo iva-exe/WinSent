@@ -18,42 +18,9 @@
 		ExternalLink,
 		ShieldCheck
 	} from 'lucide-svelte';
+	import SystemBadge from '$lib/SystemBadge.svelte';
+	import { isSystemApp } from '$lib/mandatory.js';
 
-	// Povinná součást Windows / Microsoft runtime — neodinstalovávat.
-	// Heuristika nad vydavatelem + rodinou balíčku / názvem.
-	function isMandatory(a) {
-		const pub2 = (a.publisher ?? '').toLowerCase();
-		if (!pub2.includes('microsoft')) return false;
-		if (a.identity_key.startsWith('msix:')) {
-			const fam = a.identity_key.slice(5).toLowerCase();
-			return [
-				'microsoft.windows',
-				'microsoftwindows',
-				'microsoft.vclibs',
-				'microsoft.net',
-				'microsoft.ui.xaml',
-				'microsoft.windowsappruntime',
-				'microsoft.sechealthui',
-				'microsoft.aad',
-				'microsoft.accountscontrol',
-				'microsoft.lockapp',
-				'microsoft.win32webviewhost',
-				'microsoft.windowsstore',
-				'microsoft.storepurchaseapp',
-				'microsoft.desktopappinstaller'
-			].some((p) => fam.startsWith(p));
-		}
-		const n = a.display_name.toLowerCase();
-		return (
-			n.includes('visual c++') ||
-			n.includes('.net') ||
-			n.includes('webview2') ||
-			n.includes('universal crt') ||
-			n.includes('windows software development kit') ||
-			n.includes('windows sdk') ||
-			n.includes('update health')
-		);
-	}
 
 	let apps = $state([]);
 	let procs = $state([]);
@@ -336,13 +303,7 @@
 								<span class="row-main">
 									<span class="row-title">
 										{a.display_name}
-										{#if isMandatory(a)}
-											<span
-												class="mand"
-												title="Povinná součást Windows / Microsoft — neodinstalovávat"
-												><ShieldCheck size={13} /></span
-											>
-										{/if}
+										{#if isSystemApp(a)}<SystemBadge compact />{/if}
 									</span>
 									<span class="row-pub">{a.publisher ?? '—'}</span>
 								</span>
@@ -369,11 +330,7 @@
 						<div class="d-title">
 							<h2>
 								{selected.display_name}
-								{#if isMandatory(selected)}
-									<span class="mand big" title="Povinná součást Windows / Microsoft">
-										<ShieldCheck size={16} /> součást Windows
-									</span>
-								{/if}
+								{#if isSystemApp(selected)}<SystemBadge />{/if}
 							</h2>
 							<span class="d-meta">
 								{selected.publisher ?? '—'} · {selected.version ?? '—'} ·

@@ -395,7 +395,7 @@ pub fn query_audit(limit: u32) -> Result<Vec<core_types::action::AuditRow>, Erro
 #[allow(clippy::type_complexity)]
 pub fn query_cleanup() -> Result<
     (
-        Vec<(char, u64, bool)>,
+        Vec<(char, u64, bool, Option<String>)>,
         bool,
         Option<core_types::proc::CleanupReport>,
     ),

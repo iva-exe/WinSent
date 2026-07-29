@@ -18,6 +18,8 @@
 		ChevronDown,
 		ChevronUp
 	} from 'lucide-svelte';
+	import SystemBadge from '$lib/SystemBadge.svelte';
+	import { isSystemApp, isSystemPath } from '$lib/mandatory.js';
 
 	/// Kolik položek se v kartě ukáže před rozkliknutím (karty tak mají
 	/// jednotnou výšku a stránka se nesype dlouhými seznamy).
@@ -36,8 +38,6 @@
 	let loadError = $state('');
 	let busy = $state(new Set());
 	let toast = $state(null);
-	let audit = $state([]);
-	let showAudit = $state(false);
 
 	// Ikony aplikací (sdílená cache služby, klíč = identity_key).
 	let iconUrls = $state({});
@@ -113,7 +113,13 @@
 		const map = new Map();
 		for (const i of shown) {
 			const key = i.app_name ?? srcOf(i.source).label;
-			if (!map.has(key)) map.set(key, { label: key, identity_key: i.identity_key, items: [] });
+			if (!map.has(key))
+				map.set(key, {
+					label: key,
+					identity_key: i.identity_key,
+					publisher: i.publisher,
+					items: []
+				});
 			map.get(key).items.push(i);
 		}
 		return [...map.values()].sort((a, b) => b.items.length - a.items.length);
@@ -131,14 +137,6 @@
 			queueIcons(new Set(items.map((i) => i.identity_key).filter(Boolean)));
 		} catch (e) {
 			loadError = String(e);
-		}
-	}
-
-	async function loadAudit() {
-		try {
-			audit = await invoke('query_audit', { limit: 30 });
-		} catch {
-			audit = [];
 		}
 	}
 
@@ -168,14 +166,9 @@
 		const b = new Set(busy);
 		b.delete(item.id);
 		busy = b;
-		if (showAudit) loadAudit();
 		setTimeout(() => (toast = null), 4000);
 	}
 
-	function fmtTs(ts) {
-		const d = new Date(ts * 1000);
-		return d.toLocaleDateString('cs-CZ') + ' ' + d.toLocaleTimeString('cs-CZ');
-	}
 
 	onMount(() => {
 		load();
@@ -202,44 +195,13 @@
 			<Search size={14} />
 			<input placeholder="hledat položku…" bind:value={filter} />
 		</div>
-		<button
-			class="audit-btn"
-			class:active={showAudit}
-			onclick={() => {
-				showAudit = !showAudit;
-				if (showAudit) loadAudit();
-			}}
-			title="Historie zásahů do systému"
-		>
+		<a class="audit-btn" href="/history" title="Historie zásahů do systému">
 			<History size={15} />
-		</button>
+		</a>
 	</header>
 
 	{#if toast}
 		<div class="toast {toast.kind}">{toast.text}</div>
-	{/if}
-
-	{#if showAudit}
-		<section class="card audit">
-			<h3><ShieldCheck size={14} /> Co Winsent v systému udělal</h3>
-			{#if audit.length === 0}
-				<p class="dim">zatím žádné zásahy</p>
-			{:else}
-				<ul>
-					{#each audit as a (a.id)}
-						<li>
-							<span class="a-ts mono">{fmtTs(a.ts)}</span>
-							<span class="a-act">{a.action}</span>
-							<span class="a-target mono">{a.target}</span>
-							<span class="a-verdict" class:deny={a.verdict === 'deny'}>
-								{a.verdict === 'deny' ? 'zamítnuto' : (a.outcome ?? 'ok')}
-							</span>
-							{#if a.deny_reason}<span class="a-reason">{a.deny_reason}</span>{/if}
-						</li>
-					{/each}
-				</ul>
-			{/if}
-		</section>
 	{/if}
 
 	{#if loadError}
@@ -257,6 +219,9 @@
 							<span class="app-icon ph"></span>
 						{/if}
 						<span class="g-name">{g.label}</span>
+						{#if isSystemApp({ identity_key: g.identity_key ?? '', display_name: g.label, publisher: g.publisher ?? '' }) || g.items.every((i) => !i.toggleable || isSystemPath(i.command))}
+							<SystemBadge compact />
+						{/if}
 						<span class="g-count label-tech">{g.items.length}</span>
 					</header>
 					<ul class="items" class:fade={!open && g.items.length > COLLAPSED}>
@@ -513,9 +478,18 @@
 		padding: 0;
 		flex: 1;
 	}
+	/* Fade přes pseudoelement, ne mask-image: maska nutí prohlížeč
+	   skládat každou kartu zvlášť a scrollování 360 položek se sekalo. */
 	.items.fade {
-		-webkit-mask-image: linear-gradient(to bottom, #000 62%, transparent 100%);
-		mask-image: linear-gradient(to bottom, #000 62%, transparent 100%);
+		position: relative;
+	}
+	.items.fade::after {
+		content: '';
+		position: absolute;
+		inset: auto 0 0 0;
+		height: 42px;
+		pointer-events: none;
+		background: linear-gradient(to bottom, transparent, rgba(20, 21, 26, 0.92));
 	}
 	.more {
 		margin-top: 6px;
@@ -536,7 +510,7 @@
 	}
 	.item {
 		display: grid;
-		grid-template-columns: 22px 1fr auto 44px;
+		grid-template-columns: 22px minmax(0, 1fr) auto 44px;
 		gap: 10px;
 		align-items: center;
 		padding: 7px 0;
@@ -558,6 +532,13 @@
 	}
 	.i-name {
 		font-size: 0.88rem;
+		/* Dlouhé názvy (GUID balíčky, cesty) se zalomí, ať nelezou
+		   do přepínače. */
+		overflow-wrap: anywhere;
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		flex-wrap: wrap;
 	}
 	.i-cmd {
 		font-size: 0.7rem;

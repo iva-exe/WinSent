@@ -6,6 +6,8 @@
 	import LiveChart from '$lib/LiveChart.svelte';
 	import Sparkline from '$lib/Sparkline.svelte';
 	import Num from '$lib/Num.svelte';
+	import SystemBadge from '$lib/SystemBadge.svelte';
+	import { isSystemApp } from '$lib/mandatory.js';
 	import {
 		Cpu,
 		MemoryStick,
@@ -1088,6 +1090,7 @@
 											<span class="app-icon placeholder"></span>
 										{/if}
 										<span class="app-name" class:guess={g.confidence === 'guess'}>{g.app_name}</span>
+										{#if isSystemApp({ identity_key: g.key, display_name: g.app_name, publisher: g.publisher ?? "" })}<SystemBadge compact />{/if}
 										{#if g.protection === 'critical'}
 											<Lock class="lock-ico" size={13} strokeWidth={2} />
 										{/if}

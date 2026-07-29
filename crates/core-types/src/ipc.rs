@@ -149,7 +149,8 @@ pub enum Response {
     /// Stav úklidu: indexace svazků (písmeno, záznamů, hotovo),
     /// běží-li analýza a případný výsledek.
     Cleanup {
-        indexing: Vec<(char, u64, bool)>,
+        /// (svazek, záznamů, hotovo, chyba — proč nešel indexovat).
+        indexing: Vec<(char, u64, bool, Option<String>)>,
         running: bool,
         report: Option<crate::proc::CleanupReport>,
     },
