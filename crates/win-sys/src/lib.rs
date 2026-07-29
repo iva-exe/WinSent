@@ -21,6 +21,7 @@ pub mod procinfo;
 pub mod registry;
 pub mod restore;
 pub mod services;
+pub mod shortcut;
 pub mod smart;
 pub mod smbios;
 pub mod sysinfo;

@@ -458,6 +458,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         // z DisplayIcon / zástupce / instalace / MSIX
                         // loga. Jednou na klíč, na BELOW_NORMAL.
                         let lnk_index = build_lnk_index();
+                        let app_paths = win_sys::shortcut::all_app_paths();
                         let mut icons_added = 0u32;
                         for app in &apps {
                             if stop.load(Ordering::SeqCst) {
@@ -470,7 +471,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             if !missing {
                                 continue;
                             }
-                            if let Some(ico) = inventory_icon(app, &lnk_index) {
+                            if let Some(ico) = inventory_icon(app, &lnk_index, &app_paths) {
                                 icon_store_inv
                                     .lock()
                                     .expect("icon cache lock")
@@ -1215,9 +1216,20 @@ fn index_error_human(e: &fs_index::Error) -> String {
     }
 }
 
-/// Index zástupců ze Start Menu: název (lc, bez .lnk) → cesta k .lnk.
-/// Zástupce je nejspolehlivější zdroj ikony — instalátor ho vytvořil
-/// přesně pro tu aplikaci a shell z něj ikonu vyřeší sám.
+/// Normalizace názvu pro párování aplikace ↔ zástupce: malá písmena,
+/// jen alfanumerické znaky. „Google Chrome" == „google chrome" ==
+/// „GoogleChrome"; verze a interpunkce nepřekáží.
+fn norm_name(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// Index zástupců ze Start Menu: normalizovaný název → cesta k .lnk.
+/// Zástupce je nejspolehlivější vodítko — instalátor ho vytvořil přesně
+/// pro tu aplikaci. Ikona se ale MUSÍ vzít z cíle zástupce: .lnk není
+/// PE soubor, takže by spadla na generickou shell ikonu (session 0).
 fn build_lnk_index() -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     let mut roots: Vec<String> = Vec::new();
@@ -1247,7 +1259,7 @@ fn build_lnk_index() -> std::collections::HashMap<String, String> {
                 }
             } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("lnk")) {
                 if let Some(stem) = p.file_stem() {
-                    map.entry(stem.to_string_lossy().to_lowercase())
+                    map.entry(norm_name(&stem.to_string_lossy()))
                         .or_insert_with(|| p.to_string_lossy().into_owned());
                 }
             }
@@ -1262,6 +1274,7 @@ fn build_lnk_index() -> std::collections::HashMap<String, String> {
 fn inventory_icon(
     app: &collector_inv::AppEntry,
     lnk_index: &std::collections::HashMap<String, String>,
+    app_paths: &[(String, String)],
 ) -> Option<core_types::proc::IconData> {
     if let Some(hint) = app.icon_hint.as_deref() {
         let trimmed = hint.trim().trim_matches('"');
@@ -1271,9 +1284,40 @@ fn inventory_icon(
             }
         }
     }
-    // Zástupce dle názvu aplikace (přesná shoda jména).
-    if let Some(lnk) = lnk_index.get(&app.display_name.to_lowercase()) {
-        if let Some(i) = win_sys::icon::extract(lnk) {
+
+    // Zástupce ze Start Menu — přesná i částečná shoda normalizovaných
+    // jmen („Discord Inc. → Discord"). Ikona se bere z CÍLE zástupce
+    // (PE resource), případně z jeho IconLocation.
+    let want = norm_name(&app.display_name);
+    let lnk = lnk_index.get(&want).cloned().or_else(|| {
+        // Částečná shoda: zástupce, jehož jméno je v názvu aplikace
+        // (nebo naopak) a je dost dlouhé, aby to nebyla náhoda.
+        lnk_index
+            .iter()
+            .filter(|(k, _)| k.len() >= 4 && (want.starts_with(k.as_str()) || k.starts_with(&want)))
+            .max_by_key(|(k, _)| k.len())
+            .map(|(_, v)| v.clone())
+    });
+    if let Some(lnk) = lnk {
+        if let Some(target) = win_sys::shortcut::resolve_lnk(&lnk) {
+            if let Some(i) = win_sys::icon::extract(&target) {
+                return Some(to_icon_data(i));
+            }
+        }
+        if let Some((icon_path, idx)) = win_sys::shortcut::lnk_icon_location(&lnk) {
+            let spec = format!("{icon_path},{idx}");
+            if let Some(i) = win_sys::icon::extract_spec(&spec) {
+                return Some(to_icon_data(i));
+            }
+        }
+    }
+
+    // Registrované App Paths — aplikace tam samy hlásí svoje .exe.
+    if let Some((_, exe)) = app_paths.iter().find(|(name, _)| {
+        let stem = name.trim_end_matches(".exe");
+        stem.len() >= 4 && (want.starts_with(stem) || stem.starts_with(&want))
+    }) {
+        if let Some(i) = win_sys::icon::extract(exe) {
             return Some(to_icon_data(i));
         }
     }
@@ -1289,7 +1333,7 @@ fn inventory_icon(
         }
     }
     for d in &dirs {
-        if let Some(i) = icon_from_dir(d) {
+        if let Some(i) = icon_from_dir(d, &want) {
             return Some(i);
         }
     }
@@ -1307,7 +1351,27 @@ fn inventory_icon(
 /// Najde logo PNG v adresáři MSIX balíčku (Assets\*logo*.png apod.).
 fn msix_logo(dir: &str) -> Option<core_types::proc::IconData> {
     let mut candidates: Vec<(u32, std::path::PathBuf)> = Vec::new();
-    for base in [format!("{dir}\\Assets"), dir.to_string()] {
+    // Assets bývá i zanořené (Assets\Logos, Images\…), proto průchod
+    // do dvou úrovní — jinak balíčky jako XboxCompanion ikonu nemají
+    // kde vzít.
+    let mut bases: Vec<std::path::PathBuf> = vec![
+        format!("{dir}\\Assets").into(),
+        dir.into(),
+        format!("{dir}\\Images").into(),
+    ];
+    let mut extra = Vec::new();
+    for b in &bases {
+        if let Ok(rd) = std::fs::read_dir(b) {
+            extra.extend(
+                rd.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .take(6),
+            );
+        }
+    }
+    bases.extend(extra);
+    for base in bases {
         let Ok(rd) = std::fs::read_dir(&base) else {
             continue;
         };
@@ -1328,14 +1392,25 @@ fn msix_logo(dir: &str) -> Option<core_types::proc::IconData> {
                 2
             } else if n.contains("logo") {
                 3
+            } else if n.contains("icon") || n.contains("applist") || n.contains("tile") {
+                4
             } else {
-                continue;
+                // Poslední možnost: jakýkoli malý PNG (balíčky bez
+                // standardních jmen log).
+                let small = std::fs::metadata(&p)
+                    .map(|m| m.len() < 120_000)
+                    .unwrap_or(false);
+                if small {
+                    5
+                } else {
+                    continue;
+                }
             };
             candidates.push((score * 1000 + n.len() as u32, p));
         }
     }
     candidates.sort_by_key(|(s, _)| *s);
-    for (_, p) in candidates.into_iter().take(3) {
+    for (_, p) in candidates.into_iter().take(4) {
         if let Some(i) = win_sys::wic::decode(&p.to_string_lossy()) {
             return Some(to_icon_data(i));
         }
@@ -1345,49 +1420,79 @@ fn msix_logo(dir: &str) -> Option<core_types::proc::IconData> {
 
 /// První použitelná ikona z .exe v adresáři (nejkratší jméno bývá
 /// hlavní binárka — instalátory/updatery mívají dlouhá).
-fn icon_from_dir(dir: &str) -> Option<core_types::proc::IconData> {
+fn icon_from_dir(dir: &str, hint: &str) -> Option<core_types::proc::IconData> {
     let rd = std::fs::read_dir(dir).ok()?;
     let mut exes: Vec<std::path::PathBuf> = rd
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")))
         .collect();
+    // Nejdřív .exe, jehož jméno odpovídá aplikaci (Discord.exe pro
+    // Discord), pak kratší jména — instalátory a updatery mívají
+    // dlouhá („DiscordSetup", „unins000").
     exes.sort_by_key(|p| {
-        p.file_name()
-            .map(|n| n.to_string_lossy().len())
-            .unwrap_or(usize::MAX)
+        let stem = norm_name(
+            &p.file_stem()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default(),
+        );
+        let matches = !hint.is_empty()
+            && stem.len() >= 3
+            && (hint.starts_with(&stem) || stem.starts_with(hint));
+        let junk = stem.contains("unins") || stem.contains("setup") || stem.contains("update");
+        (!matches, junk, stem.len())
     });
-    for exe in exes.into_iter().take(3) {
+    for exe in exes.into_iter().take(4) {
         if let Some(i) = win_sys::icon::extract(exe.to_str()?) {
             return Some(to_icon_data(i));
         }
     }
-    // Úroveň hlouběji (bin/, app-1.2.3/ apod.) — spousta aplikací nemá
-    // .exe přímo v kořeni instalace.
-    let rd = std::fs::read_dir(dir).ok()?;
-    for sub in rd
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .take(8)
-    {
-        let Ok(rd2) = std::fs::read_dir(&sub) else {
+    // Hlouběji (bin/, app-1.2.3/, Client/…) — spousta aplikací nemá
+    // .exe přímo v kořeni instalace. Do 3 úrovní, se stejným
+    // hodnocením jmen; .dll až nakonec (bundly tam nosí ikonu).
+    let mut stack: Vec<(std::path::PathBuf, u8)> = vec![(dir.into(), 0)];
+    let mut candidates: Vec<(bool, bool, usize, std::path::PathBuf)> = Vec::new();
+    let mut dirs_seen = 0usize;
+    while let Some((d, depth)) = stack.pop() {
+        dirs_seen += 1;
+        if dirs_seen > 40 || candidates.len() > 24 {
+            break;
+        }
+        let Ok(rd) = std::fs::read_dir(&d) else {
             continue;
         };
-        let mut exes: Vec<std::path::PathBuf> = rd2
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")))
-            .collect();
-        exes.sort_by_key(|p| {
-            p.file_name()
-                .map(|n| n.to_string_lossy().len())
-                .unwrap_or(usize::MAX)
-        });
-        for exe in exes.into_iter().take(2) {
-            if let Some(i) = win_sys::icon::extract(exe.to_str()?) {
-                return Some(to_icon_data(i));
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if depth < 3 {
+                    stack.push((p, depth + 1));
+                }
+                continue;
             }
+            let is_exe = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("exe"));
+            if !is_exe {
+                continue;
+            }
+            let stem = norm_name(
+                &p.file_stem()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default(),
+            );
+            let matches = !hint.is_empty()
+                && stem.len() >= 3
+                && (hint.starts_with(&stem) || stem.starts_with(hint));
+            let junk = stem.contains("unins")
+                || stem.contains("setup")
+                || stem.contains("update")
+                || stem.contains("crashpad")
+                || stem.contains("vcredist");
+            candidates.push((!matches, junk, stem.len(), p));
+        }
+    }
+    candidates.sort_by_key(|c| (c.0, c.1, c.2));
+    for (_, _, _, exe) in candidates.into_iter().take(6) {
+        if let Some(i) = win_sys::icon::extract(exe.to_str()?) {
+            return Some(to_icon_data(i));
         }
     }
     None

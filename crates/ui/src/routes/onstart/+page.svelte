@@ -20,6 +20,7 @@
 	} from 'lucide-svelte';
 	import SystemBadge from '$lib/SystemBadge.svelte';
 	import { isSystemApp, isSystemPath } from '$lib/mandatory.js';
+	import AppIcon from '$lib/AppIcon.svelte';
 
 	/// Kolik položek se v kartě ukáže před rozkliknutím (karty tak mají
 	/// jednotnou výšku a stránka se nesype dlouhými seznamy).
@@ -221,20 +222,16 @@
 			{#each groups as g (g.label)}
 				{@const open = expanded.has(g.label)}
 				{@const visible = open ? g.items : g.items.slice(0, COLLAPSED)}
-				<section class="card grp">
+				<section class="card grp" class:collapsed={!open && g.items.length > COLLAPSED}>
 					<header class="g-head">
-						{#if g.identity_key && iconUrls[g.identity_key]}
-							<img class="app-icon" src={iconUrls[g.identity_key]} alt="" />
-						{:else}
-							<span class="app-icon ph"></span>
-						{/if}
+						<AppIcon src={g.identity_key ? iconUrls[g.identity_key] : null} name={g.label} size={20} />
 						<span class="g-name">{g.label}</span>
 						{#if isSystemApp({ identity_key: g.identity_key ?? '', display_name: g.label, publisher: g.publisher ?? '' }) || g.items.every((i) => !i.toggleable || isSystemPath(i.command))}
 							<SystemBadge compact />
 						{/if}
 						<span class="g-count label-tech">{g.items.length}</span>
 					</header>
-					<ul class="items" class:fade={!open && g.items.length > COLLAPSED}>
+					<ul class="items">
 						{#each visible as i (i.id)}
 							{@const s = srcOf(i.source)}
 							<li class="item" class:off={!i.enabled}>
@@ -478,14 +475,18 @@
 		font-size: 0.68rem;
 	}
 	/* Karty mají jednotnou výšku; delší seznam se sbalí s fadem.
-	   content-visibility: prohlížeč neskládá karty mimo výřez —
-	   bez toho scroll přes 30+ karet s ikonami trhal. */
+	   `content-visibility` platí JEN pro sbalené karty — u rozbalené
+	   by zástupná výška rozbila výpočet scrollu (nešlo doscrollovat
+	   na konec). Sbalená karta má vždy stejnou výšku, takže je
+	   zástupná hodnota přesná. */
 	.grp {
 		display: flex;
 		flex-direction: column;
+		position: relative;
+	}
+	.grp.collapsed {
 		content-visibility: auto;
-		contain-intrinsic-size: auto 260px;
-		overflow: hidden;
+		contain-intrinsic-size: auto 268px;
 	}
 	.items {
 		list-style: none;
@@ -493,23 +494,24 @@
 		padding: 0;
 		flex: 1;
 	}
-	/* Fade přes pseudoelement, ne mask-image: maska nutí prohlížeč
-	   skládat každou kartu zvlášť a scrollování 360 položek se sekalo.
-	   Negativní okraje = přesah přes padding karty, ať jde od kraje
-	   do kraje (uvnitř obsahu vypadal jako pruh doprostřed). */
-	.items.fade {
-		position: relative;
-	}
-	.items.fade::after {
+	/* Fade patří na SPODNÍ HRANU KARTY (ne nad tlačítko) — kreslí se
+	   proto na kartě, přes celou její šířku, a tlačítko „zobrazit vše"
+	   leží nad ním. Pseudoelement místo mask-image: maska nutila
+	   prohlížeč skládat každou kartu zvlášť a scroll se sekal. */
+	.grp.collapsed::after {
 		content: '';
 		position: absolute;
-		left: -16px;
-		right: -16px;
-		bottom: -1px;
-		height: 46px;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		height: 76px;
 		pointer-events: none;
-		background: linear-gradient(to bottom, rgba(22, 23, 28, 0), rgba(22, 23, 28, 0.97));
+		background: linear-gradient(to bottom, rgba(22, 23, 28, 0), rgba(22, 23, 28, 0.96) 68%);
 		border-radius: 0 0 var(--radius) var(--radius);
+	}
+	.grp .more {
+		position: relative;
+		z-index: 1;
 	}
 	.more {
 		margin-top: 6px;

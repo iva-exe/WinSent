@@ -20,6 +20,7 @@
 	} from 'lucide-svelte';
 	import SystemBadge from '$lib/SystemBadge.svelte';
 	import { isSystemApp } from '$lib/mandatory.js';
+	import AppIcon from '$lib/AppIcon.svelte';
 
 
 	let apps = $state([]);
@@ -295,11 +296,7 @@
 								class:active={selected?.identity_key === a.identity_key}
 								onclick={() => select(a)}
 							>
-								{#if iconUrls[a.identity_key]}
-									<img class="app-icon" src={iconUrls[a.identity_key]} alt="" />
-								{:else}
-									<span class="app-icon ph"></span>
-								{/if}
+								<AppIcon src={iconUrls[a.identity_key]} name={a.display_name} size={18} />
 								<span class="row-main">
 									<span class="row-title">
 										{a.display_name}
@@ -322,11 +319,7 @@
 					<p class="empty">Vyber aplikaci vlevo — uvidíš, kde všude na disku žije.</p>
 				{:else}
 					<div class="d-head">
-						{#if iconUrls[selected.identity_key]}
-							<img class="app-icon big" src={iconUrls[selected.identity_key]} alt="" />
-						{:else}
-							<span class="app-icon big ph"></span>
-						{/if}
+						<AppIcon src={iconUrls[selected.identity_key]} name={selected.display_name} size={30} />
 						<div class="d-title">
 							<h2>
 								{selected.display_name}

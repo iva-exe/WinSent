@@ -1023,8 +1023,8 @@
 				     blíž k názvu a má prostor i pro delší podpisy. -->
 				<colgroup>
 					<col style="width: 26px" />
-					<col style="min-width: 190px" />
-					<col />
+					<col style="width: 1px; white-space: nowrap" />
+					<col style="width: 100%" />
 					<col style="width: 66px" />
 					<col style="width: 62px" />
 					<col style="width: 62px" />
@@ -1620,8 +1620,11 @@
 		vertical-align: middle;
 	}
 	/* Buňka se NEOŘEZÁVÁ — ořez patří jen textu jména (.app-name),
-	   aby zámek, počet procesů a šipka zůstaly vždy vidět. */
+	   aby zámek, počet procesů a šipka zůstaly vždy vidět.
+	   width: 1px + nowrap = sloupec se stáhne na obsah, takže
+	   vydavatel začíná hned za nejdelším názvem, ne dál. */
 	.t-name {
+		white-space: nowrap;
 		max-width: 520px;
 	}
 	td.t-name {
