@@ -1,4 +1,4 @@
-//! Brána v9A — Hardware. `cargo run -p ipc --example v9check`
+//! Brána v9A — Harware. `cargo run -p ipc --example v9check`
 //!
 //! Hlídá hlavně jedno pravidlo ze SPEC kap. 15.2: **nikdy nepředstírej
 //! číslo, které nemáš.** Teplota bez zdroje je chyba, zdroj bez teploty
@@ -120,7 +120,34 @@ fn main() {
         }
     }
 
-    // 6) Rozpočet: kaskáda sahá na WMI, proto se výsledek cachuje.
+    // 6) Soupis zařízení: úplnost je cílem téhle sekce.
+    if hw.devices.len() < 30 {
+        fail += 1;
+        println!("!!  jen {} zařízení — soupis není úplný", hw.devices.len());
+    } else {
+        let classes: std::collections::BTreeSet<_> =
+            hw.devices.iter().map(|d| d.class_desc.clone()).collect();
+        let named = hw.devices.iter().filter(|d| !d.name.is_empty()).count();
+        let with_drv = hw
+            .devices
+            .iter()
+            .filter(|d| !d.driver_version.is_empty())
+            .count();
+        println!(
+            "OK  {} zařízení ve {} třídách, {named} se jménem, {with_drv} s verzí ovladače",
+            hw.devices.len(),
+            classes.len()
+        );
+        let problems: Vec<_> = hw.devices.iter().filter(|d| d.problem_code != 0).collect();
+        for p in &problems {
+            println!("    ⚠ {} — kód problému {}", p.name, p.problem_code);
+        }
+    }
+
+    // Obrazovky se tady nekontrolují: čte je UI ve své relaci
+    // (služba je v session 0 bez plochy) — test má ui/src-tauri.
+
+    // 7) Rozpočet: kaskáda sahá na WMI, proto se výsledek cachuje.
     // Druhé volání musí být prakticky zdarma.
     let t1 = Instant::now();
     let _ = ipc::client::query_hardware();

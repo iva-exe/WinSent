@@ -387,6 +387,36 @@ pub struct HardwareReport {
     pub disks: Vec<DiskHealthRow>,
     /// Svazky pro obsazenost u každého disku.
     pub volumes: Vec<VolumeRow>,
+    /// Všechna přítomná zařízení — jméno, model, výrobce, ovladač.
+    pub devices: Vec<DeviceRow>,
     /// Kdy byl přehled sestaven (unix).
     pub ts: i64,
+}
+
+/// Jedno zařízení ze systémového stromu (v9, SPEC kap. 15.1) — tentýž
+/// zdroj, ze kterého čte Správce zařízení.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceRow {
+    pub name: String,
+    pub manufacturer: String,
+    /// Technická třída („Display", „Net") a její lidský popis.
+    pub class: String,
+    pub class_desc: String,
+    /// Hardwarové ID — obsahuje VID/PID, tedy skutečný model.
+    pub hardware_id: String,
+    pub driver_version: String,
+    pub driver_date: String,
+    /// 0 = běží v pořádku; jinak kód problému (vykřičník ve Správci).
+    pub problem_code: u32,
+}
+
+/// Připojená obrazovka a její aktuální režim (v9).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayRow {
+    pub adapter: String,
+    pub monitor: String,
+    pub width: u32,
+    pub height: u32,
+    pub refresh_hz: u32,
+    pub primary: bool,
 }

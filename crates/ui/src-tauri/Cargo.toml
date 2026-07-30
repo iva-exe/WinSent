@@ -20,14 +20,16 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tauri = { version = "2", features = ["tray-icon"] }
 
-# Jen pro spuštění odinstalátoru v relaci uživatele (src/uninstall.rs).
-# UI zůstává zobrazovací — o tom, *zda* se smí odinstalovat, rozhoduje
-# validační vrstva ve službě, UI dostane hotový příkaz.
+# Win32 jen pro to, co je vázané na RELACI uživatele a služba v session 0
+# to nevidí: spuštění odinstalátoru (src/uninstall.rs) a připojené
+# obrazovky (src/display.rs). UI zůstává zobrazovací — o tom, *zda* se
+# smí něco změnit, rozhoduje validační vrstva ve službě.
 [dependencies.windows]
 workspace = true
 features = [
     "Win32_Foundation",
     "Win32_System_Threading",
+    "Win32_Graphics_Gdi",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ]

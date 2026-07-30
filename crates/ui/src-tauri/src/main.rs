@@ -3,6 +3,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod display;
 mod uninstall;
 use serde::Serialize;
 
@@ -139,6 +140,13 @@ fn compute_app_sizes(identity_key: String) -> Result<Vec<core_types::proc::AppPa
 #[tauri::command]
 fn rescan_apps() -> Result<(), String> {
     ipc::client::rescan_apps().map_err(|e| e.to_string())
+}
+
+/// Připojené obrazovky (v9). Čte je UI, ne služba — EnumDisplayDevices
+/// odpovídá za relaci volajícího a služba běží v session 0 bez plochy.
+#[tauri::command(async)]
+fn query_displays() -> Vec<core_types::proc::DisplayRow> {
+    display::displays()
 }
 
 /// Stav skenu inventáře — UI podle něj pozná, kdy má načíst nový seznam.
@@ -510,6 +518,7 @@ fn main() {
             open_path,
             query_volumes,
             query_hardware,
+            query_displays,
             build_file_index,
             search_files,
             find_duplicates,

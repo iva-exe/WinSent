@@ -10,8 +10,27 @@
 //! tepelná kaskáda sahá na WMI.
 
 use core_types::proc::{
-    BatteryInfo, BoardInfo, CpuThermalInfo, DiskHealthRow, HardwareReport, VolumeRow,
+    BatteryInfo, BoardInfo, CpuThermalInfo, DeviceRow, DiskHealthRow, HardwareReport, VolumeRow,
 };
+
+/// Všechna přítomná zařízení (SetupAPI). Cíl je úplnost — ne jen CPU
+/// a disky, ale i řadiče, klávesnice, zvukovky a síťovky, se jménem
+/// modelu a verzí ovladače.
+pub fn devices() -> Vec<DeviceRow> {
+    win_sys::devices::devices()
+        .into_iter()
+        .map(|d| DeviceRow {
+            name: d.name,
+            manufacturer: d.manufacturer,
+            class: d.class,
+            class_desc: d.class_desc,
+            hardware_id: d.hardware_id,
+            driver_version: d.driver_version,
+            driver_date: d.driver_date,
+            problem_code: d.problem_code,
+        })
+        .collect()
+}
 
 /// Statická část: deska, BIOS, stroj. Mění se leda aktualizací BIOSu.
 pub fn board() -> BoardInfo {
@@ -71,6 +90,7 @@ pub fn report(
         cpu_thermal: cpu_thermal(n_cpus),
         disks,
         volumes,
+        devices: devices(),
         ts,
     }
 }
