@@ -16,6 +16,7 @@
 	// u teploty se vždy ukazuje zdroj, jinak se řekne, že chybí.
 	import { onMount, tick as nextTick } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
+	import { describeProblem } from '$lib/devproblem.js';
 	import {
 		AudioLines,
 		BatteryCharging,
@@ -358,10 +359,18 @@
 		}, 2200);
 	}
 
+	// Pozice sekce uvnitř scrollované oblasti. Počítá se z rectů, ne
+	// z offsetTop — ten je relativní k nejbližšímu pozicovanému rodiči,
+	// což tady není `.body`, a scroll pak skákal úplně jinam.
+	function offsetIn(el) {
+		if (!el || !bodyEl) return 0;
+		return el.getBoundingClientRect().top - bodyEl.getBoundingClientRect().top + bodyEl.scrollTop;
+	}
+
 	function gotoSection(name) {
 		const el = document.getElementById('sect-' + name);
 		if (!el || !bodyEl) return;
-		bodyEl.scrollTo({ top: el.offsetTop - 6, behavior: 'smooth' });
+		bodyEl.scrollTo({ top: Math.max(0, offsetIn(el) - 2), behavior: 'smooth' });
 		activeCat = name;
 	}
 
@@ -372,11 +381,10 @@
 		rafPending = true;
 		requestAnimationFrame(() => {
 			rafPending = false;
-			const y = bodyEl.scrollTop + 12;
+			const y = bodyEl.scrollTop + 16;
 			let current = sections[0]?.name ?? '';
 			for (const s of sections) {
-				const el = document.getElementById('sect-' + s.name);
-				if (el && el.offsetTop <= y) current = s.name;
+				if (offsetIn(document.getElementById('sect-' + s.name)) <= y) current = s.name;
 			}
 			activeCat = current;
 		});
@@ -388,7 +396,7 @@
 	<header class="head">
 		<div class="head-top">
 			<div class="search">
-				<Search size={14} />
+				<Search size={16} />
 				<input placeholder="hledat zařízení nebo výrobce…" bind:value={filter} />
 				{#if filter}
 					<button class="clear" onclick={() => (filter = '')}>×</button>
@@ -399,12 +407,12 @@
 			</span>
 			{#if problems.length}
 				<button class="alarm" onclick={jumpToProblem}>
-					<TriangleAlert size={13} />
+					<TriangleAlert size={15} />
 					{problems.length}
 					{problems.length === 1 ? 'problém' : problems.length < 5 ? 'problémy' : 'problémů'}
 					<span class="alarm-go">
 						{problemIdx >= 0 ? `${problemIdx + 1}/${problems.length}` : 'ukázat'}
-						<ChevronRight size={12} />
+						<ChevronRight size={14} />
 					</span>
 				</button>
 			{/if}
@@ -412,7 +420,7 @@
 		<nav class="cats">
 			{#each sections as s (s.name)}
 				<button class="cat" class:on={activeCat === s.name} onclick={() => gotoSection(s.name)}>
-					<s.icon size={13} />
+					<s.icon size={15} />
 					{s.name}
 					<span class="cat-n">{s.count}</span>
 				</button>
@@ -427,11 +435,11 @@
 		{/if}
 
 		{#if componentRows.length}
-			<h2 class="sect" id="sect-Komponenty"><Cpu size={14} /> Komponenty</h2>
+			<h2 class="sect" id="sect-Komponenty"><Cpu size={16} /> Komponenty</h2>
 			{#each componentRows as r (r.id)}
 				<article class="item" id={r.id} class:flash={flashId === r.id} class:bad={r.problem}>
 					{#if r.kind === 'cpu'}
-						<div class="ico"><Cpu size={17} /></div>
+						<div class="ico"><Cpu size={19} /></div>
 						<div class="info">
 							<h3>{statics?.cpu_name ?? 'Procesor'}</h3>
 							<p class="vendor">{cpuVendor}</p>
@@ -468,7 +476,7 @@
 							{/if}
 						</div>
 					{:else if r.kind === 'ram'}
-						<div class="ico"><MemoryStick size={17} /></div>
+						<div class="ico"><MemoryStick size={19} /></div>
 						<div class="info">
 							<h3>Paměť</h3>
 							<p class="vendor">{statics?.ram_modules?.[0]?.manufacturer ?? '—'}</p>
@@ -491,7 +499,7 @@
 						</div>
 					{:else if r.kind === 'gpu'}
 						{@const live = isLiveGpu(r.dev)}
-						<div class="ico"><Microchip size={17} /></div>
+						<div class="ico"><Microchip size={19} /></div>
 						<div class="info">
 							<h3>{r.dev.name}</h3>
 							<p class="vendor">{r.dev.manufacturer || '—'}</p>
@@ -527,7 +535,7 @@
 							{/if}
 						</div>
 					{:else if r.kind === 'disk'}
-						<div class="ico"><HardDrive size={17} /></div>
+						<div class="ico"><HardDrive size={19} /></div>
 						<div class="info">
 							<h3>{r.disk.model || `Disk ${r.disk.index}`}</h3>
 							<p class="vendor">{diskVendor(r.disk.model)}</p>
@@ -567,7 +575,7 @@
 							{/if}
 						</div>
 					{:else if r.kind === 'board'}
-						<div class="ico"><CircuitBoard size={17} /></div>
+						<div class="ico"><CircuitBoard size={19} /></div>
 						<div class="info">
 							<h3>{hw.board.product || 'Základní deska'}</h3>
 							<p class="vendor">{hw.board.manufacturer || '—'}</p>
@@ -586,7 +594,7 @@
 						</div>
 						<div class="side"><span class="pill quiet">v pořádku</span></div>
 					{:else if r.kind === 'battery'}
-						<div class="ico"><BatteryCharging size={17} /></div>
+						<div class="ico"><BatteryCharging size={19} /></div>
 						<div class="info">
 							<h3>Baterie</h3>
 							<p class="vendor">
@@ -621,10 +629,10 @@
 		{/if}
 
 		{#if visibleDisplays.length}
-			<h2 class="sect" id="sect-Obrazovky"><Monitor size={14} /> Obrazovky</h2>
+			<h2 class="sect" id="sect-Obrazovky"><Monitor size={16} /> Obrazovky</h2>
 			{#each visibleDisplays as d, i (d.adapter + i)}
 				<article class="item">
-					<div class="ico"><Monitor size={17} /></div>
+					<div class="ico"><Monitor size={19} /></div>
 					<div class="info">
 						<h3>{d.monitor || 'Obrazovka'}</h3>
 						<p class="vendor">{d.adapter}</p>
@@ -643,15 +651,16 @@
 
 		{#each sections.filter((s) => s.name !== 'Komponenty' && s.name !== 'Obrazovky') as s (s.name)}
 			<h2 class="sect" id="sect-{s.name}">
-				<s.icon size={14} />
+				<s.icon size={16} />
 				{s.name}
 				<span class="sect-n">{s.count}</span>
 			</h2>
 			{#each deviceSections.get(s.name) ?? [] as d, i (d.name + d.hardware_id + i)}
 				{@const Ico = iconOf(d)}
 				{@const rid = `dev-${s.name}-${i}`}
+				{@const trouble = describeProblem(d.problem_code)}
 				<article class="item" id={rid} class:flash={flashId === rid} class:bad={d.problem_code}>
-					<div class="ico"><Ico size={17} /></div>
+					<div class="ico"><Ico size={19} /></div>
 					<div class="info">
 						<h3>{d.name}</h3>
 						<p class="vendor">{d.manufacturer || '—'}</p>
@@ -660,10 +669,18 @@
 							{#if d.class_desc}<span class="fact muted">{d.class_desc}</span>{/if}
 							{#if hwid(d)}<span class="fact mono muted">{hwid(d)}</span>{/if}
 						</div>
+						<!-- U rozbitého zařízení nestačí kód: musí být vidět,
+						     co se děje a co to pro uživatele znamená. -->
+						{#if trouble}
+							<p class="trouble">
+								<strong>{trouble.what}</strong>
+								{trouble.means}
+							</p>
+						{/if}
 					</div>
 					<div class="side">
 						{#if d.problem_code}
-							<span class="pill bad"><TriangleAlert size={11} /> problém {d.problem_code}</span>
+							<span class="pill bad"><TriangleAlert size={13} /> problém {d.problem_code}</span>
 						{:else}
 							<span class="pill quiet">v pořádku</span>
 						{/if}
@@ -707,10 +724,10 @@
 		gap: 8px;
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
-		padding: 7px 11px;
+		padding: 9px 13px;
 		color: var(--text-dim);
 		flex: 1;
-		max-width: 340px;
+		max-width: 360px;
 	}
 	.search input {
 		flex: 1;
@@ -720,7 +737,7 @@
 		outline: none;
 		color: var(--text);
 		font: inherit;
-		font-size: 0.82rem;
+		font-size: 0.88rem;
 	}
 	.clear {
 		background: none;
@@ -755,8 +772,8 @@
 		border-radius: 999px;
 		color: var(--danger);
 		font: inherit;
-		font-size: 0.78rem;
-		padding: 6px 8px 6px 12px;
+		font-size: 0.84rem;
+		padding: 8px 10px 8px 15px;
 		cursor: pointer;
 	}
 	.alarm:hover {
@@ -783,14 +800,14 @@
 	.cat {
 		display: inline-flex;
 		align-items: center;
-		gap: 6px;
+		gap: 7px;
 		background: none;
 		border: 1px solid var(--border);
 		border-radius: 999px;
 		color: var(--text-dim);
 		font: inherit;
-		font-size: 0.76rem;
-		padding: 5px 11px;
+		font-size: 0.84rem;
+		padding: 7px 14px;
 		cursor: pointer;
 		transition:
 			color 0.12s ease,
@@ -799,16 +816,19 @@
 	}
 	.cat:hover {
 		color: var(--text);
-		border-color: var(--border-strong, var(--border));
+		border-color: var(--border-strong);
 	}
+	/* Aktivní kategorie se pozná linkou a jasnějším textem, ne plnou
+	   bílou plochou — ta v tmavém rozhraní bije do očí. */
 	.cat.on {
-		color: var(--bg);
-		background: var(--accent);
-		border-color: var(--accent);
+		color: var(--text);
+		background: var(--surface-hover);
+		border-color: var(--border-strong);
 	}
 	.cat-n {
 		font-variant-numeric: tabular-nums;
-		opacity: 0.65;
+		font-size: 0.78rem;
+		opacity: 0.7;
 	}
 
 	/* ── Tělo ── */
@@ -828,13 +848,13 @@
 		display: flex;
 		align-items: center;
 		gap: 9px;
-		margin: 20px 0 9px;
-		padding: 7px 2px 8px;
-		font-size: 0.82rem;
+		margin: 26px 0 11px;
+		padding: 9px 2px 10px;
+		font-size: 1rem;
 		font-weight: 600;
-		letter-spacing: 0.02em;
+		letter-spacing: 0.01em;
 		color: var(--text);
-		background: linear-gradient(var(--bg) 78%, transparent);
+		background: linear-gradient(var(--bg) 80%, transparent);
 	}
 	.sect:first-child {
 		margin-top: 0;
@@ -847,7 +867,7 @@
 	}
 	.sect-n {
 		font-weight: 400;
-		font-size: 0.74rem;
+		font-size: 0.8rem;
 		color: var(--text-dim);
 		font-variant-numeric: tabular-nums;
 		background: var(--surface-hover);
@@ -858,15 +878,15 @@
 	/* ── Karta zařízení ── */
 	.item {
 		display: grid;
-		grid-template-columns: 34px minmax(0, 1fr) minmax(120px, auto);
-		gap: 12px;
+		grid-template-columns: 40px minmax(0, 1fr) minmax(140px, auto);
+		gap: 14px;
 		align-items: start;
-		padding: 11px 12px;
+		padding: 14px 16px;
 		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		margin-bottom: 6px;
+		border-radius: var(--radius-lg);
+		margin-bottom: 8px;
 		background: var(--surface);
-		scroll-margin: 16px;
+		scroll-margin: 20px;
 	}
 	.item:hover {
 		background: var(--surface-hover);
@@ -893,9 +913,9 @@
 	.ico {
 		display: grid;
 		place-items: center;
-		width: 34px;
-		height: 34px;
-		border-radius: 9px;
+		width: 40px;
+		height: 40px;
+		border-radius: 11px;
 		background: var(--surface-hover);
 		color: var(--text-dim);
 	}
@@ -910,69 +930,85 @@
 	/* Název je výrazně větší než zbytek — je to hlavní informace. */
 	.info h3 {
 		margin: 0;
-		font-size: 0.95rem;
+		font-size: 1.06rem;
 		font-weight: 600;
 		line-height: 1.3;
 		word-break: break-word;
 	}
 	.vendor {
-		margin: 1px 0 0;
-		font-size: 0.76rem;
+		margin: 3px 0 0;
+		font-size: 0.82rem;
 		color: var(--text-dim);
 	}
 	.facts {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 5px;
-		margin-top: 7px;
+		gap: 7px 8px;
+		margin-top: 9px;
 	}
 	.fact {
-		font-size: 0.73rem;
-		line-height: 1.35;
-		padding: 2px 8px;
-		border-radius: 6px;
+		font-size: 0.79rem;
+		line-height: 1.4;
+		padding: 4px 11px;
+		border-radius: 7px;
 		background: var(--surface-hover);
 		color: var(--text);
 	}
 	.fact.muted {
 		background: none;
-		padding-left: 0;
+		padding-left: 2px;
+		padding-right: 2px;
 		color: var(--text-dim);
 	}
 	.fact.mono {
 		font-family: var(--font-mono);
-		font-size: 0.68rem;
+		font-size: 0.73rem;
+	}
+
+	/* Vysvětlení poruchy — co se děje a co to znamená. */
+	.trouble {
+		margin: 9px 0 0;
+		font-size: 0.79rem;
+		line-height: 1.45;
+		color: var(--text-dim);
+		border-left: 2px solid var(--danger);
+		padding-left: 10px;
+	}
+	.trouble strong {
+		display: block;
+		color: var(--danger);
+		font-weight: 600;
 	}
 
 	.side {
 		display: flex;
 		flex-direction: column;
 		align-items: flex-end;
-		gap: 5px;
+		gap: 7px;
 		text-align: right;
 	}
 	/* Vytížení je jen číslo — grafy má Tasks, tohle není správce úloh. */
 	.metric {
-		font-size: 1.35rem;
+		font-size: 1.5rem;
 		font-weight: 600;
 		line-height: 1;
 		font-variant-numeric: tabular-nums;
 	}
 	.metric.small {
-		font-size: 1.1rem;
+		font-size: 1.25rem;
 	}
 	.metric small {
-		font-size: 0.7rem;
+		font-size: 0.78rem;
 		font-weight: 400;
 		color: var(--text-dim);
-		margin-left: 2px;
+		margin-left: 3px;
 	}
 	.pill {
 		display: inline-flex;
 		align-items: center;
-		gap: 4px;
-		font-size: 0.73rem;
-		padding: 3px 9px;
+		gap: 5px;
+		font-size: 0.79rem;
+		padding: 4px 11px;
 		border-radius: 999px;
 		border: 1px solid transparent;
 		white-space: nowrap;
@@ -993,22 +1029,21 @@
 		color: var(--text-dim);
 		background: var(--surface-hover);
 	}
-	/* Zdravé zařízení se hlásí tiše: čitelný text a malá tečka.
-	   Kdyby u 190 položek svítila zelená, byla by z barvy dekorace —
-	   a červené na jedné rozbité položce by si nikdo nevšiml. */
+	/* Zdravé zařízení je čitelně označené, ale nekřičí: zelená tečka
+	   a neutrální rámeček. Kdyby u 190 položek svítila plná zelená,
+	   byla by z barvy dekorace — a červené na jedné rozbité položce
+	   by si pak nikdo nevšiml. */
 	.pill.quiet {
 		color: var(--text-dim);
-		background: none;
-		padding-left: 0;
-		padding-right: 0;
+		background: var(--surface-hover);
+		border-color: var(--border);
 	}
 	.pill.quiet::before {
 		content: '';
-		width: 5px;
-		height: 5px;
+		width: 7px;
+		height: 7px;
 		border-radius: 50%;
 		background: var(--ok);
-		opacity: 0.55;
 	}
 	.cool {
 		color: var(--ok);

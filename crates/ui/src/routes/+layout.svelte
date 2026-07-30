@@ -11,6 +11,7 @@
 	import { page } from '$app/state';
 	import { invoke } from '@tauri-apps/api/core';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
+	import { initScale } from '$lib/uiscale.svelte.js';
 	import { daemon, startDaemonPolling } from '$lib/daemon.svelte.js';
 	import {
 		House,
@@ -104,6 +105,8 @@
 	}
 
 	onMount(() => {
+		// Zvětšení rozhraní se použije co nejdřív, ať okno neposkočí.
+		initScale();
 		startDaemonPolling();
 		async function pollUptime() {
 			try {
