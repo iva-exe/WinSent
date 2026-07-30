@@ -530,3 +530,15 @@ pub fn query_system() -> Result<SystemSnapshot, Error> {
         }),
     }
 }
+
+/// Hardwarový přehled (v9): deska, BIOS, baterie, teploty, disky.
+pub fn query_hardware() -> Result<core_types::proc::HardwareReport, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryHardware)? {
+        Response::Hardware(r) => Ok(r),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}

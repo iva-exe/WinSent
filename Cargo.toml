@@ -81,6 +81,7 @@ ipc = { path = "crates/ipc" }
 collector-proc = { path = "crates/collector-proc" }
 collector-etw = { path = "crates/collector-etw" }
 collector-crash = { path = "crates/collector-crash" }
+collector-hw = { path = "crates/collector-hw" }
 collector-inv = { path = "crates/collector-inv" }
 collector-boot = { path = "crates/collector-boot" }
 fs-index = { path = "crates/fs-index" }

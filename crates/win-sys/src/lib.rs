@@ -4,6 +4,7 @@
 //! SetupAPI, WUA, Task Scheduler (v1+) a capability probing (`caps`).
 //! v0 obsahuje jen ověření Authenticode podpisu a prioritu vlákna.
 
+pub mod battery;
 pub mod caps;
 pub mod cpuinfo;
 pub mod disk;
@@ -28,12 +29,14 @@ pub mod smart;
 pub mod smbios;
 pub mod sysinfo;
 pub mod tasksched;
+pub mod thermal;
 pub mod threading;
 pub mod trust;
 pub mod usn;
 pub mod verinfo;
 pub mod volumes;
 pub mod wic;
+pub mod wmi;
 
 /// Chyby win-sys vrstvy. Každé selhání Win32 volání nese kód, nic
 /// neselhává mlčky (SPEC kap. 22).

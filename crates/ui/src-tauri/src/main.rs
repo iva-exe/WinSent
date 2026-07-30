@@ -158,6 +158,13 @@ fn query_inv_status() -> Result<InvStatusDto, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Hardwarový přehled (v9, SPEC kap. 15) — deska, BIOS, baterie,
+/// teploty CPU se zdrojem, zdraví disků.
+#[tauri::command(async)]
+fn query_hardware() -> Result<core_types::proc::HardwareReport, String> {
+    ipc::client::query_hardware().map_err(|e| e.to_string())
+}
+
 /// Svazky + zdraví disků (v4C).
 #[derive(Debug, Serialize)]
 struct VolumesDto {
@@ -502,6 +509,7 @@ fn main() {
             query_inv_status,
             open_path,
             query_volumes,
+            query_hardware,
             build_file_index,
             search_files,
             find_duplicates,

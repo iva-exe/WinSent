@@ -550,6 +550,9 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         let fs_idx = Arc::clone(&fs_indexes);
         let cleanup_state = cleanup_ipc;
         let orch = Arc::clone(&orch);
+        // Hardwarový přehled na 5 s (v9) — tepelná kaskáda jde přes WMI.
+        let hw_cache: std::sync::Mutex<Option<(Instant, core_types::proc::HardwareReport)>> =
+            std::sync::Mutex::new(None);
         let handler: ipc::server::Handler = Arc::new(move |req| match req {
             Request::QuerySysInfo => Response::SysInfo(statics.clone()),
             Request::QueryIcon { identity_key } => {
@@ -770,6 +773,56 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     })
                     .collect();
                 Response::Volumes { volumes, health }
+            }
+            // Hardwarový přehled (v9, SPEC kap. 15). Tepelná kaskáda
+            // sahá na WMI, takže se výsledek 5 s cachuje — SPEC 15.2
+            // říká jasně: po sekundách, ne v sekundovém cyklu.
+            Request::QueryHardware => {
+                win_sys::wic::init_com_for_thread();
+                let mut cache = hw_cache.lock().expect("hw cache lock");
+                let fresh = cache
+                    .as_ref()
+                    .is_some_and(|(t, _): &(Instant, _)| t.elapsed() < Duration::from_secs(5));
+                if !fresh {
+                    let volumes = win_sys::volumes::volumes()
+                        .into_iter()
+                        .filter(|v| v.fixed)
+                        .map(|v| core_types::proc::VolumeRow {
+                            letter: v.letter,
+                            label: v.label,
+                            fs: v.fs,
+                            total_bytes: v.total_bytes,
+                            free_bytes: v.free_bytes,
+                            fixed: v.fixed,
+                            disk_index: v.disk_index,
+                        })
+                        .collect();
+                    let health = statics
+                        .disks
+                        .iter()
+                        .map(|d| {
+                            let h = win_sys::smart::nvme_health(d.index);
+                            core_types::proc::DiskHealthRow {
+                                index: d.index,
+                                model: d.model.clone(),
+                                temp_c: h.map(|x| x.temp_c),
+                                used_pct: h.map(|x| x.used_pct),
+                                spare_pct: h.map(|x| x.spare_pct),
+                                power_on_hours: h.map(|x| x.power_on_hours),
+                                critical: h.map(|x| x.critical_warning),
+                            }
+                        })
+                        .collect();
+                    let n = statics.logical_cores.max(1) as usize;
+                    let rep = collector_hw::report(n, health, volumes, unix_now());
+                    *cache = Some((Instant::now(), rep));
+                }
+                match cache.as_ref() {
+                    Some((_, rep)) => Response::Hardware(rep.clone()),
+                    None => Response::Error {
+                        message: "hardwarový přehled se nepodařilo sestavit".into(),
+                    },
+                }
             }
             // Stavba MFT indexu (sekundy) — blokuje jen toto spojení,
             // sběr dat běží dál.

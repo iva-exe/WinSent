@@ -334,3 +334,59 @@ pub struct HistProcRow {
     pub app_name: Option<String>,
     pub publisher: Option<String>,
 }
+
+/// Základní deska, firmware a stroj (v9, SPEC kap. 15.1).
+/// Prázdný řetězec = deska to nehlásí; nic se nedopočítává.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoardInfo {
+    pub manufacturer: String,
+    pub product: String,
+    pub version: String,
+    pub bios_vendor: String,
+    pub bios_version: String,
+    pub bios_date: String,
+    pub system_manufacturer: String,
+    pub system_product: String,
+}
+
+/// Stav baterie (v9, SPEC kap. 15.1). `None` u položek, které zařízení
+/// nehlásí — u desktopu chybí celá struktura.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BatteryInfo {
+    pub percent: Option<u8>,
+    pub ac_online: bool,
+    pub charging: bool,
+    pub remaining_s: Option<u32>,
+    pub design_mwh: Option<u32>,
+    pub full_mwh: Option<u32>,
+    pub cycles: Option<u32>,
+    /// Opotřebení v % (0 = jako nová). None, když chybí kapacity.
+    pub wear_pct: Option<f32>,
+}
+
+/// Tepelný stav CPU (v9, SPEC kap. 15.2). Teplota je `None`, když ji
+/// stroj nehlásí — `temp_source` vždy řekne, čemu uživatel věří.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CpuThermalInfo {
+    pub celsius: Option<f32>,
+    /// „HWiNFO" | „LibreHardwareMonitor" | „ACPI" | „nedostupné".
+    pub temp_source: String,
+    pub clock_mhz: u32,
+    pub max_mhz: u32,
+    pub throttling: bool,
+}
+
+/// Kompletní hardwarový přehled (v9, SPEC kap. 15). Skládá se ze
+/// statického inventáře (čte se jednou) a stavu, který se obnovuje.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HardwareReport {
+    pub board: BoardInfo,
+    pub battery: Option<BatteryInfo>,
+    pub cpu_thermal: CpuThermalInfo,
+    /// Zdraví disků — sdílené s v4 (SPEC 11.1), tady u komponenty.
+    pub disks: Vec<DiskHealthRow>,
+    /// Svazky pro obsazenost u každého disku.
+    pub volumes: Vec<VolumeRow>,
+    /// Kdy byl přehled sestaven (unix).
+    pub ts: i64,
+}
