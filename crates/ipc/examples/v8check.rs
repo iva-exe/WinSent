@@ -92,6 +92,55 @@ fn main() {
         Err(e) => println!("CHYBA query_apps: {e}"),
     }
 
+    // ── 5. Odinstalace: plán ANO (nespouštíme!), nesmysly NE ──
+    for (key, want_plan) in [
+        ("app:rozhodne neexistujici aplikace 999", false),
+        ("msix:Microsoft.WindowsCalculator_8wekyb3d8bbwe", false),
+        ("", false),
+    ] {
+        match ipc::client::plan_action(core_types::action::Action::UninstallApp {
+            identity_key: key.to_string(),
+        }) {
+            Ok(Err(d)) if !want_plan => println!("OK zamitnuto {key}: {:?}", d.deny_reason),
+            Ok(Ok(_)) if !want_plan => {
+                println!("SELHANI: {key} dostal plan!");
+                fails += 1;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                println!("CHYBA plan uninstall: {e}");
+                fails += 1;
+            }
+        }
+    }
+
+    // Reálná aplikace: plán se MÁ sestavit (ale neprovádíme ho).
+    if let Ok(apps) = ipc::client::query_apps() {
+        if let Some(app) = apps.iter().find(|a| {
+            a.kind == "desktop"
+                && !a.missing_install
+                && a.display_name.to_lowercase().contains("discord")
+        }) {
+            match ipc::client::plan_action(core_types::action::Action::UninstallApp {
+                identity_key: app.identity_key.clone(),
+            }) {
+                Ok(Ok(p)) => println!(
+                    "OK plan odinstalace {}: {} kroku (NEPROVADIME)",
+                    app.display_name,
+                    p.steps.len()
+                ),
+                Ok(Err(d)) => println!(
+                    "pozn.: {} nejde odinstalovat: {:?}",
+                    app.display_name, d.deny_reason
+                ),
+                Err(e) => {
+                    println!("CHYBA: {e}");
+                    fails += 1;
+                }
+            }
+        }
+    }
+
     println!("\ncelkem selhani: {fails}");
     std::process::exit(if fails == 0 { 0 } else { 1 });
 }

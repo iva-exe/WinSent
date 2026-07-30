@@ -178,6 +178,8 @@ fn plan_for(action: &Action) -> Vec<core_types::action::PlanStep> {
     match action {
         Action::KillProc { .. } => actor_proc::plan(action),
         Action::DeleteFiles { .. } => actor_file::plan(action),
+
+        Action::UninstallApp { .. } => actor_app::plan(action),
         _ => actor_toggle::plan(action),
     }
 }
@@ -194,6 +196,14 @@ fn execute_for(action: &Action) -> (bool, bool, String) {
         Action::DeleteFiles { .. } => {
             let out = actor_file::execute(action);
             let verified = out.ok && actor_file::verify(action);
+            (verified, false, out.detail)
+        }
+
+        Action::UninstallApp { .. } => {
+            let out = actor_app::execute(action);
+            // Odinstalátor mohl skončit „úspěšně", ale položku nechat —
+            // ověřuje se registr, ne jeho návratový kód.
+            let verified = out.ok && actor_app::verify(action);
             (verified, false, out.detail)
         }
         _ => {

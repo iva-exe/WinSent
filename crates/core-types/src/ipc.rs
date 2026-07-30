@@ -78,6 +78,9 @@ pub enum Request {
     QueryStartup,
     /// Kdo drží soubory (v8, Restart Manager) — „proč to nejde smazat".
     QueryHolders { paths: Vec<String> },
+
+    /// Co po aplikaci zbylo na disku (v8, SPEC 5.3) — čistě čtecí.
+    QueryLeftovers { identity_key: String },
 }
 
 /// Odpověď služba → UI.
@@ -148,6 +151,9 @@ pub enum Response {
     Startup(Vec<crate::proc::StartupRow>),
     /// Držitelé souborů (v8).
     Holders(Vec<crate::proc::HolderRow>),
+
+    /// Zbytky po odinstalaci: cesty, které na disku pořád jsou.
+    Leftovers(Vec<String>),
     /// Skupiny duplicit: (velikost, cesty).
     Duplicates(Vec<(u64, Vec<String>)>),
     /// Stav úklidu: indexace svazků (písmeno, záznamů, hotovo),

@@ -66,7 +66,9 @@ pub fn plan(action: &Action) -> Vec<PlanStep> {
             reversible: true,
         }],
         // Ukončování procesů a mazání mají vlastní exekutory.
-        Action::KillProc { .. } | Action::DeleteFiles { .. } => Vec::new(),
+        Action::KillProc { .. } | Action::DeleteFiles { .. } | Action::UninstallApp { .. } => {
+            Vec::new()
+        }
     }
 }
 
@@ -232,11 +234,13 @@ pub fn execute(action: &Action) -> ExecOutcome {
         },
         // Kill a mazání patří jiným exekutorům — sem se nikdy
         // nedostanou (orchestrátor vybírá podle typu akce).
-        Action::KillProc { .. } | Action::DeleteFiles { .. } => ExecOutcome {
-            ok: false,
-            rolled_back: false,
-            detail: "špatný exekutor pro ukončení procesu".into(),
-        },
+        Action::KillProc { .. } | Action::DeleteFiles { .. } | Action::UninstallApp { .. } => {
+            ExecOutcome {
+                ok: false,
+                rolled_back: false,
+                detail: "špatný exekutor pro ukončení procesu".into(),
+            }
+        }
     }
 }
 
@@ -251,7 +255,7 @@ pub fn verify(action: &Action) -> bool {
         Action::CheckProc { .. } => true,
         // Přečíst ZNOVU z OS — nikdy se netvářit, že zápis prošel.
         Action::StartupToggle { id, on } => read_startup_state(id) == Some(*on),
-        Action::KillProc { .. } | Action::DeleteFiles { .. } => false,
+        Action::KillProc { .. } | Action::DeleteFiles { .. } | Action::UninstallApp { .. } => false,
     }
 }
 
@@ -266,7 +270,7 @@ pub fn reversible_hint(action: &Action) -> Option<String> {
             if *on { "vypnuto" } else { "zapnuto" }
         )),
         // Ukončený proces se nevrátí; u mazání hint dodá actor-file.
-        Action::KillProc { .. } | Action::DeleteFiles { .. } => None,
+        Action::KillProc { .. } | Action::DeleteFiles { .. } | Action::UninstallApp { .. } => None,
     }
 }
 

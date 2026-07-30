@@ -34,6 +34,10 @@ pub enum Action {
     /// T1: smazání souborů DO KOŠE (v8, SPEC 18.2). Vratné vrácením
     /// z koše, ale pro uživatele je to „mazání" → vždy s potvrzením.
     DeleteFiles { paths: Vec<String> },
+    /// T1: odinstalace aplikace jejím OFICIÁLNÍM odinstalátorem
+    /// (v8, SPEC 5.3). Příkaz si vrstva načte sama z registru —
+    /// UI ho neposílá, aby nešel podvrhnout.
+    UninstallApp { identity_key: String },
     /// T0: startup položka on/off (v6, SPEC kap. 7). Vratná —
     /// zápis přes StartupApproved / Enabled / start typ služby,
     /// NIKDY mazání hodnoty.
@@ -52,7 +56,8 @@ impl Action {
             Action::TestOp { .. }
             | Action::CheckProc { .. }
             | Action::KillProc { .. }
-            | Action::DeleteFiles { .. } => ActionClass::T1,
+            | Action::DeleteFiles { .. }
+            | Action::UninstallApp { .. } => ActionClass::T1,
         }
     }
 
@@ -71,6 +76,8 @@ impl Action {
                 "pid {pid} @{create_time}{}",
                 if *tree { " (strom)" } else { "" }
             ),
+            Action::UninstallApp { identity_key } => identity_key.clone(),
+
             Action::DeleteFiles { paths } => match paths.len() {
                 0 => "(nic)".into(),
                 1 => paths[0].clone(),
@@ -88,6 +95,7 @@ impl Action {
             Action::StartupToggle { .. } => "startup_toggle",
             Action::KillProc { .. } => "kill",
             Action::DeleteFiles { .. } => "delete",
+            Action::UninstallApp { .. } => "uninstall",
         }
     }
 }

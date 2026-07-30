@@ -26,6 +26,7 @@ validate = { workspace = true }
 actor-toggle = { workspace = true }
 actor-proc = { workspace = true }
 actor-file = { workspace = true }
+actor-app = { workspace = true }
 windows-service = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

@@ -403,6 +403,18 @@ pub fn query_holders(paths: Vec<String>) -> Result<Vec<core_types::proc::HolderR
     }
 }
 
+/// Co po aplikaci zbylo na disku (v8).
+pub fn query_leftovers(identity_key: String) -> Result<Vec<String>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryLeftovers { identity_key })? {
+        Response::Leftovers(paths) => Ok(paths),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Stav auto-úklidu (v4E): indexace, běh analýzy, výsledek.
 #[allow(clippy::type_complexity)]
 pub fn query_cleanup() -> Result<

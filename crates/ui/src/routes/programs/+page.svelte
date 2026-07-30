@@ -224,6 +224,54 @@
 		}
 	}
 
+	// ── Odinstalace (v8, SPEC 5.3): oficiální odinstalátor přes
+	// validační vrstvu, po něm seznam zbytků k ruční revizi.
+	let uninstPlan = $state(null); // { plan | deny, app }
+	let uninstBusy = $state(false);
+	let uninstToast = $state(null);
+	let leftovers = $state(null); // { app, paths } po dokončení
+
+	async function askUninstall(app) {
+		uninstBusy = true;
+		try {
+			const r = await invoke('plan_uninstall', { identityKey: app.identity_key });
+			uninstPlan = r.plan_id != null ? { plan: r, app } : { deny: r, app };
+		} catch (e) {
+			uninstToast = { kind: 'deny', text: String(e) };
+		}
+		uninstBusy = false;
+	}
+
+	async function confirmUninstall() {
+		if (!uninstPlan?.plan || uninstBusy) return;
+		uninstBusy = true;
+		const app = uninstPlan.app;
+		try {
+			const r = await invoke('execute_plan', { planId: uninstPlan.plan.plan_id });
+			if (r.verdict === 'allow' && r.outcome === 'ok') {
+				uninstToast = { kind: 'ok', text: `${app.display_name} odinstalováno` };
+				// Co po aplikaci zbylo — ukázat, ne mazat.
+				try {
+					const paths = await invoke('query_leftovers', { identityKey: app.identity_key });
+					if (paths.length) leftovers = { app, paths };
+				} catch {
+					/* zbytky se nepodařilo zjistit */
+				}
+				load();
+			} else {
+				uninstToast = {
+					kind: 'deny',
+					text: r.deny_reason ?? `odinstalace neproběhla (${r.outcome})`
+				};
+			}
+		} catch (e) {
+			uninstToast = { kind: 'deny', text: String(e) };
+		}
+		uninstBusy = false;
+		uninstPlan = null;
+		setTimeout(() => (uninstToast = null), 6000);
+	}
+
 	// „x procesů běží" → Tasks se zaskrolováním a probliknutím řádku.
 	function gotoRunning(key) {
 		goto('/tasks?hl=' + encodeURIComponent(key));
@@ -358,6 +406,16 @@
 							<Scale size={14} />
 							{sizing ? 'počítám velikosti…' : totalSize != null ? fmtSize(totalSize) : '—'}
 						</span>
+						{#if selected.kind === 'desktop' && !isSystemApp(selected)}
+							<button
+								class="uninst-btn"
+								disabled={uninstBusy}
+								title="Spustí oficiální odinstalátor aplikace"
+								onclick={() => askUninstall(selected)}
+							>
+								<PackageX size={14} /> Odinstalovat
+							</button>
+						{/if}
 					</div>
 
 					{#if map.length === 0}
@@ -396,6 +454,66 @@
 				{/if}
 			</section>
 		</div>
+	{/if}
+
+	<!-- ── Odinstalace: plán → potvrzení (v8, T1) ── -->
+	{#if uninstPlan}
+		<div class="dlg-backdrop" role="presentation" onclick={() => (uninstPlan = null)} onkeydown={() => {}}>
+			<div class="dlg" role="dialog" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
+				{#if uninstPlan.deny}
+					<h2>Nelze odinstalovat</h2>
+					<p class="d-why">{uninstPlan.deny.deny_reason}</p>
+					<div class="d-actions">
+						<button class="d-btn" onclick={() => (uninstPlan = null)}>Zavřít</button>
+					</div>
+				{:else}
+					<h2>Odinstalovat {uninstPlan.app.display_name}?</h2>
+					<ul class="d-steps">
+						{#each uninstPlan.plan.steps as s, i (i)}
+							<li>{s.description}</li>
+						{/each}
+					</ul>
+					<p class="d-note">
+						Odinstalátor je od výrobce aplikace — jeho okno a dialogy jsou jeho, ne naše.
+						Winsent po něm jen zkontroluje, co zbylo.
+					</p>
+					<div class="d-actions">
+						<button class="d-btn" onclick={() => (uninstPlan = null)}>Zrušit</button>
+						<button class="d-btn primary" disabled={uninstBusy} onclick={confirmUninstall}>
+							{uninstBusy ? 'odinstalovávám…' : 'Spustit odinstalátor'}
+						</button>
+					</div>
+				{/if}
+			</div>
+		</div>
+	{/if}
+
+	<!-- ── Zbytky po odinstalaci: ukázat, nemazat ── -->
+	{#if leftovers}
+		<div class="dlg-backdrop" role="presentation" onclick={() => (leftovers = null)} onkeydown={() => {}}>
+			<div class="dlg" role="dialog" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
+				<h2>Po odinstalaci zbylo {leftovers.paths.length} položek</h2>
+				<p class="d-note">
+					Odinstalátor je nechal na disku. Často jsou to tvoje data — profily, nastavení,
+					uložené pozice ve hře. Projdi si je a smaž jen to, co opravdu nechceš.
+				</p>
+				<ul class="d-steps">
+					{#each leftovers.paths as p (p)}
+						<li>
+							<button class="left-path mono" onclick={() => openPath(p)} title="Otevřít v Průzkumníku"
+								>{p}</button
+							>
+						</li>
+					{/each}
+				</ul>
+				<div class="d-actions">
+					<button class="d-btn" onclick={() => (leftovers = null)}>Zavřít</button>
+				</div>
+			</div>
+		</div>
+	{/if}
+	{#if uninstToast}
+		<div class="dlg-toast {uninstToast.kind}">{uninstToast.text}</div>
 	{/if}
 </div>
 
@@ -514,6 +632,124 @@
 		color: var(--text);
 	}
 	/* Aplikace, po které zbyl jen záznam — instalační složka je pryč. */
+	/* Odinstalace + dialogy (stejný jazyk jako Files/Tasks) */
+	.uninst-btn {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		background: var(--panel);
+		border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border));
+		border-radius: var(--radius-sm);
+		color: var(--warn);
+		font: inherit;
+		font-size: 0.78rem;
+		padding: 6px 12px;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.uninst-btn:hover {
+		border-color: var(--warn);
+	}
+	.uninst-btn:disabled {
+		opacity: 0.6;
+		cursor: wait;
+	}
+	.dlg-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(8, 9, 11, 0.62);
+		display: grid;
+		place-items: center;
+		z-index: 40;
+	}
+	.dlg {
+		width: min(620px, 92vw);
+		background: #16171c;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-lg);
+		padding: 20px 22px;
+	}
+	.dlg h2 {
+		font-size: 1.05rem;
+		margin-bottom: 10px;
+	}
+	.d-steps {
+		list-style: none;
+		margin: 0 0 12px;
+		padding: 0;
+		max-height: 42vh;
+		overflow-y: auto;
+		font-size: 0.84rem;
+	}
+	.d-steps li {
+		padding: 5px 0;
+		border-bottom: 1px dashed var(--border);
+		word-break: break-all;
+	}
+	.left-path {
+		background: none;
+		border: none;
+		color: var(--text);
+		font: inherit;
+		font-size: 0.8rem;
+		text-align: left;
+		cursor: pointer;
+		padding: 0;
+		word-break: break-all;
+	}
+	.left-path:hover {
+		color: var(--accent);
+		text-decoration: underline;
+	}
+	.d-why {
+		color: var(--danger);
+		font-size: 0.88rem;
+		margin-bottom: 12px;
+	}
+	.d-note {
+		font-size: 0.8rem;
+		color: var(--text-faint);
+		margin-bottom: 14px;
+		line-height: 1.5;
+	}
+	.d-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+	}
+	.d-btn {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text);
+		font: inherit;
+		font-size: 0.84rem;
+		padding: 7px 14px;
+		cursor: pointer;
+	}
+	.d-btn.primary {
+		border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+		color: var(--warn);
+	}
+	.dlg-toast {
+		position: fixed;
+		bottom: 18px;
+		left: 50%;
+		transform: translateX(-50%);
+		padding: 9px 16px;
+		border-radius: var(--radius);
+		background: #16171c;
+		border: 1px solid var(--border-strong);
+		font-size: 0.84rem;
+		z-index: 50;
+	}
+	.dlg-toast.ok {
+		color: var(--ok);
+	}
+	.dlg-toast.deny {
+		color: var(--danger);
+	}
+
 	.ghost-badge {
 		display: inline-flex;
 		align-items: center;

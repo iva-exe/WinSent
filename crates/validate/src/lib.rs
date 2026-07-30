@@ -170,6 +170,35 @@ pub fn validate(action: &Action, ctx: &mut LiveContext) -> Verdict {
             Verdict::Allow
         }
 
+        // ── T1: odinstalace oficiálním odinstalátorem (v8, SPEC 5.3).
+        // Příkaz se čte ČERSTVĚ z registru — UI ho neposílá, takže ho
+        // nejde podvrhnout; ověřuje se i existence spouštěné binárky.
+        Action::UninstallApp { identity_key } => {
+            let Some(name) = identity_key.strip_prefix("app:") else {
+                return Verdict::deny(
+                    "odinstalovat jde jen klasicky nainstalovaný program (ne Store aplikaci)",
+                );
+            };
+            if name.trim().is_empty() {
+                return Verdict::deny("prázdný identifikátor aplikace");
+            }
+            match uninstall_command(name) {
+                None => Verdict::deny(format!(
+                    "„{name}“ nemá v registru odinstalační příkaz — odinstalovat ho odsud nelze"
+                )),
+                Some(cmd) => {
+                    // Binárka odinstalátoru musí existovat teď.
+                    match exe_of_command(&cmd) {
+                        Some(exe) if std::path::Path::new(&exe).exists() => Verdict::Allow,
+                        Some(exe) => Verdict::deny(format!(
+                            "odinstalátor na disku není: {exe} — zbyl jen záznam v registru"
+                        )),
+                        None => Verdict::deny(format!("nečitelný odinstalační příkaz: {cmd}")),
+                    }
+                }
+            }
+        }
+
         // ── T1: ukončení procesu (v7). Stejná kontrola jako CheckProc
         // + zákaz sebevraždy: démon nesmí zabít sám sebe (přišli
         // bychom o monitoring i o auditní zápis výsledku).
@@ -306,6 +335,68 @@ fn service_start_type(name: &str) -> Option<u64> {
         &format!(r"SYSTEM\CurrentControlSet\Services\{name}"),
         "Start",
     )
+}
+
+/// Odinstalační příkaz aplikace z registru (čerstvě, dle DisplayName).
+/// Preferuje tichou variantu. `pub` — používá ho i exekutor, aby obě
+/// strany viděly TÝŽ příkaz (žádná cesta okolo vrstvy).
+pub fn uninstall_command(display_name: &str) -> Option<String> {
+    use win_sys::registry::{
+        enum_subkeys, read_string, read_u64, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+    };
+    let want = display_name.trim().to_ascii_lowercase();
+    for (root, base) in [
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+        (
+            HKEY_CURRENT_USER,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+    ] {
+        for sub in enum_subkeys(root, base) {
+            let key = format!("{base}\\{sub}");
+            let Some(name) = read_string(root, &key, "DisplayName") else {
+                continue;
+            };
+            if name.trim().to_ascii_lowercase() != want {
+                continue;
+            }
+            // Systémové komponenty se odsud neodinstalovávají.
+            if read_u64(root, &key, "SystemComponent") == Some(1) {
+                return None;
+            }
+            if let Some(q) = read_string(root, &key, "QuietUninstallString") {
+                if !q.trim().is_empty() {
+                    return Some(q);
+                }
+            }
+            if let Some(u) = read_string(root, &key, "UninstallString") {
+                if !u.trim().is_empty() {
+                    return Some(u);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Cesta k .exe z příkazové řádky (s uvozovkami i bez).
+pub fn exe_of_command(cmd: &str) -> Option<String> {
+    let cmd = cmd.trim();
+    let path = if let Some(rest) = cmd.strip_prefix('"') {
+        rest.split('"').next()?
+    } else {
+        let lc = cmd.to_ascii_lowercase();
+        let end = lc.find(".exe")? + 4;
+        &cmd[..end]
+    };
+    (!path.trim().is_empty()).then(|| path.to_string())
 }
 
 /// Cesty, které se NIKDY nesmí mazat (SPEC 18.2). Vrací důvod

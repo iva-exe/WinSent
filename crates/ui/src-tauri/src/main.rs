@@ -247,6 +247,23 @@ fn plan_delete(paths: Vec<String>) -> Result<PlanOrDeny, String> {
         .map_err(|e| e.to_string())
 }
 
+/// T1 plán odinstalace (v8) — vrací kroky k potvrzení, nebo deny.
+#[tauri::command(async)]
+fn plan_uninstall(identity_key: String) -> Result<PlanOrDeny, String> {
+    ipc::client::plan_action(core_types::action::Action::UninstallApp { identity_key })
+        .map(|r| match r {
+            Ok(p) => PlanOrDeny::Plan(p),
+            Err(d) => PlanOrDeny::Deny(d),
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Co po aplikaci zbylo na disku (v8).
+#[tauri::command(async)]
+fn query_leftovers(identity_key: String) -> Result<Vec<String>, String> {
+    ipc::client::query_leftovers(identity_key).map_err(|e| e.to_string())
+}
+
 /// Auditní záznamy (v5) — historie zásahů do systému.
 #[tauri::command]
 fn query_audit(limit: u32) -> Result<Vec<core_types::action::AuditRow>, String> {
@@ -380,6 +397,8 @@ fn main() {
             query_audit,
             plan_kill,
             plan_delete,
+            plan_uninstall,
+            query_leftovers,
             query_holders,
             execute_plan
         ])

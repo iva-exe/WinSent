@@ -823,6 +823,23 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     message: format!("Restart Manager selhal: {e}"),
                 },
             },
+            // Co po aplikaci zbylo (v8, SPEC 5.3): mapa souborů proti
+            // disku. Čistě čtecí — mazání je samostatné rozhodnutí.
+            Request::QueryLeftovers { identity_key } => {
+                let map = {
+                    let conn = read_conn.lock().expect("read conn lock poisoned");
+                    store::apps::app_map(&conn, &identity_key)
+                };
+                match map {
+                    Ok(rows) => {
+                        let paths: Vec<String> = rows.into_iter().map(|p| p.path).collect();
+                        Response::Leftovers(actor_app::leftovers(&paths))
+                    }
+                    Err(e) => Response::Error {
+                        message: format!("čtení mapy souborů selhalo: {e}"),
+                    },
+                }
+            }
             // Stav auto-úklidu (v4E) — progres indexace + výsledek.
             Request::QueryCleanup => {
                 let c = cleanup_state.lock().expect("cleanup lock");
