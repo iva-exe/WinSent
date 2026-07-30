@@ -104,6 +104,12 @@ toml = "0.8"
 notify = "7"
 ctrlc = "3"
 
+[profile.dev]
+# Plné ladicí symboly dělaly z target/ desítky GB (windows-rs sám 18 GB
+# v deps + 13 GB inkrementální cache). Řádkové tabulky stačí na čitelné
+# backtraces; krokový debugger na projektu nepoužíváme (SPEC: logy).
+debug = "line-tables-only"
+
 [profile.release]
 # Menší binárka služby; panic=abort ať Service Recovery restart funguje i při panice.
 lto = "thin"

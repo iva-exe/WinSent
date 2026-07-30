@@ -119,10 +119,14 @@ impl Orchestrator {
             steps,
             expires_ts: unix_now() + PLAN_TTL_S,
         };
-        self.plans
-            .lock()
-            .expect("plans lock")
-            .insert(plan.plan_id, plan.clone());
+        let mut plans = self.plans.lock().expect("plans lock");
+        // Úklid při vkládání: plán, který uživatel nikdy nepotvrdil, by
+        // jinak v mapě zůstal navždy. Malé, ale bez stropu — a data
+        // nástroje strop mít musí (SPEC 2.3).
+        let now = unix_now();
+        plans.retain(|_, p| p.expires_ts >= now);
+        plans.insert(plan.plan_id, plan.clone());
+        drop(plans);
         Ok(plan)
     }
 

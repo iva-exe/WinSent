@@ -91,6 +91,63 @@ fn run_service() -> Result<(), Error> {
     result.map_err(Error::from)
 }
 
+/// Strop jednoho log souboru. Přes limit se svc.log přejmenuje na
+/// svc.log.1 (starší .1 se zahodí) — celkem tedy nejvýš ~16 MB.
+/// Bez rotace rostl log append-only donekonečna; data nástroje musí
+/// mít strop vždy (SPEC kap. 2.3).
+const LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Zapisovač s rotací podle velikosti. Velikost se počítá při zápisu,
+/// takže rotace funguje i za dlouhého běhu služby, ne jen při startu.
+struct RotatingLog {
+    path: std::path::PathBuf,
+    file: std::fs::File,
+    written: u64,
+}
+
+impl RotatingLog {
+    fn open(path: std::path::PathBuf) -> std::io::Result<RotatingLog> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        let written = file.metadata().map(|m| m.len()).unwrap_or(0);
+        Ok(RotatingLog {
+            path,
+            file,
+            written,
+        })
+    }
+
+    fn rotate(&mut self) -> std::io::Result<()> {
+        let old = self.path.with_extension("log.1");
+        // Selhání přejmenování (soubor drží čtečka) rotaci jen odloží.
+        let _ = std::fs::remove_file(&old);
+        let _ = std::fs::rename(&self.path, &old);
+        self.file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        self.written = 0;
+        Ok(())
+    }
+}
+
+impl std::io::Write for RotatingLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.written > LOG_MAX_BYTES {
+            self.rotate()?;
+        }
+        let n = std::io::Write::write(&mut self.file, buf)?;
+        self.written += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(&mut self.file)
+    }
+}
+
 /// Logování do souboru — služba v session 0 nemá stdout.
 /// Selhání logování nesmí zabránit startu služby (horší než bez logů).
 fn init_file_logging() {
@@ -99,11 +156,7 @@ fn init_file_logging() {
     if std::fs::create_dir_all(&log_dir).is_err() {
         return;
     }
-    let Ok(file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_dir.join("svc.log"))
-    else {
+    let Ok(log) = RotatingLog::open(log_dir.join("svc.log")) else {
         return;
     };
 
@@ -112,7 +165,7 @@ fn init_file_logging() {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
-        .with_writer(Mutex::new(file))
+        .with_writer(Mutex::new(log))
         .with_ansi(false)
         .try_init();
 }

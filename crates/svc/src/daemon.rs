@@ -64,6 +64,12 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     // vývoje nepodepsané → jen varování; fatální bude s code signingem (v11).
     crate::integrity::report_own_binaries();
 
+    // Úklid archivů černé skříňky hned při startu — ne až při dalším
+    // pádu. Nahromaděné 64MB soubory z minula musí zmizet teď.
+    if let Ok(dir) = store::data_dir() {
+        prune_incident_etls(&dir);
+    }
+
     // Konfigurace: načíst (případně založit default soubor) + hot-reload.
     let cfg_path = store::data_dir()?.join("config.toml");
     let cfg: Arc<RwLock<Config>> = Arc::new(RwLock::new(crate::config::load_or_create(&cfg_path)?));
@@ -1311,11 +1317,45 @@ fn archive_blackbox(ts: i64) -> Option<String> {
         return None;
     }
     let dst = dir.join(format!("incident-{ts}.etl"));
-    match std::fs::rename(&src, &dst) {
+    let out = match std::fs::rename(&src, &dst) {
         Ok(()) => Some(dst.to_string_lossy().into_owned()),
         Err(e) => {
             tracing::warn!(error = %e, "archivace černé skříňky selhala");
             None
+        }
+    };
+    prune_incident_etls(&dir);
+    out
+}
+
+/// Kolik nejnovějších archivů černé skříňky se drží. Každý má 64 MB
+/// (velikost bufferu autologgeru) — tři znamenají strop 192 MB.
+const KEEP_INCIDENT_ETLS: usize = 3;
+
+/// Smaže staré archivy `incident-*.etl`. Bez tohohle rostla složka
+/// dat s každým pádem o 64 MB DONEKONEČNA — data nástroje musí mít
+/// strop vždy (SPEC kap. 2.3: rozpočet je podmínka). Záznam incidentu
+/// v DB zůstává; detail jen přijde o možnost číst syrové ETW okno.
+fn prune_incident_etls(dir: &std::path::Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut etls: Vec<std::path::PathBuf> = rd
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("incident-") && n.ends_with(".etl"))
+        })
+        .collect();
+    // Časové razítko je v názvu — řazení podle názvu je řazení podle času.
+    etls.sort();
+    while etls.len() > KEEP_INCIDENT_ETLS {
+        let old = etls.remove(0);
+        match std::fs::remove_file(&old) {
+            Ok(()) => tracing::info!(file = %old.display(), "starý archiv černé skříňky smazán"),
+            Err(e) => tracing::warn!(error = %e, "archiv černé skříňky se nepodařilo smazat"),
         }
     }
 }

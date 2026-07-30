@@ -392,19 +392,12 @@
 </script>
 
 <div class="page">
-	<!-- ── Pevná hlavička: nescrolluje pryč ── -->
+	<!-- ── Pevná hlavička: nescrolluje pryč. Stejná stavba jako
+	     ostatní sekce: h1 · údaje · filtr vpravo. ── -->
 	<header class="head">
 		<div class="head-top">
-			<div class="search">
-				<Search size={17} />
-				<input placeholder="hledat zařízení nebo výrobce…" bind:value={filter} />
-				{#if filter}
-					<button class="clear" onclick={() => (filter = '')}>×</button>
-				{/if}
-			</div>
-			<span class="total">
-				<strong>{hw?.devices?.length ?? 0}</strong> zařízení
-			</span>
+			<h1>Hardware</h1>
+			<span class="total label-tech">{hw?.devices?.length ?? 0} zařízení</span>
 			{#if problems.length}
 				<button class="alarm" onclick={jumpToProblem}>
 					<TriangleAlert size={16} />
@@ -416,13 +409,20 @@
 					</span>
 				</button>
 			{/if}
+			<div class="filter">
+				<Search size={16} />
+				<input placeholder="hledat zařízení nebo výrobce…" bind:value={filter} />
+				{#if filter}
+					<button class="clear" onclick={() => (filter = '')}>×</button>
+				{/if}
+			</div>
 		</div>
 		<nav class="cats">
 			{#each sections as s (s.name)}
 				<button class="cat" class:on={activeCat === s.name} onclick={() => gotoSection(s.name)}>
 					<s.icon size={16} />
 					{s.name}
-					<span class="cat-n">{s.count}</span>
+					<i>{s.count}</i>
 				</button>
 			{/each}
 		</nav>
@@ -724,18 +724,26 @@
 		align-items: center;
 		gap: 12px;
 	}
-	.search {
+	/* h1 a filtr stejné jako v ostatních sekcích (Programs, On start) —
+	   jedna aplikace, jeden tvar hlavičky. */
+	.head-top h1 {
+		font-size: 1.2rem;
+		font-weight: 600;
+		margin: 0;
+	}
+	.filter {
+		margin-left: auto;
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		gap: 6px;
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
-		padding: 9px 13px;
+		padding: 5px 9px;
 		color: var(--text-dim);
-		flex: 1;
-		max-width: 360px;
+		background: var(--surface);
+		width: 300px;
 	}
-	.search input {
+	.filter input {
 		flex: 1;
 		min-width: 0;
 		background: none;
@@ -743,7 +751,7 @@
 		outline: none;
 		color: var(--text);
 		font: inherit;
-		font-size: 0.88rem;
+		font-size: 0.85rem;
 	}
 	.clear {
 		background: none;
@@ -758,13 +766,7 @@
 		color: var(--text);
 	}
 	.total {
-		font-size: 0.8rem;
-		color: var(--text-dim);
 		font-variant-numeric: tabular-nums;
-	}
-	.total strong {
-		color: var(--text);
-		font-weight: 600;
 	}
 
 	/* Skok na problém — opakovaným klikáním se mezi nimi cykluje. */
@@ -803,38 +805,40 @@
 		padding-bottom: 10px;
 		border-bottom: 1px solid var(--border);
 	}
+	/* Stejný tvar jako segmentové přepínače v Programs a On start:
+	   hranatý obdélník, aktivní = surface-hover + vnitřní rámeček,
+	   počet mono ve faint barvě. Jedna aplikace, jeden jazyk. */
 	.cat {
 		display: inline-flex;
 		align-items: center;
 		gap: 7px;
-		background: none;
+		background: var(--surface);
 		border: 1px solid var(--border);
-		border-radius: 999px;
+		border-radius: var(--radius-sm);
 		color: var(--text-dim);
 		font: inherit;
-		font-size: 0.84rem;
-		padding: 7px 14px;
+		font-size: 0.82rem;
+		padding: 5px 11px;
 		cursor: pointer;
 		transition:
 			color 0.12s ease,
-			border-color 0.12s ease,
-			background 0.12s ease;
+			background 0.12s ease,
+			box-shadow 0.12s ease;
 	}
 	.cat:hover {
 		color: var(--text);
-		border-color: var(--border-strong);
 	}
-	/* Aktivní kategorie se pozná linkou a jasnějším textem, ne plnou
-	   bílou plochou — ta v tmavém rozhraní bije do očí. */
 	.cat.on {
 		color: var(--text);
 		background: var(--surface-hover);
-		border-color: var(--border-strong);
+		box-shadow: inset 0 0 0 1px var(--border-strong);
 	}
-	.cat-n {
+	.cat i {
+		font-style: normal;
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		color: var(--text-faint);
 		font-variant-numeric: tabular-nums;
-		font-size: 0.78rem;
-		opacity: 0.7;
 	}
 
 	/* ── Tělo ── */
@@ -858,6 +862,8 @@
 
 	/* Nadpis kategorie zůstává nalepený nahoře, dokud jeho sekce
 	   scrolluje — je pořád vidět, ve které části seznamu uživatel je. */
+	/* Typografie jako skupinové popisky v Programs a Files (label-tech):
+	   mono, verzálky, prostrkané — jazyk celé aplikace. */
 	.sect {
 		position: sticky;
 		top: 0;
@@ -867,10 +873,12 @@
 		gap: 9px;
 		margin: 0 0 11px;
 		padding: 9px 2px 10px;
-		font-size: 1rem;
-		font-weight: 600;
-		letter-spacing: 0.01em;
-		color: var(--text);
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-dim);
 		background: linear-gradient(var(--bg) 80%, transparent);
 	}
 	.sect::after {
@@ -881,12 +889,9 @@
 	}
 	.sect-n {
 		font-weight: 400;
-		font-size: 0.8rem;
-		color: var(--text-dim);
+		font-size: 0.72rem;
+		color: var(--text-faint);
 		font-variant-numeric: tabular-nums;
-		background: var(--surface-hover);
-		border-radius: 999px;
-		padding: 1px 8px;
 	}
 
 	/* ── Karta zařízení ── */
