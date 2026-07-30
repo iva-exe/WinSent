@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -49,6 +49,9 @@ pub enum Request {
     ComputeAppSizes { identity_key: String },
     /// Vyžádá nový sken inventáře na pozadí.
     RescanApps,
+    /// Jak je na tom sken inventáře. Sken trvá přes 20 s — bez tohohle
+    /// by „Obnovit" v UI jen mlčelo a seznam by se změnil až někdy.
+    QueryInvStatus,
     /// Svazky + zdraví fyzických disků (v4, SPEC kap. 11.1).
     QueryVolumes,
     /// Postaví MFT index svazku (sekundy; index drží služba v paměti
@@ -142,6 +145,12 @@ pub enum Response {
     AppMap(Vec<crate::proc::AppPathRow>),
     /// Potvrzení požadavku bez dat (RescanApps).
     Ack,
+    /// Stav skenu inventáře: běží zrovna, a kdy naposledy dopadl zápis
+    /// do databáze (unix; 0 = od startu služby zatím ani jednou).
+    InvStatus {
+        scanning: bool,
+        last_scan_ts: i64,
+    },
     /// Svazky + zdraví disků (v4).
     Volumes {
         volumes: Vec<crate::proc::VolumeRow>,

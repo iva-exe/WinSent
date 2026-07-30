@@ -141,6 +141,23 @@ fn rescan_apps() -> Result<(), String> {
     ipc::client::rescan_apps().map_err(|e| e.to_string())
 }
 
+/// Stav skenu inventáře — UI podle něj pozná, kdy má načíst nový seznam.
+#[derive(Debug, Serialize)]
+struct InvStatusDto {
+    scanning: bool,
+    last_scan_ts: i64,
+}
+
+#[tauri::command(async)]
+fn query_inv_status() -> Result<InvStatusDto, String> {
+    ipc::client::query_inv_status()
+        .map(|(scanning, last_scan_ts)| InvStatusDto {
+            scanning,
+            last_scan_ts,
+        })
+        .map_err(|e| e.to_string())
+}
+
 /// Svazky + zdraví disků (v4C).
 #[derive(Debug, Serialize)]
 struct VolumesDto {
@@ -482,6 +499,7 @@ fn main() {
             query_app_map,
             compute_app_sizes,
             rescan_apps,
+            query_inv_status,
             open_path,
             query_volumes,
             build_file_index,

@@ -3,9 +3,16 @@
 //! v0 skládá: kontrolu integrity, config s hot-reloadem, SQLite store
 //! s retenční smyčkou, IPC server a heartbeat „žiju“ 1×/s.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+
+/// Kdy naposledy dopadl zápis inventáře do DB (unix, 0 = zatím nikdy)
+/// a jestli sken zrovna běží. Sken trvá přes 20 s; bez tohohle signálu
+/// by „Obnovit" v UI jen mlčelo a seznam by se změnil až někdy potom.
+/// Jeden démon = jeden proces, proto stačí statické proměnné.
+static INV_WRITTEN_TS: AtomicI64 = AtomicI64::new(0);
+static INV_SCANNING: AtomicBool = AtomicBool::new(false);
 
 use core_types::config::Config;
 use core_types::ipc::{Request, Response, PROTOCOL_VERSION};
@@ -448,6 +455,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         || rescan.swap(false, Ordering::SeqCst);
                     if due {
                         let t0 = Instant::now();
+                        INV_SCANNING.store(true, Ordering::SeqCst);
                         let apps = collector_inv::scan();
                         tracing::info!(
                             apps = apps.len(),
@@ -466,6 +474,9 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         {
                             tracing::warn!("zápis inventáře se nevešel do kanálu");
                         }
+                        // Sken skončil tady — ikony se doplňují dál, ale
+                        // seznam aplikací už je hotový a UI na něj čeká.
+                        INV_SCANNING.store(false, Ordering::SeqCst);
                         // Ikony i pro aplikace, jejichž proces neběží —
                         // z DisplayIcon / zástupce / instalace / MSIX
                         // loga. Jednou na klíč, na BELOW_NORMAL.
@@ -722,6 +733,11 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 rescan_flag.store(true, Ordering::SeqCst);
                 Response::Ack
             }
+            // Stav skenu — UI podle razítka pozná, že „Obnovit" doběhlo.
+            Request::QueryInvStatus => Response::InvStatus {
+                scanning: INV_SCANNING.load(Ordering::SeqCst),
+                last_scan_ts: INV_WRITTEN_TS.load(Ordering::SeqCst),
+            },
             // Svazky + zdraví disků (v4C, SPEC 11.1). NVMe health log;
             // SATA poctivě None (žádná vymyšlená čísla).
             Request::QueryVolumes => {
@@ -1095,6 +1111,9 @@ fn store_msg(
             let n = apps.len();
             let r = store::apps::replace_inventory(conn, &apps);
             if r.is_ok() {
+                // Razítko až TEĎ, po dopsání — UI podle něj pozná, že
+                // „Obnovit" doběhlo a v DB je opravdu nový stav.
+                INV_WRITTEN_TS.store(unix_now(), Ordering::SeqCst);
                 tracing::info!(apps = n, "inventář aplikací zapsán");
             }
             r

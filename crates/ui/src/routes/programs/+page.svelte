@@ -208,12 +208,47 @@
 		sizing = false;
 	}
 
-	async function rescan() {
-		try {
-			await invoke('rescan_apps');
-		} catch {
-			/* služba mimo */
+	// Obnovení musí něco znamenat. Sken inventáře trvá přes 20 s —
+	// dřív se jen poslal požadavek a UI mlčky četlo starou databázi,
+	// takže se po odinstalaci nebo ručním smazání zdánlivě nic nedělo.
+	// Teď se čeká na razítko dokončeného zápisu a načte se všechno:
+	// seznam, cesty vybrané aplikace i jejich velikosti z disku.
+	let rescanning = $state(false);
+
+	// Počká, až sken zapíše nový inventář. Sken se rozjíždí do 2 s
+	// a trvá ~20 s; 90 s je strop, po kterém se načte to, co v DB je.
+	async function waitForScan(before) {
+		for (let i = 0; i < 60; i++) {
+			await new Promise((r) => setTimeout(r, 1500));
+			const st = await invoke('query_inv_status');
+			if (st.last_scan_ts > before && !st.scanning) return;
 		}
+	}
+
+	async function rescan() {
+		if (rescanning) return;
+		rescanning = true;
+		try {
+			const before = (await invoke('query_inv_status')).last_scan_ts;
+			await invoke('rescan_apps');
+			await waitForScan(before);
+			await load();
+			// Cesty vybrané aplikace: mohly zmizet z disku (ruční úklid),
+			// tak je přečteme znovu i s čerstvými velikostmi.
+			if (selected) {
+				const still = apps.find((a) => a.identity_key === selected.identity_key);
+				if (still) {
+					map = await invoke('query_app_map', { identityKey: selected.identity_key });
+					computeSizes(selected.identity_key);
+				} else {
+					selected = null;
+					map = [];
+				}
+			}
+		} catch {
+			/* služba mimo — seznam zůstane, jaký byl */
+		}
+		rescanning = false;
 	}
 
 	async function openPath(path) {
@@ -305,6 +340,9 @@
 		const run = uninstRunning;
 		if (!run) return;
 		uninstRunning = null;
+		const beforeScan = await invoke('query_inv_status')
+			.then((s) => s.last_scan_ts)
+			.catch(() => 0);
 		try {
 			const r = await invoke('finish_uninstall', {
 				auditId: run.auditId,
@@ -323,8 +361,13 @@
 				apps = apps.filter((a) => a.identity_key !== run.app.identity_key);
 				if (selected?.identity_key === run.app.identity_key) selected = null;
 			}
-			// A ještě jednou po skenu, ať sedí i zbytek (velikosti, ikony).
-			setTimeout(load, 30000);
+			// A po doběhnutí skenu ještě jednou pořádně — inventář si
+			// srovná i to, co odinstalátor odnesl mimo naši mapu cest.
+			// (`finish_uninstall` si o sken už řekl.)
+			rescanning = true;
+			waitForScan(beforeScan)
+				.then(load)
+				.finally(() => (rescanning = false));
 		} catch (e) {
 			uninstToast = { kind: 'deny', text: String(e) };
 			setTimeout(() => (uninstToast = null), 6000);
@@ -382,7 +425,13 @@
 			<Search size={13} />
 			<input placeholder="hledat aplikaci…" bind:value={filter} />
 		</div>
-		<button class="refresh" onclick={rescan} title="Přeskenovat inventář">
+		<button
+			class="refresh"
+			class:spin={rescanning}
+			onclick={rescan}
+			disabled={rescanning}
+			title={rescanning ? 'Skenuji inventář…' : 'Přeskenovat inventář'}
+		>
 			<RefreshCw size={14} />
 		</button>
 	</header>
@@ -673,6 +722,19 @@
 	.refresh:hover {
 		color: var(--text);
 		border-color: var(--border-strong);
+	}
+	/* Sken běží desítky sekund — otáčení je jediné, co uživateli řekne,
+	   že se něco děje a že má smysl počkat. */
+	.refresh:disabled {
+		cursor: default;
+	}
+	.refresh.spin :global(svg) {
+		animation: refresh-spin 1.1s linear infinite;
+	}
+	@keyframes refresh-spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 
 	.seg {

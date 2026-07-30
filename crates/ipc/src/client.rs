@@ -415,6 +415,21 @@ pub fn query_leftovers(identity_key: String) -> Result<Vec<String>, Error> {
     }
 }
 
+/// Stav skenu inventáře: (běží zrovna, kdy dopadl poslední zápis).
+pub fn query_inv_status() -> Result<(bool, i64), Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryInvStatus)? {
+        Response::InvStatus {
+            scanning,
+            last_scan_ts,
+        } => Ok((scanning, last_scan_ts)),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Schválení odinstalace (v8): služba znovu validuje a vrátí příkaz,
 /// který má volající spustit VE SVÉ relaci. Při zamítnutí vrací
 /// `ActionResult` s důvodem.
