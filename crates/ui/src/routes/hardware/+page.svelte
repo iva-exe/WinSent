@@ -1,29 +1,21 @@
 <script>
 	// Hardware (v9, SPEC kap. 15) — soupis všeho, co v počítači je.
 	//
-	// Cíl téhle obrazovky je úplnost a čitelnost, ne grafy. Historii
-	// a interaktivní křivky má Tasks; tady jsou jen malé sparkliny
-	// „jak si to vede právě teď" a pod nimi má každý údaj vlastní
-	// pole s vlastním popiskem. Nic se nepřekrývá.
+	// Jeden plochý seznam. Žádné grafy (od toho je Tasks), žádné
+	// rozbalování — všechno je vidět hned. Celá stránka je JEDNA mřížka,
+	// takže název, výrobce a stav sedí ve stejném sloupci u procesoru
+	// i u tiskárny. Prostřední sloupec je volný prostor: každý typ
+	// zařízení tam dá to, co dává smysl u něj.
+	//
+	// Řazení podle důležitosti: komponenty → zobrazení → periferie →
+	// zvuk → síť → řadiče → tisk → systémová zařízení.
 	//
 	// Pravidlo ze SPEC 15.2: nikdy nepředstírat číslo, které nemáme.
-	// U teploty se vždy ukazuje zdroj; když ji nikdo nehlásí, řekne
-	// se to nahlas.
+	// U teploty se vždy ukazuje zdroj; když ji nikdo nehlásí, řekne se
+	// to nahlas.
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
-	import Sparkline from '$lib/Sparkline.svelte';
-	import {
-		Cpu,
-		MemoryStick,
-		HardDrive,
-		Thermometer,
-		BatteryCharging,
-		CircuitBoard,
-		Monitor,
-		Search,
-		TriangleAlert,
-		ChevronRight
-	} from 'lucide-svelte';
+	import { Search, TriangleAlert } from 'lucide-svelte';
 
 	let statics = $state(null);
 	let hw = $state(null);
@@ -32,12 +24,7 @@
 	// žádná plocha není a seznam by byl prázdný.
 	let displays = $state([]);
 	let loadError = $state('');
-
-	// Malý kruhový buffer jen pro sparkliny — 60 s stačí.
-	const KEEP = 60;
-	let cpuSeries = $state([]);
-	let ramSeries = $state([]);
-	let gpuSeries = $state([]);
+	let filter = $state('');
 
 	async function loadHw() {
 		try {
@@ -45,21 +32,6 @@
 			loadError = '';
 		} catch (e) {
 			loadError = String(e);
-		}
-	}
-
-	async function tick() {
-		try {
-			const s = await invoke('query_system');
-			sys = s;
-			cpuSeries = [...cpuSeries, s.cpu_pct].slice(-KEEP);
-			ramSeries = [
-				...ramSeries,
-				s.mem_total_mb ? (s.mem_used_mb / s.mem_total_mb) * 100 : 0
-			].slice(-KEEP);
-			if (s.gpu_pct != null) gpuSeries = [...gpuSeries, s.gpu_pct].slice(-KEEP);
-		} catch {
-			/* služba mimo — hodnoty zůstanou stát */
 		}
 	}
 
@@ -71,8 +43,16 @@
 			.then((d) => (displays = d))
 			.catch(() => (displays = []));
 		loadHw();
-		tick();
-		const t1 = setInterval(tick, 1000);
+		const t1 = setInterval(
+			() =>
+				invoke('query_system')
+					.then((s) => (sys = s))
+					.catch(() => {}),
+			2000
+		);
+		invoke('query_system')
+			.then((s) => (sys = s))
+			.catch(() => {});
 		// Tepelná kaskáda sahá na WMI a soupis zařízení na SetupAPI —
 		// po sekundách, ne v cyklu (SPEC 15.2). Služba to ještě cachuje.
 		const t2 = setInterval(loadHw, 8000);
@@ -94,588 +74,388 @@
 	}
 
 	function hours(h) {
-		if (h == null) return '—';
-		if (h >= 8760) return (h / 8760).toFixed(1) + ' roku';
-		if (h >= 24) return Math.round(h / 24) + ' dní';
-		return h + ' h';
+		if (h == null) return null;
+		if (h >= 8760) return (h / 8760).toFixed(1) + ' roku provozu';
+		if (h >= 24) return Math.round(h / 24) + ' dní provozu';
+		return h + ' h provozu';
 	}
 
-	function remaining(s) {
-		if (s == null) return null;
-		const h = Math.floor(s / 3600);
-		const m = Math.floor((s % 3600) / 60);
-		return h > 0 ? `${h} h ${m} min` : `${m} min`;
+	// Ovladač jako jeden údaj do volného sloupce.
+	function driver(d) {
+		if (!d.driver_version) return null;
+		return d.driver_date
+			? `ovladač ${d.driver_version} z ${d.driver_date}`
+			: `ovladač ${d.driver_version}`;
 	}
 
-	// Teplota nemá univerzální stupnici — 55 °C je u disku hodně,
-	// u procesoru nic. Proto prahy podle komponenty.
-	function tempClass(c, warn, hot) {
-		if (c == null) return '';
-		return c >= hot ? 'hot' : c >= warn ? 'warm' : 'cool';
+	// Hardwarové ID zkrácené na část, která identifikuje model.
+	function hwid(d) {
+		if (!d.hardware_id) return null;
+		const s = d.hardware_id.split('&').slice(0, 2).join('&');
+		return s.length > 46 ? s.slice(0, 46) + '…' : s;
 	}
 
-	function volumesOf(index) {
-		return (hw?.volumes ?? []).filter((v) => v.disk_index === index);
-	}
-
-	// ── Soupis zařízení: seskupený podle tříd, s hledáním ──
-	let devFilter = $state('');
-	let openClass = $state(new Set());
-
-	function toggleClass(name) {
-		const s = new Set(openClass);
-		if (s.has(name)) s.delete(name);
-		else s.add(name);
-		openClass = s;
-	}
-
-	let deviceGroups = $derived.by(() => {
-		const q = devFilter.trim().toLowerCase();
-		const map = new Map();
-		for (const d of hw?.devices ?? []) {
-			if (
-				q &&
-				!d.name.toLowerCase().includes(q) &&
-				!d.manufacturer.toLowerCase().includes(q) &&
-				!(d.class_desc || d.class).toLowerCase().includes(q)
-			) {
-				continue;
-			}
-			const key = d.class_desc || d.class || 'Ostatní';
-			if (!map.has(key)) map.set(key, []);
-			map.get(key).push(d);
+	// ── Kategorie: hrubé dělení podle důležitosti, ne podle tříd
+	// Windows. Uživatele nezajímá, že klávesnice je „HIDClass" —
+	// zajímá ho, že je to periferie.
+	const CATEGORIES = [
+		{ name: 'Zobrazení', classes: ['Monitor'] },
+		{
+			name: 'Periferie',
+			classes: ['Keyboard', 'Mouse', 'HIDClass', 'WPD', 'Image', 'Camera', 'Bluetooth', 'Biometric']
+		},
+		{ name: 'Zvuková zařízení', classes: ['MEDIA', 'AudioEndpoint', 'AudioProcessingObject'] },
+		{ name: 'Síť', classes: ['Net'] },
+		{
+			name: 'Řadiče a porty',
+			classes: ['USB', 'HDC', 'SCSIAdapter', 'Ports', 'Volume', 'DiskDrive', 'FloppyDisk']
+		},
+		{ name: 'Tisk', classes: ['PrintQueue', 'Printer', 'PrinterPort'] },
+		{
+			name: 'Systémová zařízení',
+			classes: ['System', 'Computer', 'Firmware', 'SoftwareDevice', 'SecurityDevices', 'Processor']
 		}
-		return [...map.entries()]
-			.map(([name, items]) => ({
-				name,
-				items,
-				problems: items.filter((d) => d.problem_code !== 0).length
-			}))
-			.sort((a, b) => a.name.localeCompare(b.name, 'cs'));
+	];
+
+	// Výrobci si zakládají vlastní třídy („Focusrite Audio", „Razer
+	// Device"), takže samotný seznam tříd nestačí. Když třídu neznáme,
+	// rozhodne její název a pak sběrnice v hardwarovém ID: co visí na
+	// HID nebo USB, je z pohledu uživatele periferie.
+	function categoryOf(dev) {
+		for (const c of CATEGORIES) {
+			if (c.classes.includes(dev.class)) return c.name;
+		}
+		const cls = (dev.class + ' ' + dev.class_desc).toLowerCase();
+		if (cls.includes('audio') || cls.includes('zvuk')) return 'Zvuková zařízení';
+		if (cls.includes('net') || cls.includes('síť')) return 'Síť';
+		// Vlastní sběrnice výrobců (RAZER\, RZCONTROL\…) mají pořád
+		// VID/PID — je to zařízení pořízené přes USB, tedy periferie.
+		const bus = (dev.hardware_id || '').toUpperCase();
+		if (bus.includes('VID_') && bus.includes('PID_')) return 'Periferie';
+		return 'Ostatní zařízení';
+	}
+
+	function matches(text) {
+		const q = filter.trim().toLowerCase();
+		return !q || text.toLowerCase().includes(q);
+	}
+
+	// Zařízení rozdělená do kategorií, v pořadí důležitosti.
+	let deviceSections = $derived.by(() => {
+		const order = [...CATEGORIES.map((c) => c.name), 'Ostatní zařízení'];
+		const map = new Map(order.map((n) => [n, []]));
+		for (const d of hw?.devices ?? []) {
+			// Procesor, grafika a disky mají vlastní řádky nahoře
+			// v komponentách — níž by se jen opakovaly.
+			if (d.class === 'Processor' || d.class === 'DiskDrive' || d.class === 'Display') continue;
+			if (!matches(`${d.name} ${d.manufacturer} ${d.class_desc} ${d.class}`)) continue;
+			map.get(categoryOf(d))?.push(d);
+		}
+		return order
+			.map((name) => ({ name, items: map.get(name) ?? [] }))
+			.filter((s) => s.items.length);
 	});
 
 	let problemCount = $derived((hw?.devices ?? []).filter((d) => d.problem_code !== 0).length);
+	let ramPct = $derived(
+		sys?.mem_total_mb ? Math.round((sys.mem_used_mb / sys.mem_total_mb) * 100) : null
+	);
+	// Grafik může být víc (integrovaná + dedikovaná). Živá telemetrie
+	// je jen od té, kterou umíme číst — ostatní se vypíšou bez ní,
+	// ne s vymyšlenými nulami.
+	let gpuDevices = $derived((hw?.devices ?? []).filter((d) => d.class === 'Display'));
+
+	function isLiveGpu(dev) {
+		const n = statics?.gpu_name;
+		if (!n || sys?.gpu_pct == null) return false;
+		const a = dev.name.toLowerCase();
+		const b = n.toLowerCase();
+		return a.includes(b) || b.includes(a);
+	}
+	let cpuVendor = $derived(
+		(hw?.devices ?? []).find((d) => d.class === 'Processor')?.manufacturer ?? '—'
+	);
+
+	// Výrobce disku ze stromu zařízení — SMART hlásí jen model.
+	function diskVendor(model) {
+		if (!model) return '—';
+		const key = model.split(' ')[0].toLowerCase();
+		const dev = (hw?.devices ?? []).find(
+			(d) => d.class === 'DiskDrive' && d.name.toLowerCase().includes(key)
+		);
+		return dev?.manufacturer || '—';
+	}
+	let netCount = $derived((hw?.devices ?? []).filter((d) => d.class === 'Net').length);
 </script>
 
 <div class="page">
+	<header class="head">
+		<div class="search">
+			<Search size={13} />
+			<input placeholder="hledat zařízení, výrobce…" bind:value={filter} />
+		</div>
+		<span class="head-count">
+			{hw?.devices?.length ?? 0} zařízení
+			{#if problemCount}
+				<span class="bad">· {problemCount} s problémem</span>
+			{/if}
+		</span>
+	</header>
+
 	{#if loadError}
 		<p class="empty">Nelze načíst hardware: {loadError}</p>
 	{/if}
 
-	<!-- ── Živý stav: tři dlaždice, každá svůj prostor ── -->
-	<div class="vitals">
-		<div class="tile">
-			<div class="tile-head"><Cpu size={14} /> Procesor</div>
-			<div class="tile-val">{sys ? Math.round(sys.cpu_pct) : '—'} <small>%</small></div>
-			<Sparkline values={cpuSeries} height={30} />
-			<div class="tile-sub">{hw?.cpu_thermal?.clock_mhz ?? '—'} MHz</div>
+	<!-- Celá stránka je jedna mřížka: sloupce sedí napříč všemi
+	     sekcemi, od procesoru po tiskárnu. -->
+	<div class="grid">
+		<div class="colhead">
+			<span>Zařízení</span><span>Výrobce</span><span>Podrobnosti</span><span>Stav</span>
 		</div>
-		<div class="tile">
-			<div class="tile-head"><MemoryStick size={14} /> Paměť</div>
-			<div class="tile-val">
-				{sys ? Math.round((sys.mem_used_mb / sys.mem_total_mb) * 100) : '—'} <small>%</small>
-			</div>
-			<Sparkline values={ramSeries} height={30} />
-			<div class="tile-sub">{gb(sys?.mem_used_mb)} z {gb(sys?.mem_total_mb)}</div>
-		</div>
-		<div class="tile">
-			<div class="tile-head"><Monitor size={14} /> Grafika</div>
-			{#if sys?.gpu_pct != null}
-				<div class="tile-val">{Math.round(sys.gpu_pct)} <small>%</small></div>
-				<Sparkline values={gpuSeries} height={30} />
-				<div class="tile-sub">
-					{sys?.gpu?.temp_c != null ? `${Math.round(sys.gpu.temp_c)} °C` : 'zatížení karty'}
+
+		<!-- ── 1. Komponenty ── -->
+		<h2 class="sect">Komponenty</h2>
+
+		{#if matches(`procesor cpu ${statics?.cpu_name ?? ''}`)}
+			<div class="row">
+				<div class="c-name">{statics?.cpu_name ?? 'Procesor'}</div>
+				<div class="c-vendor">{cpuVendor}</div>
+				<div class="c-detail">
+					<span>{statics?.physical_cores ?? '—'} fyzických / {statics?.logical_cores ?? '—'} logických jader</span>
+					<span>{hw?.cpu_thermal?.clock_mhz ?? '—'} MHz z {hw?.cpu_thermal?.max_mhz ?? '—'} MHz</span>
+					<span class="dim">L1 {statics?.l1_kb ?? '—'} kB · L2 {statics?.l2_kb ?? '—'} kB · L3 {statics?.l3_kb ?? '—'} kB</span>
+					{#if hw?.cpu_thermal?.celsius != null}
+						<span>{Math.round(hw.cpu_thermal.celsius)} °C <span class="dim">(zdroj: {hw.cpu_thermal.temp_source})</span></span>
+					{:else}
+						<span class="dim">teplotu tenhle stroj z Windows nehlásí — ukázala by se, kdyby běžel HWiNFO nebo LibreHardwareMonitor</span>
+					{/if}
 				</div>
-			{:else}
-				<div class="tile-val dim">—</div>
-				<div class="tile-none">karta zatížení přes ovladač nehlásí</div>
-			{/if}
-		</div>
-	</div>
-
-	<!-- ── Procesor ── -->
-	<section class="card">
-		<h2><Cpu size={14} /> {statics?.cpu_name ?? 'Procesor'}</h2>
-		<dl>
-			<div><dt>Fyzická jádra</dt><dd>{statics?.physical_cores ?? '—'}</dd></div>
-			<div><dt>Logická jádra</dt><dd>{statics?.logical_cores ?? '—'}</dd></div>
-			<div><dt>Aktuální takt</dt><dd>{hw?.cpu_thermal?.clock_mhz ?? '—'} MHz</dd></div>
-			<div><dt>Maximální takt</dt><dd>{hw?.cpu_thermal?.max_mhz ?? '—'} MHz</dd></div>
-			<div>
-				<dt><Thermometer size={11} /> Teplota</dt>
-				{#if hw?.cpu_thermal?.celsius != null}
-					<dd>
-						<span class={tempClass(hw.cpu_thermal.celsius, 75, 90)}>
-							{Math.round(hw.cpu_thermal.celsius)} °C
-						</span>
-					</dd>
-					<p class="note">zdroj: {hw.cpu_thermal.temp_source}</p>
-				{:else}
-					<dd class="dim">nedostupná</dd>
-					<p class="note">
-						tenhle stroj ji z Windows nehlásí — objeví se, když poběží HWiNFO nebo
-						LibreHardwareMonitor
-					</p>
-				{/if}
+				<div class="c-state">
+					<span class="num">{sys ? Math.round(sys.cpu_pct) : '—'} %</span>
+					{#if hw?.cpu_thermal?.throttling}
+						<span class="warn">běží pod maximem</span>
+					{:else}
+						<span class="ok">jede naplno</span>
+					{/if}
+				</div>
 			</div>
-			<div>
-				<dt>Brzdí ho něco?</dt>
-				{#if hw?.cpu_thermal?.throttling}
-					<dd class="warn"><TriangleAlert size={12} /> běží pod maximem</dd>
-				{:else}
-					<dd class="ok">ne, jede naplno</dd>
-				{/if}
-			</div>
-			<div><dt>Cache L1</dt><dd>{statics?.l1_kb ?? '—'} kB</dd></div>
-			<div><dt>Cache L2</dt><dd>{statics?.l2_kb ?? '—'} kB</dd></div>
-			<div><dt>Cache L3</dt><dd>{statics?.l3_kb ?? '—'} kB</dd></div>
-		</dl>
-	</section>
-
-	<!-- ── Paměť ── -->
-	<section class="card">
-		<h2><MemoryStick size={14} /> Paměť</h2>
-		<dl>
-			<div><dt>Celkem</dt><dd>{gb(sys?.mem_total_mb)}</dd></div>
-			<div><dt>Osazeno modulů</dt><dd>{statics?.ram_modules?.length ?? 0}</dd></div>
-			<div><dt>Slotů na desce</dt><dd>{statics?.ram_slots ?? '—'}</dd></div>
-		</dl>
-		{#if statics?.ram_modules?.length}
-			<table>
-				<thead>
-					<tr>
-						<th>Slot</th><th>Velikost</th><th>Běží na</th><th>Modul umí</th><th>Výrobce</th>
-						<th>Označení</th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each statics.ram_modules as m, i (m.slot + m.part_number + i)}
-						<tr>
-							<td class="mono">{m.slot}</td>
-							<td>{(m.size_mb / 1024).toFixed(0)} GB</td>
-							<td>{m.configured_mts || '—'} MT/s</td>
-							<td class="dim">{m.speed_mts || '—'} MT/s</td>
-							<td>{m.manufacturer || '—'}</td>
-							<td class="mono dim">{m.part_number || '—'}</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
 		{/if}
-	</section>
 
-	<!-- ── Obrazovky ── -->
-	{#if displays.length}
-		<section class="card">
-			<h2><Monitor size={14} /> Obrazovky</h2>
-			<table>
-				<thead>
-					<tr><th>Monitor</th><th>Rozlišení</th><th>Obnovovací frekvence</th><th>Adaptér</th></tr>
-				</thead>
-				<tbody>
-					{#each displays as d, i (d.adapter + i)}
-						<tr>
-							<td>
-								{d.monitor || '—'}
-								{#if d.primary}<span class="tag">hlavní</span>{/if}
-							</td>
-							<td>{d.width} × {d.height}</td>
-							<td>{d.refresh_hz} Hz</td>
-							<td class="dim">{d.adapter}</td>
-						</tr>
+		{#if matches('paměť ram')}
+			<div class="row">
+				<div class="c-name">Paměť</div>
+				<div class="c-vendor">{statics?.ram_modules?.[0]?.manufacturer ?? '—'}</div>
+				<div class="c-detail">
+					<span>{gb(sys?.mem_total_mb)} celkem</span>
+					<span>{statics?.ram_modules?.length ?? 0} modulů ve {statics?.ram_slots ?? '—'} slotech</span>
+					{#each statics?.ram_modules ?? [] as m, i (m.slot + i)}
+						<span class="dim">
+							{m.slot}: {(m.size_mb / 1024).toFixed(0)} GB @ {m.configured_mts || '—'} MT/s
+							(modul umí {m.speed_mts || '—'}) · {m.part_number || '—'}
+						</span>
 					{/each}
-				</tbody>
-			</table>
-		</section>
-	{/if}
+				</div>
+				<div class="c-state">
+					<span class="num">{ramPct ?? '—'} %</span>
+					<span class="dim">{gb(sys?.mem_used_mb)} z {gb(sys?.mem_total_mb)}</span>
+				</div>
+			</div>
+		{/if}
 
-	<!-- ── Úložiště: karta na fyzický disk ── -->
-	{#each hw?.disks ?? [] as d (d.index)}
-		<section class="card">
-			<h2>
-				<HardDrive size={14} />
-				{d.model || `Disk ${d.index}`}
-				{#if d.critical}<span class="tag danger">SMART hlásí problém</span>{/if}
-			</h2>
-			<dl>
-				<div>
-					<dt><Thermometer size={11} /> Teplota</dt>
-					{#if d.temp_c != null}
-						<dd><span class={tempClass(d.temp_c, 55, 70)}>{d.temp_c} °C</span></dd>
-					{:else}
-						<dd class="dim">nehlásí</dd>
-						<p class="note">zdraví přes SMART umí NVMe; tenhle disk ho nedává</p>
-					{/if}
-				</div>
-				<div>
-					<dt>Opotřebení</dt>
-					{#if d.used_pct != null}
-						<dd class={d.used_pct >= 80 ? 'warn' : 'ok'}>{d.used_pct} %</dd>
-						<p class="note">návrhové životnosti</p>
-					{:else}
-						<dd class="dim">nehlásí</dd>
-					{/if}
-				</div>
-				<div>
-					<dt>Rezervní bloky</dt>
-					<dd class={d.spare_pct == null ? 'dim' : ''}>
-						{d.spare_pct != null ? d.spare_pct + ' %' : 'nehlásí'}
-					</dd>
-				</div>
-				<div>
-					<dt>Naběháno</dt>
-					<dd class={d.power_on_hours == null ? 'dim' : ''}>
-						{d.power_on_hours != null ? hours(d.power_on_hours) : 'nehlásí'}
-					</dd>
-				</div>
-			</dl>
-			{#each volumesOf(d.index) as v (v.letter)}
-				{@const pct = v.total_bytes ? ((v.total_bytes - v.free_bytes) / v.total_bytes) * 100 : 0}
-				<div class="vol">
-					<div class="vol-head">
-						<span class="mono">{v.letter}:</span>
-						<span>{v.label || v.fs}</span>
-						<span class="dim">{v.fs}</span>
-						<span class="vol-num">{bytes(v.free_bytes)} volných z {bytes(v.total_bytes)}</span>
+		{#each gpuDevices as g, i (g.name + i)}
+			{#if matches(`${g.name} ${g.manufacturer} grafika`)}
+				{@const live = isLiveGpu(g)}
+				<div class="row">
+					<div class="c-name">{g.name}</div>
+					<div class="c-vendor">{g.manufacturer || '—'}</div>
+					<div class="c-detail">
+						{#if driver(g)}<span>{driver(g)}</span>{/if}
+						{#if live && sys?.gpu?.vram_used_mb != null}
+							<span>VRAM {gb(sys.gpu.vram_used_mb)} z {gb(sys.gpu.vram_total_mb)}</span>
+						{/if}
+						{#if live && sys?.gpu?.clock_mhz != null}<span>{sys.gpu.clock_mhz} MHz</span>{/if}
+						{#if live && sys?.gpu?.power_w != null}<span>{Math.round(sys.gpu.power_w)} W</span>{/if}
+						{#if !live}
+							<span class="dim">zatížení ani teplotu tahle karta přes ovladač nehlásí</span>
+						{/if}
+						{#if hwid(g)}<span class="mono dim">{hwid(g)}</span>{/if}
 					</div>
-					<div class="bar" class:full={pct >= 90}>
-						<div class="fill" style="width: {pct}%"></div>
+					<div class="c-state">
+						{#if live}
+							<span class="num">{Math.round(sys.gpu_pct)} %</span>
+						{/if}
+						{#if live && sys?.gpu?.temp_c != null}
+							<span class={sys.gpu.temp_c >= 88 ? 'hot' : sys.gpu.temp_c >= 75 ? 'warm' : 'cool'}>
+								{Math.round(sys.gpu.temp_c)} °C
+							</span>
+						{:else if g.problem_code}
+							<span class="bad"><TriangleAlert size={11} /> problém {g.problem_code}</span>
+						{:else}
+							<span class="ok">v pořádku</span>
+						{/if}
+					</div>
+				</div>
+			{/if}
+		{/each}
+
+		{#each hw?.disks ?? [] as d (d.index)}
+			{#if matches(`${d.model} disk`)}
+				<div class="row">
+					<div class="c-name">{d.model || `Disk ${d.index}`}</div>
+					<div class="c-vendor">{diskVendor(d.model)}</div>
+					<div class="c-detail">
+						{#each (hw?.volumes ?? []).filter((v) => v.disk_index === d.index) as v (v.letter)}
+							<span>
+								{v.letter}: {v.label || v.fs} — {bytes(v.free_bytes)} volných z {bytes(v.total_bytes)}
+							</span>
+						{/each}
+						{#if d.power_on_hours != null}<span class="dim">{hours(d.power_on_hours)}</span>{/if}
+						{#if d.spare_pct != null}<span class="dim">rezervní bloky {d.spare_pct} %</span>{/if}
+						{#if d.temp_c == null && d.used_pct == null}
+							<span class="dim">zdraví přes SMART umí NVMe disky; tenhle ho nedává</span>
+						{/if}
+					</div>
+					<div class="c-state">
+						{#if d.temp_c != null}
+							<span class={d.temp_c >= 70 ? 'hot' : d.temp_c >= 55 ? 'warm' : 'cool'}>
+								{d.temp_c} °C
+							</span>
+						{/if}
+						{#if d.used_pct != null}
+							<span class={d.used_pct >= 80 ? 'warn' : 'dim'}>opotřebení {d.used_pct} %</span>
+						{/if}
+						{#if d.critical}
+							<span class="bad"><TriangleAlert size={11} /> SMART hlásí problém</span>
+						{:else if d.temp_c == null && d.used_pct == null}
+							<span class="dim">nehlásí</span>
+						{:else}
+							<span class="ok">v pořádku</span>
+						{/if}
+					</div>
+				</div>
+			{/if}
+		{/each}
+
+		{#if hw?.board && matches(`deska ${hw.board.manufacturer} ${hw.board.product} bios`)}
+			<div class="row">
+				<div class="c-name">{hw.board.product || 'Základní deska'}</div>
+				<div class="c-vendor">{hw.board.manufacturer || '—'}</div>
+				<div class="c-detail">
+					{#if hw.board.version}<span>revize {hw.board.version}</span>{/if}
+					<span>BIOS {hw.board.bios_version || '—'} z {hw.board.bios_date || '—'}</span>
+					<span class="dim">{hw.board.bios_vendor}</span>
+					{#if hw.board.system_product}
+						<span class="dim">stroj: {hw.board.system_manufacturer} {hw.board.system_product}</span>
+					{/if}
+				</div>
+				<div class="c-state"><span class="ok">v pořádku</span></div>
+			</div>
+		{/if}
+
+		{#if hw?.battery && matches('baterie')}
+			<div class="row">
+				<div class="c-name">Baterie</div>
+				<div class="c-vendor">—</div>
+				<div class="c-detail">
+					<span>
+						{#if hw.battery.charging}nabíjí se{:else if hw.battery.ac_online}napájení ze sítě{:else}běží z baterie{/if}
+					</span>
+					{#if hw.battery.wear_pct != null}
+						<span>
+							nabije se na {(hw.battery.full_mwh / 1000).toFixed(1)} Wh z původních
+							{(hw.battery.design_mwh / 1000).toFixed(1)} Wh
+						</span>
+					{/if}
+					{#if hw.battery.cycles != null}<span class="dim">{hw.battery.cycles} nabíjecích cyklů</span>{/if}
+				</div>
+				<div class="c-state">
+					<span class="num">{hw.battery.percent ?? '—'} %</span>
+					{#if hw.battery.wear_pct != null}
+						<span class={hw.battery.wear_pct >= 30 ? 'warn' : 'ok'}>
+							opotřebení {Math.round(hw.battery.wear_pct)} %
+						</span>
+					{:else}
+						<span class="dim">kapacity nehlásí</span>
+					{/if}
+				</div>
+			</div>
+		{/if}
+
+		<!-- ── 2. Obrazovky (režim čte UI ve své relaci) ── -->
+		{#if displays.length}
+			<h2 class="sect">Obrazovky</h2>
+			{#each displays as d, i (d.adapter + i)}
+				{#if matches(`${d.monitor} ${d.adapter} monitor obrazovka`)}
+					<div class="row">
+						<div class="c-name">{d.monitor || 'Obrazovka'}</div>
+						<div class="c-vendor">{d.adapter}</div>
+						<div class="c-detail">
+							<span>{d.width} × {d.height} bodů</span>
+							<span>{d.refresh_hz} Hz</span>
+						</div>
+						<div class="c-state">
+							{#if d.primary}<span class="num">hlavní</span>{/if}
+							<span class="ok">připojená</span>
+						</div>
+					</div>
+				{/if}
+			{/each}
+		{/if}
+
+		<!-- ── 3.–8. Ostatní zařízení podle kategorií ── -->
+		{#each deviceSections as sect (sect.name)}
+			<h2 class="sect">
+				{sect.name}
+				<span class="sect-count">{sect.items.length}</span>
+			</h2>
+			{#each sect.items as d, i (d.name + d.hardware_id + i)}
+				<div class="row">
+					<div class="c-name">{d.name}</div>
+					<div class="c-vendor">{d.manufacturer || '—'}</div>
+					<div class="c-detail">
+						{#if driver(d)}<span>{driver(d)}</span>{/if}
+						{#if d.class_desc}<span class="dim">{d.class_desc}</span>{/if}
+						{#if hwid(d)}<span class="mono dim">{hwid(d)}</span>{/if}
+					</div>
+					<div class="c-state">
+						{#if d.problem_code}
+							<span class="bad"><TriangleAlert size={11} /> problém {d.problem_code}</span>
+						{:else}
+							<span class="ok">v pořádku</span>
+						{/if}
 					</div>
 				</div>
 			{/each}
-		</section>
-	{/each}
-
-	<!-- ── Baterie: jen u strojů, které ji mají ── -->
-	{#if hw?.battery}
-		<section class="card">
-			<h2><BatteryCharging size={14} /> Baterie</h2>
-			<dl>
-				<div><dt>Nabití</dt><dd>{hw.battery.percent ?? '—'} %</dd></div>
-				<div>
-					<dt>Napájení</dt>
-					<dd>
-						{#if hw.battery.charging}nabíjí se{:else if hw.battery.ac_online}ze sítě{:else}z
-							baterie{/if}
-					</dd>
-					{#if remaining(hw.battery.remaining_s)}
-						<p class="note">zbývá asi {remaining(hw.battery.remaining_s)}</p>
-					{/if}
-				</div>
-				<div>
-					<dt>Opotřebení</dt>
-					{#if hw.battery.wear_pct != null}
-						<dd class={hw.battery.wear_pct >= 30 ? 'warn' : 'ok'}>
-							{Math.round(hw.battery.wear_pct)} %
-						</dd>
-						<p class="note">
-							nabije se na {(hw.battery.full_mwh / 1000).toFixed(1)} Wh z původních
-							{(hw.battery.design_mwh / 1000).toFixed(1)} Wh
-						</p>
-					{:else}
-						<dd class="dim">baterie kapacity nehlásí</dd>
-					{/if}
-				</div>
-				<div>
-					<dt>Nabíjecích cyklů</dt>
-					<dd class={hw.battery.cycles == null ? 'dim' : ''}>{hw.battery.cycles ?? 'nehlásí'}</dd>
-				</div>
-			</dl>
-		</section>
-	{/if}
-
-	<!-- ── Deska a firmware ── -->
-	{#if hw?.board}
-		<section class="card">
-			<h2><CircuitBoard size={14} /> Základní deska</h2>
-			<dl>
-				<div><dt>Výrobce</dt><dd>{hw.board.manufacturer || '—'}</dd></div>
-				<div><dt>Model</dt><dd>{hw.board.product || '—'}</dd></div>
-				<div><dt>Revize</dt><dd class="dim">{hw.board.version || '—'}</dd></div>
-				<div><dt>BIOS / UEFI</dt><dd>{hw.board.bios_version || '—'}</dd></div>
-				<div><dt>Dodavatel BIOSu</dt><dd class="dim">{hw.board.bios_vendor || '—'}</dd></div>
-				<div><dt>Datum BIOSu</dt><dd>{hw.board.bios_date || '—'}</dd></div>
-				{#if hw.board.system_product}
-					<div><dt>Stroj</dt><dd>{hw.board.system_manufacturer} {hw.board.system_product}</dd></div>
-				{/if}
-			</dl>
-		</section>
-	{/if}
-
-	<!-- ── Všechna zařízení: úplný soupis, jako Správce zařízení ── -->
-	<section class="card">
-		<h2>
-			<CircuitBoard size={14} /> Všechna zařízení
-			<span class="count">{hw?.devices?.length ?? 0}</span>
-			{#if problemCount}
-				<span class="tag danger">{problemCount} s problémem</span>
-			{/if}
-		</h2>
-		<div class="search">
-			<Search size={13} />
-			<input placeholder="hledat zařízení, výrobce, třídu…" bind:value={devFilter} />
-		</div>
-		{#each deviceGroups as g (g.name)}
-			{@const open = openClass.has(g.name) || devFilter.trim().length > 0}
-			<div class="grp">
-				<button class="grp-head" onclick={() => toggleClass(g.name)}>
-					<span class="caret" class:open><ChevronRight size={13} /></span>
-					<span class="grp-name">{g.name}</span>
-					<span class="count">{g.items.length}</span>
-					{#if g.problems}<span class="tag danger">{g.problems}</span>{/if}
-				</button>
-				{#if open}
-					<table>
-						<thead>
-							<tr><th>Zařízení</th><th>Výrobce</th><th>Ovladač</th><th>Datum</th><th>Stav</th></tr>
-						</thead>
-						<tbody>
-							{#each g.items as d, i (d.name + d.hardware_id + i)}
-								<tr>
-									<td>{d.name}</td>
-									<td class="dim">{d.manufacturer || '—'}</td>
-									<td class="mono">{d.driver_version || '—'}</td>
-									<td class="dim">{d.driver_date || '—'}</td>
-									<td>
-										{#if d.problem_code}
-											<span class="warn"
-												><TriangleAlert size={11} /> kód {d.problem_code}</span
-											>
-										{:else}
-											<span class="ok">v pořádku</span>
-										{/if}
-									</td>
-								</tr>
-							{/each}
-						</tbody>
-					</table>
-				{/if}
-			</div>
 		{/each}
-		{#if !deviceGroups.length}
-			<p class="empty">
-				{devFilter ? 'Nic neodpovídá hledání.' : 'Soupis zařízení se načítá…'}
-			</p>
+
+		{#if !deviceSections.length && filter}
+			<p class="empty">Nic neodpovídá hledání.</p>
 		{/if}
-	</section>
+	</div>
+
+	{#if netCount}
+		<p class="foot">
+			Síťová spojení, porty a provoz najdeš v sekci Network — tady jsou jen adaptéry.
+		</p>
+	{/if}
 </div>
 
 <style>
 	.page {
 		display: flex;
 		flex-direction: column;
-		gap: 12px;
+		gap: 10px;
 		height: 100%;
 		min-height: 0;
 		overflow-y: auto;
 		padding-right: 4px;
 	}
 
-	/* ── Živé dlaždice ── */
-	.vitals {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+	.head {
+		display: flex;
+		align-items: center;
 		gap: 12px;
 	}
-	.tile {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		background: var(--surface);
-		padding: 10px 12px 12px;
-	}
-	.tile-head {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		font-size: 0.72rem;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-dim);
-		margin-bottom: 6px;
-	}
-	.tile-val {
-		font-size: 1.6rem;
-		font-weight: 600;
-		font-variant-numeric: tabular-nums;
-		line-height: 1.1;
-		margin-bottom: 4px;
-	}
-	.tile-val small {
-		font-size: 0.9rem;
-		font-weight: 400;
-		color: var(--text-dim);
-	}
-	.tile-sub,
-	.tile-none {
-		font-size: 0.75rem;
-		color: var(--text-dim);
-		margin-top: 4px;
-		font-variant-numeric: tabular-nums;
-	}
-	.tile-none {
-		font-variant-numeric: normal;
-		line-height: 1.4;
-	}
-
-	/* ── Karty komponent ── */
-	.card {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		background: var(--surface);
-		padding: 12px 14px 14px;
-	}
-	.card h2 {
-		display: flex;
-		align-items: center;
-		gap: 7px;
-		font-size: 0.88rem;
-		font-weight: 600;
-		margin: 0 0 12px;
-		color: var(--text);
-	}
-
-	/* Každý údaj má vlastní buňku s vlastním popiskem — nic se
-	   nepřekrývá a nic se nemačká do jednoho řádku. */
-	dl {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-		gap: 12px 16px;
-		margin: 0;
-	}
-	dl > div {
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
-		min-width: 0;
-	}
-	dt {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-		font-size: 0.68rem;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-dim);
-	}
-	dd {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-		margin: 0;
-		font-size: 0.88rem;
-		font-variant-numeric: tabular-nums;
-	}
-	/* Vysvětlivka pod hodnotou — vlastní řádek, ne do ní vražená. */
-	.note {
-		margin: 0;
-		font-size: 0.7rem;
-		line-height: 1.35;
-		color: var(--text-dim);
-	}
-
-	.dim {
-		color: var(--text-dim);
-	}
-	.mono {
-		font-family: var(--mono);
-		font-size: 0.8rem;
-	}
-	.ok {
-		color: var(--ok);
-	}
-	.warn {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		color: var(--warn);
-	}
-	.cool {
-		color: var(--ok);
-	}
-	.warm {
-		color: var(--warn);
-	}
-	.hot {
-		color: var(--danger);
-	}
-	.tag {
-		font-size: 0.68rem;
-		padding: 1px 6px;
-		border-radius: 999px;
-		border: 1px solid var(--border);
-		color: var(--text-dim);
-		font-weight: 400;
-		text-transform: none;
-		letter-spacing: 0;
-	}
-	.tag.danger {
-		border-color: var(--danger);
-		color: var(--danger);
-	}
-	.count {
-		font-size: 0.72rem;
-		color: var(--text-dim);
-		font-variant-numeric: tabular-nums;
-	}
-
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		margin-top: 12px;
-		font-size: 0.8rem;
-	}
-	th {
-		text-align: left;
-		font-weight: 500;
-		font-size: 0.68rem;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-dim);
-		padding: 5px 10px 5px 0;
-		border-bottom: 1px solid var(--border);
-		white-space: nowrap;
-	}
-	td {
-		padding: 6px 10px 6px 0;
-		border-bottom: 1px solid var(--border);
-		vertical-align: top;
-	}
-	td:last-child,
-	th:last-child {
-		padding-right: 0;
-	}
-
-	/* ── Svazky pod diskem ── */
-	.vol {
-		margin-top: 12px;
-	}
-	.vol-head {
-		display: flex;
-		align-items: baseline;
-		gap: 8px;
-		font-size: 0.8rem;
-		margin-bottom: 5px;
-	}
-	.vol-num {
-		margin-left: auto;
-		color: var(--text-dim);
-		font-variant-numeric: tabular-nums;
-	}
-	.bar {
-		height: 6px;
-		border-radius: 3px;
-		background: var(--border);
-		overflow: hidden;
-	}
-	.fill {
-		height: 100%;
-		background: var(--accent);
-	}
-	.bar.full .fill {
-		background: var(--danger);
-	}
-
-	/* ── Soupis zařízení ── */
 	.search {
 		display: flex;
 		align-items: center;
@@ -683,8 +463,9 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		padding: 5px 9px;
-		margin-bottom: 4px;
 		color: var(--text-dim);
+		flex: 1;
+		max-width: 320px;
 	}
 	.search input {
 		flex: 1;
@@ -695,50 +476,146 @@
 		font: inherit;
 		font-size: 0.8rem;
 	}
-	.grp {
+	.head-count {
+		margin-left: auto;
+		font-size: 0.78rem;
+		color: var(--text-dim);
+		font-variant-numeric: tabular-nums;
+	}
+
+	/* Jedna mřížka pro celou stránku — díky tomu sedí sloupce
+	   u procesoru stejně jako u tiskárny. Prostřední sloupec je
+	   volný prostor pro to, co dává smysl u daného zařízení. */
+	.grid {
+		display: grid;
+		grid-template-columns:
+			minmax(200px, 1.5fr)
+			minmax(120px, 0.9fr)
+			minmax(240px, 2.2fr)
+			minmax(130px, 0.8fr);
+		align-items: start;
+		column-gap: 16px;
+	}
+	.colhead,
+	.row {
+		display: grid;
+		grid-column: 1 / -1;
+		grid-template-columns: subgrid;
+		padding: 7px 2px;
 		border-bottom: 1px solid var(--border);
 	}
-	.grp:last-child {
-		border-bottom: none;
-	}
-	.grp-head {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		width: 100%;
-		background: none;
-		border: none;
-		color: var(--text);
-		font: inherit;
-		font-size: 0.82rem;
-		text-align: left;
-		padding: 9px 2px;
-		cursor: pointer;
-	}
-	.grp-head:hover {
-		color: var(--accent);
-	}
-	.caret {
-		display: grid;
-		place-items: center;
+	.colhead {
+		position: sticky;
+		top: 0;
+		z-index: 2;
+		background: var(--bg);
+		font-size: 0.66rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
 		color: var(--text-dim);
-		transition: transform 0.12s ease;
+		padding-bottom: 5px;
 	}
-	.caret.open {
-		transform: rotate(90deg);
+	.row:hover {
+		background: var(--surface);
 	}
-	.grp-name {
-		flex: 1;
+
+	/* Nadpis sekce přes celou šířku — nerozbíjí zarovnání sloupců. */
+	.sect {
+		grid-column: 1 / -1;
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		margin: 18px 0 4px;
+		font-size: 0.75rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--text-dim);
+		border-bottom: 1px solid var(--border-strong, var(--border));
+		padding-bottom: 5px;
+	}
+	.sect:first-of-type {
+		margin-top: 10px;
+	}
+	.sect-count {
+		font-weight: 400;
+		letter-spacing: 0;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.c-name {
+		font-size: 0.83rem;
+		line-height: 1.35;
+		word-break: break-word;
+	}
+	.c-vendor {
+		font-size: 0.78rem;
+		color: var(--text-dim);
+		line-height: 1.35;
+		word-break: break-word;
+	}
+	/* Volný sloupec: každý údaj vlastní řádek, ať se nic nemačká. */
+	.c-detail,
+	.c-state {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		font-size: 0.78rem;
+		line-height: 1.4;
 		min-width: 0;
 	}
-	.grp table {
-		margin-top: 0;
-		margin-bottom: 10px;
+	.c-detail span {
+		word-break: break-word;
+	}
+	.c-state {
+		align-items: flex-end;
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+	}
+	/* Aktuální vytížení je jen číslo — grafy má Tasks. */
+	.num {
+		font-size: 0.95rem;
+		font-weight: 600;
+	}
+
+	.dim {
+		color: var(--text-dim);
+	}
+	.mono {
+		font-family: var(--mono);
+		font-size: 0.72rem;
+	}
+	.ok {
+		color: var(--ok);
+	}
+	.warn {
+		color: var(--warn);
+	}
+	.bad {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		color: var(--danger);
+	}
+	.cool {
+		color: var(--ok);
+	}
+	.warm {
+		color: var(--warn);
+	}
+	.hot {
+		color: var(--danger);
 	}
 
 	.empty {
+		grid-column: 1 / -1;
 		color: var(--text-dim);
 		font-size: 0.82rem;
-		padding: 8px 0;
+		padding: 14px 0;
+	}
+	.foot {
+		font-size: 0.75rem;
+		color: var(--text-dim);
+		padding: 4px 2px 12px;
 	}
 </style>
