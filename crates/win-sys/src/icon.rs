@@ -26,6 +26,17 @@ pub struct IconRgba {
 
 /// Extrahuje ikonu binárky. None = nemá ikonu / nelze načíst.
 pub fn extract(path: &str) -> Option<IconRgba> {
+    // Samostatný .ico — hodně instalátorů (FabFilter, balenaEtcher,
+    // League of Legends…) míří DisplayIconem právě sem. Není to PE
+    // soubor, takže by resource cesta níž selhala.
+    if std::path::Path::new(path)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("ico"))
+    {
+        if let Some(i) = extract_ico(path) {
+            return Some(i);
+        }
+    }
     // PŘEDNOSTNĚ z PE resource: služba běží jako SYSTEM v session 0,
     // kde shell (SHGetFileInfo) vrací GENERICKOU ikonu — proto dřív
     // většina aplikací dostala default „okýnko". Čtení resource na
@@ -54,6 +65,38 @@ pub fn extract(path: &str) -> Option<IconRgba> {
         }
         let result = icon_to_rgba(info.hIcon);
         let _ = DestroyIcon(info.hIcon);
+        result
+    }
+}
+
+/// Ikona ze samostatného `.ico` souboru. `LoadImage` čte soubor
+/// přímo (LR_LOADFROMFILE), takže nepotřebuje shell ani session.
+pub fn extract_ico(path: &str) -> Option<IconRgba> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        LoadImageW, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE,
+    };
+    let wide: Vec<u16> = std::path::Path::new(path)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: HICON z LoadImage vždy uvolníme; buffer žije po volání.
+    unsafe {
+        let handle = LoadImageW(
+            None,
+            PCWSTR(wide.as_ptr()),
+            IMAGE_ICON,
+            32,
+            32,
+            LR_LOADFROMFILE | LR_DEFAULTSIZE,
+        )
+        .ok()?;
+        let hicon = HICON(handle.0);
+        if hicon.is_invalid() {
+            return None;
+        }
+        let result = icon_to_rgba(hicon);
+        let _ = DestroyIcon(hicon);
         result
     }
 }

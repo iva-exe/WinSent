@@ -1469,8 +1469,9 @@ fn icon_from_dir(dir: &str, hint: &str) -> Option<core_types::proc::IconData> {
                 }
                 continue;
             }
+            let ext_ico = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("ico"));
             let is_exe = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("exe"));
-            if !is_exe {
+            if !is_exe && !ext_ico {
                 continue;
             }
             let stem = norm_name(
@@ -1486,7 +1487,8 @@ fn icon_from_dir(dir: &str, hint: &str) -> Option<core_types::proc::IconData> {
                 || stem.contains("update")
                 || stem.contains("crashpad")
                 || stem.contains("vcredist");
-            candidates.push((!matches, junk, stem.len(), p));
+            // .ico má přednost před .exe při stejné shodě jména.
+            candidates.push((!matches, junk, if ext_ico { 0 } else { stem.len() + 1 }, p));
         }
     }
     candidates.sort_by_key(|c| (c.0, c.1, c.2));
