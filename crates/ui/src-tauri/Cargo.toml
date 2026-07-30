@@ -17,4 +17,17 @@ tauri-build = { version = "2", features = [] }
 core-types = { workspace = true }
 ipc = { workspace = true }
 serde = { workspace = true }
+thiserror = { workspace = true }
 tauri = { version = "2", features = ["tray-icon"] }
+
+# Jen pro spuštění odinstalátoru v relaci uživatele (src/uninstall.rs).
+# UI zůstává zobrazovací — o tom, *zda* se smí odinstalovat, rozhoduje
+# validační vrstva ve službě, UI dostane hotový příkaz.
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]

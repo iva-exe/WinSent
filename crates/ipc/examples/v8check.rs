@@ -25,7 +25,7 @@ fn main() {
     let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     for probe in [
         format!(r"{sysroot}\System32\kernel32.dll"),
-        format!(r"{sysroot}"),
+        sysroot.to_string(),
         r"C:\".to_string(),
     ] {
         match ipc::client::plan_action(core_types::action::Action::DeleteFiles {

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,6 +81,19 @@ pub enum Request {
 
     /// Co po aplikaci zbylo na disku (v8, SPEC 5.3) — čistě čtecí.
     QueryLeftovers { identity_key: String },
+
+    /// Odinstalace, krok 2: služba plán ZNOVU validuje, zapíše audit a
+    /// vrátí příkaz odinstalátoru — ale NESPOUŠTÍ ho. Spuštění dělá UI
+    /// ve své (uživatelské) relaci; služba běží jako SYSTEM v session 0,
+    /// kde by odinstalátor neměl viditelnou plochu ani správný HKCU.
+    AuthorizeUninstall { plan_id: u64 },
+    /// Odinstalace, krok 3: UI hlásí, že odinstalátor doběhl. Služba
+    /// ověří registr (fáze 4) a doplní výsledek k auditnímu záznamu.
+    ReportUninstall {
+        audit_id: i64,
+        identity_key: String,
+        detail: String,
+    },
 }
 
 /// Odpověď služba → UI.
@@ -154,6 +167,12 @@ pub enum Response {
 
     /// Zbytky po odinstalaci: cesty, které na disku pořád jsou.
     Leftovers(Vec<String>),
+    /// Odinstalace schválena: příkaz ke spuštění v relaci uživatele
+    /// a id auditního záznamu, ke kterému se pak hlásí výsledek.
+    UninstallAuthorized {
+        command: String,
+        audit_id: i64,
+    },
     /// Skupiny duplicit: (velikost, cesty).
     Duplicates(Vec<(u64, Vec<String>)>),
     /// Stav úklidu: indexace svazků (písmeno, záznamů, hotovo),

@@ -415,6 +415,47 @@ pub fn query_leftovers(identity_key: String) -> Result<Vec<String>, Error> {
     }
 }
 
+/// Schválení odinstalace (v8): služba znovu validuje a vrátí příkaz,
+/// který má volající spustit VE SVÉ relaci. Při zamítnutí vrací
+/// `ActionResult` s důvodem.
+pub fn authorize_uninstall(
+    plan_id: u64,
+) -> Result<Result<(String, i64), core_types::action::ActionResult>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::AuthorizeUninstall { plan_id })? {
+        Response::UninstallAuthorized { command, audit_id } => Ok(Ok((command, audit_id))),
+        Response::ActionResult(r) => Ok(Err(r)),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Hlášení konce odinstalátoru (v8) — služba ověří registr a doplní
+/// výsledek do auditu.
+pub fn report_uninstall(
+    audit_id: i64,
+    identity_key: String,
+    detail: String,
+) -> Result<core_types::action::ActionResult, Error> {
+    let mut stream = connect()?;
+    match request(
+        &mut stream,
+        &Request::ReportUninstall {
+            audit_id,
+            identity_key,
+            detail,
+        },
+    )? {
+        Response::ActionResult(r) => Ok(r),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Stav auto-úklidu (v4E): indexace, běh analýzy, výsledek.
 #[allow(clippy::type_complexity)]
 pub fn query_cleanup() -> Result<

@@ -3,6 +3,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod uninstall;
 use serde::Serialize;
 
 /// Odpověď pro frontend na ping služby.
@@ -264,6 +265,32 @@ fn query_leftovers(identity_key: String) -> Result<Vec<String>, String> {
     ipc::client::query_leftovers(identity_key).map_err(|e| e.to_string())
 }
 
+/// Provedení odinstalace (v8) — tři kroky, každý na svém místě:
+///
+/// 1. služba plán znovu zvaliduje a vydá příkaz (`AuthorizeUninstall`),
+/// 2. odinstalátor spustíme **tady**, v relaci uživatele — služba běží
+///    jako SYSTEM v session 0, kde by neměl viditelnou plochu ani
+///    správný `HKEY_CURRENT_USER`,
+/// 3. po doběhnutí služba ověří registr a doplní výsledek do auditu.
+#[tauri::command(async)]
+fn run_uninstall(
+    plan_id: u64,
+    identity_key: String,
+) -> Result<core_types::action::ActionResult, String> {
+    let (command, audit_id) = match ipc::client::authorize_uninstall(plan_id) {
+        Ok(Ok(pair)) => pair,
+        // Zamítnutí není chyba volání — vracíme ho UI k zobrazení.
+        Ok(Err(deny)) => return Ok(deny),
+        Err(e) => return Err(e.to_string()),
+    };
+    // Selhání spuštění se hlásí zpátky, ať audit nezůstane „running".
+    let detail = match uninstall::run_and_wait(&command) {
+        Ok(d) => d,
+        Err(e) => e.to_string(),
+    };
+    ipc::client::report_uninstall(audit_id, identity_key, detail).map_err(|e| e.to_string())
+}
+
 /// Auditní záznamy (v5) — historie zásahů do systému.
 #[tauri::command]
 fn query_audit(limit: u32) -> Result<Vec<core_types::action::AuditRow>, String> {
@@ -398,6 +425,7 @@ fn main() {
             plan_kill,
             plan_delete,
             plan_uninstall,
+            run_uninstall,
             query_leftovers,
             query_holders,
             execute_plan

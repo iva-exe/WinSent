@@ -341,24 +341,33 @@ fn service_start_type(name: &str) -> Option<u64> {
 /// Preferuje tichou variantu. `pub` — používá ho i exekutor, aby obě
 /// strany viděly TÝŽ příkaz (žádná cesta okolo vrstvy).
 pub fn uninstall_command(display_name: &str) -> Option<String> {
-    use win_sys::registry::{
-        enum_subkeys, read_string, read_u64, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
-    };
+    use win_sys::registry::{enum_subkeys, read_string, read_u64, HKEY_LOCAL_MACHINE, HKEY_USERS};
     let want = display_name.trim().to_ascii_lowercase();
-    for (root, base) in [
+
+    // POZOR: služba běží jako SYSTEM, takže HKEY_CURRENT_USER je hive
+    // SYSTEMu — ne přihlášeného uživatele. Aplikace instalované „jen
+    // pro mě" se proto hledají v HKU\<SID> reálných uživatelů.
+    let mut roots: Vec<(win_sys::registry::RegKey, String)> = vec![
         (
             HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall".to_string(),
         ),
         (
             HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall".to_string(),
         ),
-        (
-            HKEY_CURRENT_USER,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
-        ),
-    ] {
+    ];
+    for sid in enum_subkeys(HKEY_USERS, "") {
+        if sid.starts_with("S-1-5-21") && !sid.ends_with("_Classes") {
+            roots.push((
+                HKEY_USERS,
+                format!(r"{sid}\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+            ));
+        }
+    }
+
+    for (root, base) in roots {
+        let base = base.as_str();
         for sub in enum_subkeys(root, base) {
             let key = format!("{base}\\{sub}");
             let Some(name) = read_string(root, &key, "DisplayName") else {

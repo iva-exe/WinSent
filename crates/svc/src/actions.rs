@@ -171,6 +171,94 @@ impl Orchestrator {
             audit_id: id,
         }
     }
+
+    /// Odinstalace, fáze 2 — SCHVÁLENÍ místo provedení.
+    ///
+    /// Služba běží jako SYSTEM v session 0. Odinstalátor spuštěný odtud
+    /// nemá viditelnou plochu (uživatel neodklikne dialogy), vidí HKCU
+    /// SYSTEMu místo uživatelova a dostane práva, se kterými nepočítá —
+    /// pozorovaný následek byl zásek systému a rozbité audio. Proto se
+    /// tady jen znovu validuje živý stav, přečte se ČERSTVÝ příkaz
+    /// z registru a zapíše audit; spuštění dělá UI ve své relaci.
+    pub fn authorize_uninstall(&self, plan_id: u64) -> Result<(String, i64), ActionResult> {
+        let t0 = Instant::now();
+        let plan = self.plans.lock().expect("plans lock").remove(&plan_id);
+        let Some(plan) = plan else {
+            return Err(deny_result(
+                "plán neexistuje (už použit, nebo nikdy nevznikl)",
+                t0,
+                -1,
+            ));
+        };
+        let action = plan.action;
+        let Action::UninstallApp { identity_key } = &action else {
+            return Err(deny_result("plán není odinstalace", t0, -1));
+        };
+        if unix_now() > plan.expires_ts {
+            let reason = "plán vypršel — sestav ho znovu (stav systému se mohl změnit)";
+            let id = self.audit(&action, "deny", Some(reason), None, None);
+            return Err(deny_result(reason, t0, id));
+        }
+        // Validace proti ŽIVÉMU stavu teď, ne při plánu (SPEC 17.3).
+        let mut ctx = validate::LiveContext::new();
+        if let validate::Verdict::Deny { reason } = validate::validate(&action, &mut ctx) {
+            let id = self.audit(&action, "deny", Some(&reason), None, None);
+            return Err(deny_result(reason, t0, id));
+        }
+        // Příkaz čte vrstva sama z registru — UI ho nemůže podvrhnout.
+        let name = identity_key.strip_prefix("app:").unwrap_or(identity_key);
+        let Some(command) = validate::uninstall_command(name) else {
+            let reason = "odinstalační příkaz se v registru nenašel";
+            let id = self.audit(&action, "deny", Some(reason), None, None);
+            return Err(deny_result(reason, t0, id));
+        };
+        // Odinstalace je nevratná → bod obnovení PŘED spuštěním.
+        if self.strict {
+            if let Err(e) = win_sys::restore::create_restore_point("Winsent: před odinstalací") {
+                let reason = format!("bod obnovení se nepodařil ({e}) — akce zastavena");
+                let id = self.audit(&action, "deny", Some(&reason), None, None);
+                return Err(deny_result(reason, t0, id));
+            }
+        }
+        // Výsledek zatím neznáme — doplní ho ReportUninstall (fáze 4).
+        let id = self.audit(
+            &action,
+            "allow",
+            None,
+            Some("running"),
+            Some(&format!("spouští UI v relaci uživatele: {command}")),
+        );
+        Ok((command, id))
+    }
+
+    /// Odinstalace, fáze 4 — OVĚŘENÍ po doběhnutí odinstalátoru.
+    /// Rozhoduje registr, ne návratový kód odinstalátoru ani UI.
+    pub fn report_uninstall(
+        &self,
+        audit_id: i64,
+        identity_key: &str,
+        detail: &str,
+    ) -> ActionResult {
+        let t0 = Instant::now();
+        let action = Action::UninstallApp {
+            identity_key: identity_key.to_string(),
+        };
+        let verified = actor_app::verify(&action);
+        let outcome = if verified { "ok" } else { "failed" };
+        if audit_id > 0 {
+            let conn = self.audit_conn.lock().expect("audit conn lock");
+            if let Err(e) = store::audit::set_outcome(&conn, audit_id, outcome, detail) {
+                tracing::error!(error = %e, "doplnění výsledku do auditu selhalo");
+            }
+        }
+        ActionResult {
+            verdict: "allow".into(),
+            deny_reason: None,
+            outcome: Some(outcome.into()),
+            duration_ms: t0.elapsed().as_millis() as u64,
+            audit_id,
+        }
+    }
 }
 
 /// Plán podle typu akce — exekutor si vybírá orchestrátor, ne UI.
@@ -199,13 +287,14 @@ fn execute_for(action: &Action) -> (bool, bool, String) {
             (verified, false, out.detail)
         }
 
-        Action::UninstallApp { .. } => {
-            let out = actor_app::execute(action);
-            // Odinstalátor mohl skončit „úspěšně", ale položku nechat —
-            // ověřuje se registr, ne jeho návratový kód.
-            let verified = out.ok && actor_app::verify(action);
-            (verified, false, out.detail)
-        }
+        // Pojistka: odinstalátor se ze služby NIKDY nespouští. Kdyby
+        // sem akce přesto dorazila (nová cesta v kódu), skončí tady —
+        // ne na neviditelné ploše session 0 pod účtem SYSTEM.
+        Action::UninstallApp { .. } => (
+            false,
+            false,
+            "odinstalátor spouští UI v relaci uživatele — služba ho nespouští".into(),
+        ),
         _ => {
             let out = actor_toggle::execute(action);
             let verified = out.ok && actor_toggle::verify(action);

@@ -840,6 +840,19 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     },
                 }
             }
+            // Odinstalace krok 2: znovu zvalidovat a vydat příkaz —
+            // spustí ho UI ve své relaci, ne služba (session 0).
+            Request::AuthorizeUninstall { plan_id } => match orch.authorize_uninstall(plan_id) {
+                Ok((command, audit_id)) => Response::UninstallAuthorized { command, audit_id },
+                Err(res) => Response::ActionResult(res),
+            },
+            // Odinstalace krok 3: odinstalátor doběhl — ověřit registr
+            // a doplnit výsledek k auditu.
+            Request::ReportUninstall {
+                audit_id,
+                identity_key,
+                detail,
+            } => Response::ActionResult(orch.report_uninstall(audit_id, &identity_key, &detail)),
             // Stav auto-úklidu (v4E) — progres indexace + výsledek.
             Request::QueryCleanup => {
                 let c = cleanup_state.lock().expect("cleanup lock");

@@ -38,6 +38,22 @@ pub fn insert(
     Ok(conn.last_insert_rowid())
 }
 
+/// Doplní výsledek k existujícímu záznamu. Používá se tam, kde akci
+/// dokončí až uživatel mimo službu (odinstalátor v jeho relaci) —
+/// verdikt se nikdy nepřepisuje, jen `outcome`/`detail`.
+pub fn set_outcome(
+    conn: &Connection,
+    id: i64,
+    outcome: &str,
+    detail: &str,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE audit SET outcome = ?2, detail = ?3 WHERE id = ?1",
+        params![id, outcome, detail],
+    )?;
+    Ok(())
+}
+
 /// Poslední auditní záznamy (nejnovější první).
 pub fn recent(conn: &Connection, limit: u32) -> Result<Vec<AuditRow>, rusqlite::Error> {
     let mut stmt = conn.prepare_cached(

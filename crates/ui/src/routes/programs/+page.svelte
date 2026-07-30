@@ -229,6 +229,7 @@
 	let uninstPlan = $state(null); // { plan | deny, app }
 	let uninstBusy = $state(false);
 	let uninstToast = $state(null);
+	let uninstRunning = $state(null); // app, jejíž odinstalátor běží
 	let leftovers = $state(null); // { app, paths } po dokončení
 
 	async function askUninstall(app) {
@@ -242,12 +243,19 @@
 		uninstBusy = false;
 	}
 
+	// Odinstalátor spouští UI proces (běží pod tebou, ve tvé relaci) —
+	// ne služba, která je jako SYSTEM v session 0 bez viditelné plochy.
+	// Služba plán jen znovu zvaliduje, vydá příkaz a zapíše audit.
+	// Čeká se, dokud odinstalátor neskončí — dialogy odklikáváš ty.
 	async function confirmUninstall() {
 		if (!uninstPlan?.plan || uninstBusy) return;
-		uninstBusy = true;
 		const app = uninstPlan.app;
+		const planId = uninstPlan.plan.plan_id;
+		uninstBusy = true;
+		uninstPlan = null;
+		uninstRunning = app;
 		try {
-			const r = await invoke('execute_plan', { planId: uninstPlan.plan.plan_id });
+			const r = await invoke('run_uninstall', { planId, identityKey: app.identity_key });
 			if (r.verdict === 'allow' && r.outcome === 'ok') {
 				uninstToast = { kind: 'ok', text: `${app.display_name} odinstalováno` };
 				// Co po aplikaci zbylo — ukázat, ne mazat.
@@ -258,17 +266,22 @@
 					/* zbytky se nepodařilo zjistit */
 				}
 				load();
+			} else if (r.verdict === 'deny') {
+				uninstToast = { kind: 'deny', text: r.deny_reason ?? 'odinstalace zamítnuta' };
 			} else {
+				// Odinstalátor doběhl, ale položka v registru zůstala —
+				// nejčastěji ho uživatel zavřel/zrušil.
 				uninstToast = {
 					kind: 'deny',
-					text: r.deny_reason ?? `odinstalace neproběhla (${r.outcome})`
+					text: `${app.display_name} je pořád nainstalovaná — odinstalace nedoběhla do konce`
 				};
+				load();
 			}
 		} catch (e) {
 			uninstToast = { kind: 'deny', text: String(e) };
 		}
+		uninstRunning = null;
 		uninstBusy = false;
-		uninstPlan = null;
 		setTimeout(() => (uninstToast = null), 6000);
 	}
 
@@ -475,7 +488,8 @@
 					</ul>
 					<p class="d-note">
 						Odinstalátor je od výrobce aplikace — jeho okno a dialogy jsou jeho, ne naše.
-						Winsent po něm jen zkontroluje, co zbylo.
+						Otevře se pod tvým účtem, stejně jako když ho spustíš z Ovládacích panelů;
+						může se zeptat na oprávnění správce. Winsent po něm jen zkontroluje, co zbylo.
 					</p>
 					<div class="d-actions">
 						<button class="d-btn" onclick={() => (uninstPlan = null)}>Zrušit</button>
@@ -484,6 +498,20 @@
 						</button>
 					</div>
 				{/if}
+			</div>
+		</div>
+	{/if}
+
+	<!-- ── Běžící odinstalátor: okno má uživatel, my jen čekáme ── -->
+	{#if uninstRunning}
+		<div class="dlg-backdrop" role="presentation">
+			<div class="dlg" role="dialog">
+				<h2>Odinstalovávám {uninstRunning.display_name}</h2>
+				<p class="d-note">
+					Odinstalátor běží ve vlastním okně — dokonči ho tam. Když se okno neukázalo,
+					hledej ho na hlavním panelu; může čekat na potvrzení oprávnění správce.
+				</p>
+				<p class="d-why">Winsent počká, až skončí, a pak ověří, co po něm zbylo.</p>
 			</div>
 		</div>
 	{/if}
