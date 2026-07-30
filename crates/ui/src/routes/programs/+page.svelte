@@ -229,8 +229,8 @@
 	let uninstPlan = $state(null); // { plan | deny, app }
 	let uninstBusy = $state(false);
 	let uninstToast = $state(null);
-	let uninstRunning = $state(null); // app, jejíž odinstalátor běží
-	let leftovers = $state(null); // { app, paths } po dokončení
+	let uninstRunning = $state(null); // { app, auditId, exeName, paths }
+	let uninstResult = $state(null); // { app, stillInstalled, leftovers }
 
 	async function askUninstall(app) {
 		uninstBusy = true;
@@ -246,43 +246,89 @@
 	// Odinstalátor spouští UI proces (běží pod tebou, ve tvé relaci) —
 	// ne služba, která je jako SYSTEM v session 0 bez viditelné plochy.
 	// Služba plán jen znovu zvaliduje, vydá příkaz a zapíše audit.
-	// Čeká se, dokud odinstalátor neskončí — dialogy odklikáváš ty.
 	async function confirmUninstall() {
 		if (!uninstPlan?.plan || uninstBusy) return;
 		const app = uninstPlan.app;
 		const planId = uninstPlan.plan.plan_id;
 		uninstBusy = true;
 		uninstPlan = null;
-		uninstRunning = app;
 		try {
-			const r = await invoke('run_uninstall', { planId, identityKey: app.identity_key });
-			if (r.verdict === 'allow' && r.outcome === 'ok') {
-				uninstToast = { kind: 'ok', text: `${app.display_name} odinstalováno` };
-				// Co po aplikaci zbylo — ukázat, ne mazat.
-				try {
-					const paths = await invoke('query_leftovers', { identityKey: app.identity_key });
-					if (paths.length) leftovers = { app, paths };
-				} catch {
-					/* zbytky se nepodařilo zjistit */
-				}
-				load();
-			} else if (r.verdict === 'deny') {
-				uninstToast = { kind: 'deny', text: r.deny_reason ?? 'odinstalace zamítnuta' };
+			const r = await invoke('start_uninstall', { planId, identityKey: app.identity_key });
+			if (r.deny_reason) {
+				uninstToast = { kind: 'deny', text: r.deny_reason };
+				setTimeout(() => (uninstToast = null), 6000);
 			} else {
-				// Odinstalátor doběhl, ale položka v registru zůstala —
-				// nejčastěji ho uživatel zavřel/zrušil.
-				uninstToast = {
-					kind: 'deny',
-					text: `${app.display_name} je pořád nainstalovaná — odinstalace nedoběhla do konce`
+				uninstRunning = {
+					app,
+					auditId: r.audit_id,
+					exeName: r.exe_name,
+					paths: r.paths
 				};
-				load();
+				watchUninstaller();
 			}
 		} catch (e) {
 			uninstToast = { kind: 'deny', text: String(e) };
+			setTimeout(() => (uninstToast = null), 6000);
 		}
-		uninstRunning = null;
 		uninstBusy = false;
-		setTimeout(() => (uninstToast = null), 6000);
+	}
+
+	// Hlídá, jestli odinstalátor pořád běží. Odinstalátory se často samy
+	// znovu spustí (kvůli právům správce nebo z kopie v temp), takže se
+	// nespoléháme na jediný proces — a když se spleteme, uživatel má
+	// v okně tlačítko „Hotovo", které to dokončí ručně.
+	async function watchUninstaller() {
+		const watched = uninstRunning;
+		let gone = 0;
+		// Odinstalátor se startuje s UAC — chvíli trvá, než se objeví.
+		await new Promise((r) => setTimeout(r, 2500));
+		while (uninstRunning === watched) {
+			let running = true;
+			try {
+				running = await invoke('uninstall_running', { exeName: watched.exeName });
+			} catch {
+				running = false;
+			}
+			// Dvě měření po sobě, ať nás nespleteš mezi dvěma procesy.
+			gone = running ? 0 : gone + 1;
+			if (gone >= 2) {
+				finishUninstall();
+				return;
+			}
+			await new Promise((r) => setTimeout(r, 1500));
+		}
+	}
+
+	// Odinstalátor skončil: projít cesty aplikace, ověřit registr,
+	// obnovit inventář a ukázat, co zbylo.
+	async function finishUninstall() {
+		const run = uninstRunning;
+		if (!run) return;
+		uninstRunning = null;
+		try {
+			const r = await invoke('finish_uninstall', {
+				auditId: run.auditId,
+				identityKey: run.app.identity_key,
+				paths: run.paths
+			});
+			uninstResult = {
+				app: run.app,
+				stillInstalled: r.still_installed,
+				leftovers: r.leftovers
+			};
+			if (!r.still_installed) {
+				// Registr už ověřila služba — aplikace je pryč. Ze seznamu
+				// ji odebereme hned; celý sken inventáře trvá přes 20 s
+				// a čekat na něj by vypadalo, že se nestalo nic.
+				apps = apps.filter((a) => a.identity_key !== run.app.identity_key);
+				if (selected?.identity_key === run.app.identity_key) selected = null;
+			}
+			// A ještě jednou po skenu, ať sedí i zbytek (velikosti, ikony).
+			setTimeout(load, 30000);
+		} catch (e) {
+			uninstToast = { kind: 'deny', text: String(e) };
+			setTimeout(() => (uninstToast = null), 6000);
+		}
 	}
 
 	// „x procesů běží" → Tasks se zaskrolováním a probliknutím řádku.
@@ -488,8 +534,9 @@
 					</ul>
 					<p class="d-note">
 						Odinstalátor je od výrobce aplikace — jeho okno a dialogy jsou jeho, ne naše.
-						Otevře se pod tvým účtem, stejně jako když ho spustíš z Ovládacích panelů;
-						může se zeptat na oprávnění správce. Winsent po něm jen zkontroluje, co zbylo.
+						Otevře se pod tvým účtem, stejně jako když ho spustíš z Ovládacích panelů; může
+						se zeptat na oprávnění správce. Winsent po něm jen zkontroluje, co zbylo — bod
+						obnovení nedělá, ten si Windows u instalací zakládají samy.
 					</p>
 					<div class="d-actions">
 						<button class="d-btn" onclick={() => (uninstPlan = null)}>Zrušit</button>
@@ -506,36 +553,62 @@
 	{#if uninstRunning}
 		<div class="dlg-backdrop" role="presentation">
 			<div class="dlg" role="dialog">
-				<h2>Odinstalovávám {uninstRunning.display_name}</h2>
+				<h2>Odinstalovávám {uninstRunning.app.display_name}</h2>
 				<p class="d-note">
-					Odinstalátor běží ve vlastním okně — dokonči ho tam. Když se okno neukázalo,
-					hledej ho na hlavním panelu; může čekat na potvrzení oprávnění správce.
+					Odinstalátor běží ve vlastním okně — dokonči ho tam. Když se okno neukázalo, hledej
+					ho na hlavním panelu; může čekat na potvrzení oprávnění správce.
 				</p>
-				<p class="d-why">Winsent počká, až skončí, a pak ověří, co po něm zbylo.</p>
+				<p class="d-why">
+					Až skončí, projdeme všechny cesty aplikace a ukážeme, co po ní zbylo. Poznáme to
+					sami — a když ne, klikni na Hotovo.
+				</p>
+				<div class="d-actions">
+					<button class="d-btn" onclick={finishUninstall}>Hotovo, zkontroluj</button>
+				</div>
 			</div>
 		</div>
 	{/if}
 
-	<!-- ── Zbytky po odinstalaci: ukázat, nemazat ── -->
-	{#if leftovers}
-		<div class="dlg-backdrop" role="presentation" onclick={() => (leftovers = null)} onkeydown={() => {}}>
+	<!-- ── Výsledek: co zbylo na disku. Ukázat, nemazat. ── -->
+	{#if uninstResult}
+		<div
+			class="dlg-backdrop"
+			role="presentation"
+			onclick={() => (uninstResult = null)}
+			onkeydown={() => {}}
+		>
 			<div class="dlg" role="dialog" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
-				<h2>Po odinstalaci zbylo {leftovers.paths.length} položek</h2>
-				<p class="d-note">
-					Odinstalátor je nechal na disku. Často jsou to tvoje data — profily, nastavení,
-					uložené pozice ve hře. Projdi si je a smaž jen to, co opravdu nechceš.
-				</p>
-				<ul class="d-steps">
-					{#each leftovers.paths as p (p)}
-						<li>
-							<button class="left-path mono" onclick={() => openPath(p)} title="Otevřít v Průzkumníku"
-								>{p}</button
-							>
-						</li>
-					{/each}
-				</ul>
+				{#if uninstResult.stillInstalled}
+					<h2>{uninstResult.app.display_name} je pořád nainstalovaná</h2>
+					<p class="d-note">
+						V registru je dál — odinstalátor nejspíš skončil dřív, než odinstalaci dokončil
+						(zavřený nebo zrušený). Můžeš to zkusit znovu.
+					</p>
+				{:else}
+					<h2>{uninstResult.app.display_name} odinstalováno</h2>
+				{/if}
+				{#if uninstResult.leftovers.length}
+					<p class="d-note">
+						Na disku zůstalo {uninstResult.leftovers.length} položek. Často jsou to tvoje data —
+						profily, nastavení, uložené pozice ve hře. Projdi si je a smaž jen to, co opravdu
+						nechceš.
+					</p>
+					<ul class="d-steps">
+						{#each uninstResult.leftovers as p (p)}
+							<li>
+								<button
+									class="left-path mono"
+									onclick={() => openPath(p)}
+									title="Otevřít v Průzkumníku">{p}</button
+								>
+							</li>
+						{/each}
+					</ul>
+				{:else if !uninstResult.stillInstalled}
+					<p class="d-note">Na disku po ní nic nezbylo — všechny známé cesty jsou pryč.</p>
+				{/if}
 				<div class="d-actions">
-					<button class="d-btn" onclick={() => (leftovers = null)}>Zavřít</button>
+					<button class="d-btn" onclick={() => (uninstResult = null)}>Zavřít</button>
 				</div>
 			</div>
 		</div>

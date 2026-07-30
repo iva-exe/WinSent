@@ -54,7 +54,10 @@ fn main() {
     // 3) Neexistující plán se neschválí.
     match ipc::client::authorize_uninstall(999_999) {
         Ok(Err(d)) if d.verdict == "deny" => {
-            println!("OK  neznámý plán zamítnut: {}", d.deny_reason.unwrap_or_default())
+            println!(
+                "OK  neznámý plán zamítnut: {}",
+                d.deny_reason.unwrap_or_default()
+            )
         }
         Ok(Ok((cmd, _))) => {
             fail += 1;
@@ -70,7 +73,10 @@ fn main() {
     let target = apps
         .iter()
         .find(|a| {
-            let k = a.identity_key.strip_prefix("app:").unwrap_or(&a.identity_key);
+            let k = a
+                .identity_key
+                .strip_prefix("app:")
+                .unwrap_or(&a.identity_key);
             validate::uninstall_command(k).is_some()
         })
         .map(|a| a.identity_key.clone());

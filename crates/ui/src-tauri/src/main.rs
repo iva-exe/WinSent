@@ -265,30 +265,100 @@ fn query_leftovers(identity_key: String) -> Result<Vec<String>, String> {
     ipc::client::query_leftovers(identity_key).map_err(|e| e.to_string())
 }
 
-/// Provedení odinstalace (v8) — tři kroky, každý na svém místě:
+/// Spuštěná odinstalace — co UI potřebuje k dalším dvěma krokům.
+#[derive(Debug, Serialize)]
+struct UninstallStarted {
+    /// Zamítnutí vrstvou; když je vyplněné, nic se nespustilo.
+    deny_reason: Option<String>,
+    audit_id: i64,
+    /// Jméno spuštěné binárky — podle ní se pozná, že ještě běží.
+    exe_name: String,
+    /// Cesty aplikace zachycené PŘED odinstalací. Inventář je po ní
+    /// ze své databáze smaže, takže je musíme mít stranou.
+    paths: Vec<String>,
+}
+
+/// Odinstalace, krok 1 — SPUSTIT. Vrací se hned, ať UI může ukázat,
+/// že odinstalátor běží; čekání řeší `uninstall_running`.
 ///
-/// 1. služba plán znovu zvaliduje a vydá příkaz (`AuthorizeUninstall`),
-/// 2. odinstalátor spustíme **tady**, v relaci uživatele — služba běží
-///    jako SYSTEM v session 0, kde by neměl viditelnou plochu ani
-///    správný `HKEY_CURRENT_USER`,
-/// 3. po doběhnutí služba ověří registr a doplní výsledek do auditu.
+/// Služba plán znovu zvaliduje a vydá příkaz, spouštíme ho ale **tady**,
+/// v relaci uživatele — služba běží jako SYSTEM v session 0, kde by
+/// odinstalátor neměl viditelnou plochu ani správný `HKEY_CURRENT_USER`.
 #[tauri::command(async)]
-fn run_uninstall(
-    plan_id: u64,
-    identity_key: String,
-) -> Result<core_types::action::ActionResult, String> {
+fn start_uninstall(plan_id: u64, identity_key: String) -> Result<UninstallStarted, String> {
+    // Cesty aplikace ještě než do nich odinstalátor sáhne.
+    let paths: Vec<String> = ipc::client::query_app_map(identity_key)
+        .map(|rows| rows.into_iter().map(|p| p.path).collect())
+        .unwrap_or_default();
+
     let (command, audit_id) = match ipc::client::authorize_uninstall(plan_id) {
         Ok(Ok(pair)) => pair,
         // Zamítnutí není chyba volání — vracíme ho UI k zobrazení.
-        Ok(Err(deny)) => return Ok(deny),
+        Ok(Err(deny)) => {
+            return Ok(UninstallStarted {
+                deny_reason: Some(deny.deny_reason.unwrap_or_else(|| "zamítnuto".into())),
+                audit_id: deny.audit_id,
+                exe_name: String::new(),
+                paths,
+            })
+        }
         Err(e) => return Err(e.to_string()),
     };
-    // Selhání spuštění se hlásí zpátky, ať audit nezůstane „running".
-    let detail = match uninstall::run_and_wait(&command) {
-        Ok(d) => d,
-        Err(e) => e.to_string(),
-    };
-    ipc::client::report_uninstall(audit_id, identity_key, detail).map_err(|e| e.to_string())
+    match uninstall::launch(&command) {
+        Ok(exe_name) => Ok(UninstallStarted {
+            deny_reason: None,
+            audit_id,
+            exe_name,
+            paths,
+        }),
+        // Neúspěšný start se hlásí hned, ať audit nezůstane „running".
+        Err(e) => {
+            let _ = ipc::client::report_uninstall(audit_id, String::new(), e.to_string());
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Odinstalace, krok 2 — BĚŽÍ JEŠTĚ? UI se ptá po sekundách a mezitím
+/// ukazuje, co se děje.
+#[tauri::command(async)]
+fn uninstall_running(exe_name: String) -> bool {
+    uninstall::still_running(&exe_name)
+}
+
+/// Výsledek odinstalace pro UI.
+#[derive(Debug, Serialize)]
+struct UninstallDone {
+    /// Je aplikace pořád v registru? (Odinstalátor šlo zavřít.)
+    still_installed: bool,
+    /// Cesty aplikace, které na disku zůstaly.
+    leftovers: Vec<String>,
+}
+
+/// Odinstalace, krok 3 — DOKONČIT: projít cesty aplikace, ověřit registr,
+/// doplnit audit a vyžádat nový sken inventáře.
+#[tauri::command(async)]
+fn finish_uninstall(
+    audit_id: i64,
+    identity_key: String,
+    paths: Vec<String>,
+) -> Result<UninstallDone, String> {
+    uninstall::close_running();
+    let leftovers = uninstall::remaining(&paths);
+    let detail = format!(
+        "po odinstalaci zbylo {} z {} cest",
+        leftovers.len(),
+        paths.len()
+    );
+    // Registr rozhoduje o tom, zda aplikace zmizela — ne odinstalátor.
+    let res =
+        ipc::client::report_uninstall(audit_id, identity_key, detail).map_err(|e| e.to_string())?;
+    // Inventář ještě drží starý stav — nový sken ho srovná.
+    let _ = ipc::client::rescan_apps();
+    Ok(UninstallDone {
+        still_installed: res.outcome.as_deref() != Some("ok"),
+        leftovers,
+    })
 }
 
 /// Auditní záznamy (v5) — historie zásahů do systému.
@@ -425,7 +495,9 @@ fn main() {
             plan_kill,
             plan_delete,
             plan_uninstall,
-            run_uninstall,
+            start_uninstall,
+            uninstall_running,
+            finish_uninstall,
             query_leftovers,
             query_holders,
             execute_plan

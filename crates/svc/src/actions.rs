@@ -212,14 +212,11 @@ impl Orchestrator {
             let id = self.audit(&action, "deny", Some(reason), None, None);
             return Err(deny_result(reason, t0, id));
         };
-        // Odinstalace je nevratná → bod obnovení PŘED spuštěním.
-        if self.strict {
-            if let Err(e) = win_sys::restore::create_restore_point("Winsent: před odinstalací") {
-                let reason = format!("bod obnovení se nepodařil ({e}) — akce zastavena");
-                let id = self.audit(&action, "deny", Some(&reason), None, None);
-                return Err(deny_result(reason, t0, id));
-            }
-        }
+        // Bod obnovení se tady VĚDOMĚ nedělá. Snímek VSS trvá desítky
+        // sekund a uživatel by mezitím jen koukal na nic — odinstalátor
+        // by se spustil až dlouho po kliknutí. Windows navíc u MSI
+        // instalací dělají vlastní bod samy. Bod obnovení zůstává
+        // u ostatních nevratných T1 akcí (viz `execute`).
         // Výsledek zatím neznáme — doplní ho ReportUninstall (fáze 4).
         let id = self.audit(
             &action,

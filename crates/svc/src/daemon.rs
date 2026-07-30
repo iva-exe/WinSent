@@ -454,6 +454,18 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             ms = t0.elapsed().as_millis() as u64,
                             "sken inventáře hotový"
                         );
+                        // Seznam do DB HNED, ještě před ikonami. Ikony
+                        // trvají další desítky sekund a čekat s nimi
+                        // znamenalo, že odinstalovaná aplikace zůstala
+                        // v seznamu skoro minutu po tom, co zmizela.
+                        let scan: Vec<store::apps::ScanApp> =
+                            apps.iter().cloned().map(to_scan_app).collect();
+                        if tx
+                            .try_send(crate::incidents::StoreMsg::Inventory(scan))
+                            .is_err()
+                        {
+                            tracing::warn!("zápis inventáře se nevešel do kanálu");
+                        }
                         // Ikony i pro aplikace, jejichž proces neběží —
                         // z DisplayIcon / zástupce / instalace / MSIX
                         // loga. Jednou na klíč, na BELOW_NORMAL.
@@ -480,14 +492,6 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             }
                         }
                         tracing::info!(added = icons_added, "ikony inventáře doplněny");
-                        let scan: Vec<store::apps::ScanApp> =
-                            apps.into_iter().map(to_scan_app).collect();
-                        if tx
-                            .try_send(crate::incidents::StoreMsg::Inventory(scan))
-                            .is_err()
-                        {
-                            tracing::warn!("zápis inventáře se nevešel do kanálu");
-                        }
                         last_scan = Some(Instant::now());
                     }
                     // Janitor MFT indexů: nepoužité 5 min → pryč.
