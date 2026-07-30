@@ -122,6 +122,54 @@ pub fn validate(action: &Action, ctx: &mut LiveContext) -> Verdict {
             }
         }
 
+        // ── T1: mazání do koše (v8, SPEC 18.2). Nejpřísnější validace
+        // v projektu — smazaný soubor jde sice vrátit z koše, ale
+        // rozbitý systém ne.
+        Action::DeleteFiles { paths } => {
+            if paths.is_empty() {
+                return Verdict::deny("nebyla vybrána žádná cesta");
+            }
+            if paths.len() > 500 {
+                return Verdict::deny("příliš mnoho položek najednou (max 500)");
+            }
+            for path in paths {
+                let p = path.trim();
+                if p.is_empty() {
+                    return Verdict::deny("prázdná cesta");
+                }
+                // Relativní cesty a wildcardy sem nepatří — cíl musí
+                // být jednoznačný, ne něco, co se doexpanduje jinde.
+                if p.contains('*') || p.contains('?') {
+                    return Verdict::deny("zástupné znaky nejsou povolené");
+                }
+                let path_buf = std::path::Path::new(p);
+                if !path_buf.is_absolute() {
+                    return Verdict::deny(format!("cesta není absolutní: {p}"));
+                }
+                // ČERSTVÁ kontrola existence (SPEC 17.3) — UI mohlo
+                // ukazovat starý stav.
+                if !path_buf.exists() {
+                    return Verdict::deny(format!("už neexistuje: {p}"));
+                }
+                if let Some(reason) = protected_path(p) {
+                    return Verdict::deny(reason);
+                }
+                // Kritický držitel (Restart Manager) akci zamyká.
+                if let Ok(hs) = win_sys::rm::holders(std::slice::from_ref(&path.clone())) {
+                    if let Some(h) = hs
+                        .iter()
+                        .find(|h| h.kind == win_sys::rm::HolderKind::Critical)
+                    {
+                        return Verdict::deny(format!(
+                            "soubor drží kritický systémový proces {} (pid {})",
+                            h.name, h.pid
+                        ));
+                    }
+                }
+            }
+            Verdict::Allow
+        }
+
         // ── T1: ukončení procesu (v7). Stejná kontrola jako CheckProc
         // + zákaz sebevraždy: démon nesmí zabít sám sebe (přišli
         // bychom o monitoring i o auditní zápis výsledku).
@@ -258,6 +306,67 @@ fn service_start_type(name: &str) -> Option<u64> {
         &format!(r"SYSTEM\CurrentControlSet\Services\{name}"),
         "Start",
     )
+}
+
+/// Cesty, které se NIKDY nesmí mazat (SPEC 18.2). Vrací důvod
+/// zamítnutí, nebo None když je cesta v pořádku.
+fn protected_path(path: &str) -> Option<String> {
+    let p = path.replace('/', "\\").to_ascii_lowercase();
+    let p = p.trim_end_matches('\\').to_string();
+
+    // Kořen svazku („C:", „C:\") — smazat disk nelze ani omylem.
+    if p.len() <= 3 && p.contains(':') {
+        return Some("kořen disku nelze smazat".into());
+    }
+
+    let sysroot = std::env::var("SystemRoot")
+        .unwrap_or_else(|_| r"C:\Windows".into())
+        .to_ascii_lowercase();
+    let sysroot = sysroot.trim_end_matches('\\').to_string();
+
+    // Samotné systémové adresáře (ne jejich obsah v temp).
+    const SYSTEM_DIRS: &[&str] = &[
+        "\\windows",
+        "\\system32",
+        "\\syswow64",
+        "\\winsxs",
+        "\\boot",
+        "\\perflogs",
+        "\\recovery",
+        "\\program files",
+        "\\program files (x86)",
+        "\\programdata",
+        "\\users",
+        "\\$recycle.bin",
+        "\\system volume information",
+    ];
+    for d in SYSTEM_DIRS {
+        // Přesná shoda adresáře, ne prefix cesty pod ním: mazat
+        // C:\Program Files\Něco\soubor.txt je legitimní, mazat celé
+        // C:\Program Files ne.
+        if p.ends_with(d) && p.matches('\\').count() <= 2 {
+            return Some(format!("systémový adresář nelze smazat: {path}"));
+        }
+    }
+
+    // Cokoliv PŘÍMO ve Windows\System32 a spol. — tam se maže jen
+    // přes Windows Update, ne přes nás. Výjimka: temp adresáře.
+    let in_temp = p.contains("\\temp\\") || p.contains("\\inetcache\\");
+    if !in_temp
+        && (p.starts_with(&format!("{sysroot}\\system32"))
+            || p.starts_with(&format!("{sysroot}\\syswow64"))
+            || p.starts_with(&format!("{sysroot}\\winsxs")))
+    {
+        return Some(format!("systémový soubor Windows nelze smazat: {path}"));
+    }
+
+    // Profil uživatele jako celek (C:\Users\Jmeno) — ne jednotlivé
+    // soubory v něm.
+    if p.matches('\\').count() == 2 && p.contains("\\users\\") {
+        return Some("celý uživatelský profil nelze smazat".into());
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -408,6 +517,68 @@ mod tests {
             &mut ctx,
         );
         assert!(matches!(v, Verdict::Deny { .. }));
+    }
+
+    // Brána v8: systémové cesty jsou zamčené PŘED jakýmkoli mazáním.
+    #[test]
+    fn delete_system_paths_denied() {
+        let mut ctx = LiveContext::new();
+        let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        for p in [
+            r"C:\".to_string(),
+            r"C:\Windows".to_string(),
+            r"C:\Program Files".to_string(),
+            r"C:\Users".to_string(),
+            format!(r"{sysroot}\System32"),
+            format!(r"{sysroot}\System32\kernel32.dll"),
+        ] {
+            let v = validate(
+                &Action::DeleteFiles {
+                    paths: vec![p.clone()],
+                },
+                &mut ctx,
+            );
+            assert!(
+                matches!(v, Verdict::Deny { .. }),
+                "mazání {p} musí být zamítnuto, ale prošlo"
+            );
+        }
+    }
+
+    // Neexistující cesta, wildcard i relativní cesta = zamítnuto.
+    #[test]
+    fn delete_bad_targets_denied() {
+        let mut ctx = LiveContext::new();
+        for p in [
+            r"C:\rozhodne-neexistujici-slozka-xyz\a.txt",
+            r"C:\Users\*\Documents",
+            r"relativni\cesta.txt",
+            "",
+        ] {
+            let v = validate(
+                &Action::DeleteFiles {
+                    paths: vec![p.to_string()],
+                },
+                &mut ctx,
+            );
+            assert!(matches!(v, Verdict::Deny { .. }), "{p} mělo být zamítnuto");
+        }
+    }
+
+    // Běžný soubor v temp adresáři projde (to je smysl úklidu).
+    #[test]
+    fn delete_temp_file_allowed() {
+        let mut ctx = LiveContext::new();
+        let f = std::env::temp_dir().join("winsent-validate-test.tmp");
+        std::fs::write(&f, b"x").expect("zapsat testovací soubor");
+        let v = validate(
+            &Action::DeleteFiles {
+                paths: vec![f.to_string_lossy().into_owned()],
+            },
+            &mut ctx,
+        );
+        let _ = std::fs::remove_file(&f);
+        assert!(matches!(v, Verdict::Allow), "běžný temp soubor má projít");
     }
 
     // Ochrana proti podvrženému jménu služby s cestou.

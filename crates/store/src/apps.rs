@@ -105,7 +105,11 @@ pub fn list_apps(conn: &Connection) -> Result<Vec<AppRow>, rusqlite::Error> {
     let mut stmt = conn.prepare_cached(
         "SELECT a.identity_key, a.kind, a.display_name, a.publisher, a.version,
                 a.install_date,
-                (SELECT COUNT(*) FROM app_path p WHERE p.app_id = a.id)
+                (SELECT COUNT(*) FROM app_path p WHERE p.app_id = a.id),
+                -- Instalační cesty aplikace (pro kontrolu, že ještě
+                -- existují na disku — viz missing_install níž).
+                (SELECT GROUP_CONCAT(p.path, '|') FROM app_path p
+                  WHERE p.app_id = a.id AND p.role = 'install')
          FROM app a ORDER BY LOWER(a.display_name)",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -117,6 +121,15 @@ pub fn list_apps(conn: &Connection) -> Result<Vec<AppRow>, rusqlite::Error> {
             version: r.get(4)?,
             install_ts: r.get(5)?,
             path_count: r.get::<_, i64>(6)?.max(0) as u32,
+            // Instalační adresář v registru je, ale na disku není —
+            // typicky ručně smazaná hra, po které zbyl jen záznam.
+            // Kontroluje se jen existence (levné), ne obsah.
+            missing_install: match r.get::<_, Option<String>>(7)? {
+                Some(paths) if !paths.is_empty() => paths
+                    .split('|')
+                    .all(|p| !p.trim().is_empty() && !std::path::Path::new(p.trim()).exists()),
+                _ => false,
+            },
         })
     })?;
     rows.collect()

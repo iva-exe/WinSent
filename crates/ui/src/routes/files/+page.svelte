@@ -12,6 +12,7 @@
 		Copy,
 		FileX,
 		Loader,
+		Trash2,
 		TriangleAlert,
 		FileType2,
 		FolderTree
@@ -84,6 +85,42 @@
 	);
 
 	let indexingDone = $derived.by(() => (cleanup?.indexing ?? []).every((i) => i[2]));
+
+	// ── Mazání do koše (v8) — nabídka, ne výchozí cesta. Plán ukáže
+	// i to, kdo soubor drží; provedení jde přes validační vrstvu.
+	let delPlan = $state(null); // { plan | deny, paths }
+	let delBusy = $state(false);
+	let delToast = $state(null);
+
+	async function askDelete(paths, ev) {
+		ev?.stopPropagation();
+		delBusy = true;
+		try {
+			const r = await invoke('plan_delete', { paths });
+			delPlan = r.plan_id != null ? { plan: r, paths } : { deny: r, paths };
+		} catch (e) {
+			delToast = { kind: 'deny', text: String(e) };
+		}
+		delBusy = false;
+	}
+
+	async function confirmDelete() {
+		if (!delPlan?.plan || delBusy) return;
+		delBusy = true;
+		try {
+			const r = await invoke('execute_plan', { planId: delPlan.plan.plan_id });
+			delToast =
+				r.verdict === 'allow' && r.outcome === 'ok'
+					? { kind: 'ok', text: `přesunuto do koše (${delPlan.paths.length})` }
+					: { kind: 'deny', text: r.deny_reason ?? `nepodařilo se (${r.outcome})` };
+			load();
+		} catch (e) {
+			delToast = { kind: 'deny', text: String(e) };
+		}
+		delBusy = false;
+		delPlan = null;
+		setTimeout(() => (delToast = null), 4000);
+	}
 
 	async function openPath(path) {
 		try {
@@ -211,9 +248,18 @@
 								<li>
 									<span class="dup-size mono">{fmtSize(size)} × {paths.length}</span>
 									{#each paths as p (p)}
-										<button class="row" onclick={() => openPath(p)}>
-											<span class="r-path mono">{p}</span>
-										</button>
+										<div class="row-wrap">
+											<button class="row" onclick={() => openPath(p)}>
+												<span class="r-path mono">{p}</span>
+											</button>
+											<button
+												class="del-btn"
+												title="Přesunout do koše (jde vrátit)"
+												onclick={(ev) => askDelete([p], ev)}
+											>
+												<Trash2 size={13} />
+											</button>
+										</div>
 									{/each}
 								</li>
 							{/each}
@@ -228,9 +274,18 @@
 						<p class="note">žádné prázdné soubory v profilech</p>
 					{:else}
 						{#each r.zero_byte.slice(0, 60) as p (p)}
-							<button class="row" onclick={() => openPath(p)}>
-								<span class="r-path mono">{p}</span>
-							</button>
+							<div class="row-wrap">
+								<button class="row" onclick={() => openPath(p)}>
+									<span class="r-path mono">{p}</span>
+								</button>
+								<button
+									class="del-btn"
+									title="Přesunout do koše (jde vrátit)"
+									onclick={(ev) => askDelete([p], ev)}
+								>
+									<Trash2 size={13} />
+								</button>
+							</div>
 						{/each}
 					{/if}
 				</div>
@@ -238,10 +293,43 @@
 			<p class="note big">
 				Winsent ukáže, co zabírá místo — mazat necháme na tobě. Klik otevře složku
 				v Průzkumníku, kde soubor uvidíš v kontextu a smažeš vědomě. Žádná appka
-				za tebe nemá rozhodovat, co je tvoje data a co smetí.
+				za tebe nemá rozhodovat, co je tvoje data a co smetí. Když si přesto chceš
+				nechat pomoct, ikona koše u položky ji přesune do koše — odkud jde vrátit.
 			</p>
 		{/if}
 	</section>
+
+	<!-- ── Přesun do koše: plán → potvrzení (v8, T1) ── -->
+	{#if delPlan}
+		<div class="dlg-backdrop" role="presentation" onclick={() => (delPlan = null)} onkeydown={() => {}}>
+			<div class="dlg" role="dialog" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
+				{#if delPlan.deny}
+					<h2>Nelze smazat</h2>
+					<p class="d-why">{delPlan.deny.deny_reason}</p>
+					<div class="d-actions">
+						<button class="d-btn" onclick={() => (delPlan = null)}>Zavřít</button>
+					</div>
+				{:else}
+					<h2>Přesunout do koše?</h2>
+					<ul class="d-steps">
+						{#each delPlan.plan.steps as s, i (i)}
+							<li class:warn={s.description.startsWith('pozor')}>{s.description}</li>
+						{/each}
+					</ul>
+					<p class="d-note">Z koše jde soubor kdykoli vrátit zpět.</p>
+					<div class="d-actions">
+						<button class="d-btn" onclick={() => (delPlan = null)}>Zrušit</button>
+						<button class="d-btn primary" disabled={delBusy} onclick={confirmDelete}>
+							{delBusy ? 'mažu…' : 'Do koše'}
+						</button>
+					</div>
+				{/if}
+			</div>
+		</div>
+	{/if}
+	{#if delToast}
+		<div class="dlg-toast {delToast.kind}">{delToast.text}</div>
+	{/if}
 
 	<!-- ── Co zabírá nejvíc místa ── -->
 	{#if bigVolumes.length}
@@ -562,6 +650,120 @@
 	.row.hidden-f .r-path {
 		color: var(--text-faint);
 	}
+	/* Řádek s cestou + tlačítko koše (mazání je nabídka, ne
+	   hlavní cesta — ta zůstává „otevřít složku"). */
+	.row-wrap {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+	.row-wrap .row {
+		flex: 1;
+		min-width: 0;
+	}
+	.del-btn {
+		flex: none;
+		background: none;
+		border: none;
+		color: var(--text-faint);
+		padding: 3px 5px;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		display: grid;
+		place-items: center;
+	}
+	.del-btn:hover {
+		color: var(--danger);
+		background: var(--surface-hover);
+	}
+
+	/* Dialog potvrzení (stejný jazyk jako v Tasks) */
+	.dlg-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(8, 9, 11, 0.62);
+		display: grid;
+		place-items: center;
+		z-index: 40;
+	}
+	.dlg {
+		width: min(560px, 90vw);
+		background: #16171c;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-lg);
+		padding: 20px 22px;
+	}
+	.dlg h2 {
+		font-size: 1.05rem;
+		margin-bottom: 10px;
+	}
+	.d-steps {
+		list-style: none;
+		margin: 0 0 12px;
+		padding: 0;
+		max-height: 40vh;
+		overflow-y: auto;
+		font-size: 0.84rem;
+	}
+	.d-steps li {
+		padding: 5px 0;
+		border-bottom: 1px dashed var(--border);
+		word-break: break-all;
+	}
+	.d-steps li.warn {
+		color: var(--warn);
+	}
+	.d-why {
+		color: var(--danger);
+		font-size: 0.88rem;
+		margin-bottom: 12px;
+	}
+	.d-note {
+		font-size: 0.78rem;
+		color: var(--text-faint);
+		margin-bottom: 14px;
+	}
+	.d-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+	}
+	.d-btn {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text);
+		font: inherit;
+		font-size: 0.84rem;
+		padding: 7px 14px;
+		cursor: pointer;
+	}
+	.d-btn.primary {
+		border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+		color: var(--warn);
+	}
+	.d-btn:hover {
+		border-color: var(--border-strong);
+	}
+	.dlg-toast {
+		position: fixed;
+		bottom: 18px;
+		left: 50%;
+		transform: translateX(-50%);
+		padding: 9px 16px;
+		border-radius: var(--radius);
+		background: #16171c;
+		border: 1px solid var(--border-strong);
+		font-size: 0.84rem;
+		z-index: 50;
+	}
+	.dlg-toast.ok {
+		color: var(--ok);
+	}
+	.dlg-toast.deny {
+		color: var(--danger);
+	}
+
 	.mono {
 		font-family: var(--font-mono);
 	}

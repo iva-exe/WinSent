@@ -86,6 +86,7 @@ collector-boot = { path = "crates/collector-boot" }
 fs-index = { path = "crates/fs-index" }
 actor-toggle = { path = "crates/actor-toggle" }
 actor-proc = { path = "crates/actor-proc" }
+actor-file = { path = "crates/actor-file" }
 identity = { path = "crates/identity" }
 
 # externí — verze zamčené přes Cargo.lock, tady jen semver rozsahy

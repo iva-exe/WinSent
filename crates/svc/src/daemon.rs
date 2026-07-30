@@ -806,6 +806,23 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 let groups = fs_index::find_duplicates(&root, min_size.max(1), 200_000);
                 Response::Duplicates(groups.into_iter().map(|g| (g.size, g.paths)).collect())
             }
+            // Kdo drží soubory (v8, SPEC 18.1) — čistě čtecí dotaz na
+            // Restart Manager; nic se neukončuje.
+            Request::QueryHolders { paths } => match win_sys::rm::holders(&paths) {
+                Ok(hs) => Response::Holders(
+                    hs.into_iter()
+                        .map(|h| core_types::proc::HolderRow {
+                            pid: h.pid,
+                            name: h.name,
+                            kind: h.kind.as_str().to_string(),
+                            service: h.service,
+                        })
+                        .collect(),
+                ),
+                Err(e) => Response::Error {
+                    message: format!("Restart Manager selhal: {e}"),
+                },
+            },
             // Stav auto-úklidu (v4E) — progres indexace + výsledek.
             Request::QueryCleanup => {
                 let c = cleanup_state.lock().expect("cleanup lock");

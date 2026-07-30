@@ -31,6 +31,9 @@ pub enum Action {
         /// Ukončit i potomky (strom), nebo jen tento proces.
         tree: bool,
     },
+    /// T1: smazání souborů DO KOŠE (v8, SPEC 18.2). Vratné vrácením
+    /// z koše, ale pro uživatele je to „mazání" → vždy s potvrzením.
+    DeleteFiles { paths: Vec<String> },
     /// T0: startup položka on/off (v6, SPEC kap. 7). Vratná —
     /// zápis přes StartupApproved / Enabled / start typ služby,
     /// NIKDY mazání hodnoty.
@@ -46,9 +49,10 @@ impl Action {
     pub fn class(&self) -> ActionClass {
         match self {
             Action::TestToggle { .. } | Action::StartupToggle { .. } => ActionClass::T0,
-            Action::TestOp { .. } | Action::CheckProc { .. } | Action::KillProc { .. } => {
-                ActionClass::T1
-            }
+            Action::TestOp { .. }
+            | Action::CheckProc { .. }
+            | Action::KillProc { .. }
+            | Action::DeleteFiles { .. } => ActionClass::T1,
         }
     }
 
@@ -67,6 +71,11 @@ impl Action {
                 "pid {pid} @{create_time}{}",
                 if *tree { " (strom)" } else { "" }
             ),
+            Action::DeleteFiles { paths } => match paths.len() {
+                0 => "(nic)".into(),
+                1 => paths[0].clone(),
+                n => format!("{} a dalších {}", paths[0], n - 1),
+            },
         }
     }
 
@@ -78,6 +87,7 @@ impl Action {
             Action::CheckProc { .. } => "check_proc",
             Action::StartupToggle { .. } => "startup_toggle",
             Action::KillProc { .. } => "kill",
+            Action::DeleteFiles { .. } => "delete",
         }
     }
 }

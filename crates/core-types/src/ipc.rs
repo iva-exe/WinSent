@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,6 +76,8 @@ pub enum Request {
     QueryAudit { limit: u32 },
     /// Startup položky — co startuje s Windows (v6, SPEC kap. 7).
     QueryStartup,
+    /// Kdo drží soubory (v8, Restart Manager) — „proč to nejde smazat".
+    QueryHolders { paths: Vec<String> },
 }
 
 /// Odpověď služba → UI.
@@ -144,6 +146,8 @@ pub enum Response {
     Audit(Vec<crate::action::AuditRow>),
     /// Startup položky (v6).
     Startup(Vec<crate::proc::StartupRow>),
+    /// Držitelé souborů (v8).
+    Holders(Vec<crate::proc::HolderRow>),
     /// Skupiny duplicit: (velikost, cesty).
     Duplicates(Vec<(u64, Vec<String>)>),
     /// Stav úklidu: indexace svazků (písmeno, záznamů, hotovo),

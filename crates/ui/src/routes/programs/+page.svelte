@@ -16,7 +16,8 @@
 		BookKey,
 		Scale,
 		ExternalLink,
-		ShieldCheck
+		ShieldCheck,
+		PackageX
 	} from 'lucide-svelte';
 	import SystemBadge from '$lib/SystemBadge.svelte';
 	import { isSystemApp } from '$lib/mandatory.js';
@@ -301,6 +302,14 @@
 									<span class="row-title">
 										{a.display_name}
 										{#if isSystemApp(a)}<SystemBadge compact />{/if}
+										{#if a.missing_install}
+											<span
+												class="ghost-badge"
+												title="Instalační složka na disku neexistuje — po aplikaci zbyl jen záznam"
+											>
+												<PackageX size={13} /> chybí
+											</span>
+										{/if}
 									</span>
 									<span class="row-pub">{a.publisher ?? '—'}</span>
 								</span>
@@ -324,6 +333,11 @@
 							<h2>
 								{selected.display_name}
 								{#if isSystemApp(selected)}<SystemBadge />{/if}
+								{#if selected.missing_install}
+									<span class="ghost-badge big">
+										<PackageX size={15} /> instalace chybí na disku
+									</span>
+								{/if}
 							</h2>
 							<span class="d-meta">
 								{selected.publisher ?? '—'} · {selected.version ?? '—'} ·
@@ -499,6 +513,25 @@
 		background-color: #16171c;
 		color: var(--text);
 	}
+	/* Aplikace, po které zbyl jen záznam — instalační složka je pryč. */
+	.ghost-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		font-size: 0.68rem;
+		color: var(--warn);
+		border: 1px dotted color-mix(in srgb, var(--warn) 55%, transparent);
+		border-radius: 999px;
+		padding: 1px 7px;
+		margin-left: 5px;
+		vertical-align: -1px;
+		flex: none;
+	}
+	.ghost-badge.big {
+		font-size: 0.74rem;
+		padding: 2px 9px;
+	}
+
 	.mand {
 		display: inline-flex;
 		align-items: center;

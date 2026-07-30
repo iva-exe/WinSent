@@ -391,6 +391,18 @@ pub fn query_audit(limit: u32) -> Result<Vec<core_types::action::AuditRow>, Erro
     }
 }
 
+/// Kdo drží soubory (v8) — Restart Manager.
+pub fn query_holders(paths: Vec<String>) -> Result<Vec<core_types::proc::HolderRow>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryHolders { paths })? {
+        Response::Holders(rows) => Ok(rows),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Stav auto-úklidu (v4E): indexace, běh analýzy, výsledek.
 #[allow(clippy::type_complexity)]
 pub fn query_cleanup() -> Result<

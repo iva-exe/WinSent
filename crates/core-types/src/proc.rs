@@ -149,6 +149,20 @@ pub struct AppRow {
     pub install_ts: Option<i64>,
     /// Počet cest v mapě souborů (pro seznam bez načítání map).
     pub path_count: u32,
+    /// Instalační adresář v registru je, ale na disku NEEXISTUJE —
+    /// zbytek po ručně smazané aplikaci (typicky hry). Odinstalátor
+    /// takovou položku často nechá v systému viset.
+    pub missing_install: bool,
+}
+
+/// Proces, který drží soubor (v8, SPEC kap. 18.1 — Restart Manager).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HolderRow {
+    pub pid: u32,
+    pub name: String,
+    /// critical | service | window | console | explorer | unknown
+    pub kind: String,
+    pub service: Option<String>,
 }
 
 /// Jedna cesta z mapy souborů aplikace (v4, SPEC 5.2).

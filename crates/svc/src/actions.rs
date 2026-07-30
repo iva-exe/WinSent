@@ -177,6 +177,7 @@ impl Orchestrator {
 fn plan_for(action: &Action) -> Vec<core_types::action::PlanStep> {
     match action {
         Action::KillProc { .. } => actor_proc::plan(action),
+        Action::DeleteFiles { .. } => actor_file::plan(action),
         _ => actor_toggle::plan(action),
     }
 }
@@ -188,6 +189,11 @@ fn execute_for(action: &Action) -> (bool, bool, String) {
         Action::KillProc { .. } => {
             let out = actor_proc::execute(action);
             let verified = out.ok && actor_proc::verify(action);
+            (verified, false, out.detail)
+        }
+        Action::DeleteFiles { .. } => {
+            let out = actor_file::execute(action);
+            let verified = out.ok && actor_file::verify(action);
             (verified, false, out.detail)
         }
         _ => {

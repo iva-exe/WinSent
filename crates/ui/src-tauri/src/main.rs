@@ -230,6 +230,23 @@ fn execute_plan(plan_id: u64) -> Result<core_types::action::ActionResult, String
     ipc::client::execute_action(plan_id).map_err(|e| e.to_string())
 }
 
+/// Kdo drží soubory (v8) — „proč to nejde smazat".
+#[tauri::command(async)]
+fn query_holders(paths: Vec<String>) -> Result<Vec<core_types::proc::HolderRow>, String> {
+    ipc::client::query_holders(paths).map_err(|e| e.to_string())
+}
+
+/// T1 plán smazání do koše (v8) — vrací kroky k potvrzení, nebo deny.
+#[tauri::command(async)]
+fn plan_delete(paths: Vec<String>) -> Result<PlanOrDeny, String> {
+    ipc::client::plan_action(core_types::action::Action::DeleteFiles { paths })
+        .map(|r| match r {
+            Ok(p) => PlanOrDeny::Plan(p),
+            Err(d) => PlanOrDeny::Deny(d),
+        })
+        .map_err(|e| e.to_string())
+}
+
 /// Auditní záznamy (v5) — historie zásahů do systému.
 #[tauri::command]
 fn query_audit(limit: u32) -> Result<Vec<core_types::action::AuditRow>, String> {
@@ -362,6 +379,8 @@ fn main() {
             toggle_startup,
             query_audit,
             plan_kill,
+            plan_delete,
+            query_holders,
             execute_plan
         ])
         .setup(|app| {
