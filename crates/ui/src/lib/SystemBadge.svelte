@@ -10,11 +10,11 @@
 
 {#if compact}
 	<span class="sysb compact" title="Povinná součást Windows / Microsoft — neodinstalovávat">
-		<ShieldCheck size={13} />
+		<ShieldCheck size={14} />
 	</span>
 {:else}
 	<span class="sysb full" title="Povinná součást Windows / Microsoft — neodinstalovávat">
-		<ShieldCheck size={14} />
+		<ShieldCheck size={15} />
 		{label}
 	</span>
 {/if}

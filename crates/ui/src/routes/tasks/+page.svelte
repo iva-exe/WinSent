@@ -784,27 +784,27 @@
 			<!-- Dlaždice všech proměnných, barva podle využití -->
 			<div class="tiles">
 				<div class="tile">
-					<span class="tile-head"><Cpu size={16} strokeWidth={1.75} /> <span class="label-tech">cpu</span></span>
+					<span class="tile-head"><Cpu size={17} strokeWidth={1.75} /> <span class="label-tech">cpu</span></span>
 					<span class="tile-val value-mono" style:color={colorForLoad(dCpuPct)}><Num value={dCpuPct} suffix=" %" /></span>
 				</div>
 				<div class="tile">
-					<span class="tile-head"><MemoryStick size={16} strokeWidth={1.75} /> <span class="label-tech">ram</span></span>
+					<span class="tile-head"><MemoryStick size={17} strokeWidth={1.75} /> <span class="label-tech">ram</span></span>
 					<span class="tile-val value-mono" style:color={colorForLoad(dMemPct)}><Num value={dMemPct} suffix=" %" /></span>
 				</div>
 				<div class="tile">
-					<span class="tile-head"><Zap size={16} strokeWidth={1.75} /> <span class="label-tech">gpu</span></span>
+					<span class="tile-head"><Zap size={17} strokeWidth={1.75} /> <span class="label-tech">gpu</span></span>
 					<span class="tile-val value-mono" style:color={colorForLoad(dGpuPct)}><Num value={dGpuPct} suffix=" %" /></span>
 				</div>
 				<div class="tile">
-					<span class="tile-head"><HardDrive size={16} strokeWidth={1.75} /> <span class="label-tech">disk</span></span>
+					<span class="tile-head"><HardDrive size={17} strokeWidth={1.75} /> <span class="label-tech">disk</span></span>
 					<span class="tile-val value-mono"><Num value={dDiskTot} format={fmtBps} /></span>
 				</div>
 				<div class="tile">
-					<span class="tile-head"><ArrowDown size={16} strokeWidth={1.75} /> <span class="label-tech">down</span></span>
+					<span class="tile-head"><ArrowDown size={17} strokeWidth={1.75} /> <span class="label-tech">down</span></span>
 					<span class="tile-val value-mono" style:color="var(--net-down)"><Num value={dDown} format={fmtBps} /></span>
 				</div>
 				<div class="tile">
-					<span class="tile-head"><ArrowUp size={16} strokeWidth={1.75} /> <span class="label-tech">up</span></span>
+					<span class="tile-head"><ArrowUp size={17} strokeWidth={1.75} /> <span class="label-tech">up</span></span>
 					<span class="tile-val value-mono" style:color="var(--net-up)"><Num value={dUp} format={fmtBps} /></span>
 				</div>
 			</div>
@@ -970,19 +970,19 @@
 			<!-- Síť: aktuální + špičky za session -->
 			<div class="tiles">
 				<div class="tile">
-					<span class="tile-head"><ArrowDown size={16} strokeWidth={1.75} /> <span class="label-tech">aktuálně</span></span>
+					<span class="tile-head"><ArrowDown size={17} strokeWidth={1.75} /> <span class="label-tech">aktuálně</span></span>
 					<span class="tile-val value-mono" style:color="var(--net-down)"><Num value={dDown} format={fmtBps} /></span>
 				</div>
 				<div class="tile">
-					<span class="tile-head"><ArrowUp size={16} strokeWidth={1.75} /> <span class="label-tech">aktuálně</span></span>
+					<span class="tile-head"><ArrowUp size={17} strokeWidth={1.75} /> <span class="label-tech">aktuálně</span></span>
 					<span class="tile-val value-mono" style:color="var(--net-up)"><Num value={dUp} format={fmtBps} /></span>
 				</div>
 				<div class="tile">
-					<span class="tile-head"><ArrowDown size={16} strokeWidth={1.75} /> <span class="label-tech">špička</span></span>
+					<span class="tile-head"><ArrowDown size={17} strokeWidth={1.75} /> <span class="label-tech">špička</span></span>
 					<span class="tile-val value-mono" style:color="var(--net-down)"><Num value={peakDown} format={fmtBps} /></span>
 				</div>
 				<div class="tile">
-					<span class="tile-head"><ArrowUp size={16} strokeWidth={1.75} /> <span class="label-tech">špička</span></span>
+					<span class="tile-head"><ArrowUp size={17} strokeWidth={1.75} /> <span class="label-tech">špička</span></span>
 					<span class="tile-val value-mono" style:color="var(--net-up)"><Num value={peakUp} format={fmtBps} /></span>
 				</div>
 			</div>
@@ -1092,11 +1092,11 @@
 										<span class="app-name" class:guess={g.confidence === 'guess'}>{g.app_name}</span>
 										{#if isSystemApp({ identity_key: g.key, display_name: g.app_name, publisher: g.publisher ?? "" })}<SystemBadge compact />{/if}
 										{#if g.protection === 'critical'}
-											<Lock class="lock-ico" size={13} strokeWidth={2} />
+											<Lock class="lock-ico" size={14} strokeWidth={2} />
 										{/if}
 										{#if !single}
 											<span class="count label-tech">{g.children.length}×</span>
-											<span class="caret" class:open><ChevronRight size={13} strokeWidth={2.25} /></span>
+											<span class="caret" class:open><ChevronRight size={14} strokeWidth={2.25} /></span>
 										{/if}
 									</span>
 								</td>
@@ -1154,7 +1154,7 @@
 										{/if}
 										<span class="app-name">{p.name}</span>
 										{#if p.protection === 'critical'}
-											<Lock class="lock-ico" size={13} strokeWidth={2} />
+											<Lock class="lock-ico" size={14} strokeWidth={2} />
 										{/if}
 									</span>
 								</td>

@@ -107,14 +107,14 @@
 	<div class="grid">
 		<!-- CPU / RAM / GPU / síť -->
 		<button class="tile" onclick={() => goto('/tasks')}>
-			<span class="t-head"><Cpu size={14} /> CPU</span>
+			<span class="t-head"><Cpu size={15} /> CPU</span>
 			<span class="t-big mono" style:color={colorForLoad(system?.cpu_pct)}>
 				{#if system}<Num value={system.cpu_pct} format={(v) => v.toFixed(0) + ' %'} />{:else}—{/if}
 			</span>
 			<span class="t-sub">{system?.cpu_clock_mhz ? (system.cpu_clock_mhz / 1000).toFixed(2) + ' GHz' : ''}</span>
 		</button>
 		<button class="tile" onclick={() => goto('/tasks')}>
-			<span class="t-head"><MemoryStick size={14} /> RAM</span>
+			<span class="t-head"><MemoryStick size={15} /> RAM</span>
 			<span class="t-big mono" style:color={colorForLoad(memPct)}>
 				{#if memPct != null}<Num value={memPct} format={(v) => v.toFixed(0) + ' %'} />{:else}—{/if}
 			</span>
@@ -123,21 +123,21 @@
 			>
 		</button>
 		<button class="tile" onclick={() => goto('/tasks')}>
-			<span class="t-head"><Zap size={14} /> GPU</span>
+			<span class="t-head"><Zap size={15} /> GPU</span>
 			<span class="t-big mono" style:color={colorForLoad(system?.gpu_pct)}>
 				{#if system?.gpu_pct != null}<Num value={system.gpu_pct} format={(v) => v.toFixed(0) + ' %'} />{:else}—{/if}
 			</span>
 			<span class="t-sub">{system?.gpu?.temp_c != null ? system.gpu.temp_c + ' °C' : ''}</span>
 		</button>
 		<button class="tile" onclick={() => goto('/tasks')}>
-			<span class="t-head"><Wifi size={14} /> Síť</span>
+			<span class="t-head"><Wifi size={15} /> Síť</span>
 			<span class="t-mid mono net-down">↓ {fmtBps(system?.net_rx_bps)}</span>
 			<span class="t-mid mono net-up">↑ {fmtBps(system?.net_tx_bps)}</span>
 		</button>
 
 		<!-- Top procesy -->
 		<button class="tile wide tall" onclick={() => goto('/tasks')}>
-			<span class="t-head"><Activity size={14} /> Top procesy</span>
+			<span class="t-head"><Activity size={15} /> Top procesy</span>
 			<ul class="t-list">
 				{#each topProcs as p (p.pid)}
 					<li>
@@ -150,7 +150,7 @@
 
 		<!-- Poslední incident -->
 		<button class="tile wide" onclick={() => goto('/incidents')}>
-			<span class="t-head warn-h"><TriangleAlert size={14} /> Poslední incident</span>
+			<span class="t-head warn-h"><TriangleAlert size={15} /> Poslední incident</span>
 			{#if lastIncident}
 				<span class="t-mid">{kindLabel[lastIncident.kind] ?? lastIncident.kind}
 					{#if lastIncident.culprit}— {lastIncident.culprit}{/if}</span>
@@ -162,7 +162,7 @@
 
 		<!-- Disky -->
 		<button class="tile wide tall" onclick={() => goto('/files')}>
-			<span class="t-head"><HardDrive size={14} /> Disky</span>
+			<span class="t-head"><HardDrive size={15} /> Disky</span>
 			<ul class="t-list">
 				{#each volumes as v (v.letter)}
 					{@const pct = v.total_bytes ? ((v.total_bytes - v.free_bytes) / v.total_bytes) * 100 : 0}
@@ -189,7 +189,7 @@
 
 		<!-- Aplikace -->
 		<button class="tile" onclick={() => goto('/programs')}>
-			<span class="t-head"><Blocks size={14} /> Aplikace</span>
+			<span class="t-head"><Blocks size={15} /> Aplikace</span>
 			<span class="t-big mono">{appCount ?? '—'}</span>
 			<span class="t-sub">{system ? system.proc_count + ' procesů běží' : ''}</span>
 		</button>

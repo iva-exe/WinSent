@@ -168,14 +168,14 @@
 		{#each diskCards as d (d.key)}
 			<div class="disk card">
 				<div class="d-head">
-					<HardDrive size={17} />
+					<HardDrive size={18} />
 					<span class="d-model">{d.model}</span>
 					{#if d.health}
 						<span class="d-health" style:color={healthColor(d.health)}>
-							<Activity size={14} />
+							<Activity size={15} />
 							{100 - Math.min(d.health.used_pct ?? 0, 100)} % životnosti
 						</span>
-						<span class="d-h-item"><Thermometer size={14} /> {d.health.temp_c} °C</span>
+						<span class="d-h-item"><Thermometer size={15} /> {d.health.temp_c} °C</span>
 						<span class="d-h-item dim">{d.health.power_on_hours} h provozu</span>
 					{:else if d.key !== 'orphan'}
 						<span class="d-h-item dim">SMART nedostupný (SATA — doplní se)</span>
@@ -207,14 +207,14 @@
 			<span class="label-tech">// úklid disků</span>
 			{#if cleanup?.indexing?.length && !indexingDone}
 				<span class="c-status">
-					<Loader size={14} class="spin" />
+					<Loader size={15} class="spin" />
 					indexuji disky —
 					{#each cleanup.indexing as [l, n, done, err] (l)}
 						<span class="mono" class:err={!!err}>{l}: {done ? '✓' : n.toLocaleString('cs-CZ')}</span>
 					{/each}
 				</span>
 			{:else if cleanup?.running}
-				<span class="c-status"><Loader size={14} class="spin" /> analyzuji obsah disků…</span>
+				<span class="c-status"><Loader size={15} class="spin" /> analyzuji obsah disků…</span>
 			{:else if cleanup?.report}
 				<span class="c-status dim">
 					analýza hotová · v duplicitách zbytečně ~{fmtSize(dupWaste)}
@@ -227,7 +227,7 @@
 		<!-- Svazky, které nešly zindexovat — s důvodem, ne mlčky. -->
 		{#each (cleanup?.indexing ?? []).filter((i) => i[3]) as [l, , , err] (l)}
 			<p class="idx-err">
-				<TriangleAlert size={14} />
+				<TriangleAlert size={15} />
 				<b>{l}:</b> disk nebylo možné prohledat — {err}
 			</p>
 		{/each}
@@ -238,7 +238,7 @@
 				<!-- Duplicity -->
 				<div class="c-block">
 					<h3>
-						<Copy size={14} /> Duplicity — {r.dups.length} skupin, {fmtSize(dupWaste)} navíc
+						<Copy size={15} /> Duplicity — {r.dups.length} skupin, {fmtSize(dupWaste)} navíc
 					</h3>
 					{#if r.dups.length === 0}
 						<p class="note">žádné duplicitní soubory (média/archivy/dokumenty ≥ 1 MB)</p>
@@ -257,7 +257,7 @@
 												title="Přesunout do koše (jde vrátit)"
 												onclick={(ev) => askDelete([p], ev)}
 											>
-												<Trash2 size={13} />
+												<Trash2 size={14} />
 											</button>
 										</div>
 									{/each}
@@ -269,7 +269,7 @@
 
 				<!-- 0bajtové -->
 				<div class="c-block">
-					<h3><FileX size={14} /> Prázdné soubory (0 B) — {r.zero_byte.length}</h3>
+					<h3><FileX size={15} /> Prázdné soubory (0 B) — {r.zero_byte.length}</h3>
 					{#if r.zero_byte.length === 0}
 						<p class="note">žádné prázdné soubory v profilech</p>
 					{:else}
@@ -283,7 +283,7 @@
 									title="Přesunout do koše (jde vrátit)"
 									onclick={(ev) => askDelete([p], ev)}
 								>
-									<Trash2 size={13} />
+									<Trash2 size={14} />
 								</button>
 							</div>
 						{/each}
@@ -344,7 +344,7 @@
 			</div>
 			<div class="c-cols">
 				<div class="c-block tall">
-					<h3><FolderTree size={14} /> Největší složky <em>{bigDirs.length}</em></h3>
+					<h3><FolderTree size={15} /> Největší složky <em>{bigDirs.length}</em></h3>
 					{#each bigDirs as [, path, size] (path)}
 						<button class="row" onclick={() => openPath(path)} title="Otevřít v Průzkumníku">
 							<span class="r-path mono">{path}</span>
@@ -354,7 +354,7 @@
 					{/each}
 				</div>
 				<div class="c-block tall">
-					<h3><FileType2 size={14} /> Největší soubory <em>{bigFiles.length}</em></h3>
+					<h3><FileType2 size={15} /> Největší soubory <em>{bigFiles.length}</em></h3>
 					{#each bigFiles as [, path, size] (path)}
 						<button class="row" onclick={() => openPath(path)} title="Otevřít v Průzkumníku">
 							<span class="r-path mono">{path}</span>

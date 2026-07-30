@@ -396,7 +396,7 @@
 	<header class="head">
 		<div class="head-top">
 			<div class="search">
-				<Search size={16} />
+				<Search size={17} />
 				<input placeholder="hledat zařízení nebo výrobce…" bind:value={filter} />
 				{#if filter}
 					<button class="clear" onclick={() => (filter = '')}>×</button>
@@ -407,12 +407,12 @@
 			</span>
 			{#if problems.length}
 				<button class="alarm" onclick={jumpToProblem}>
-					<TriangleAlert size={15} />
+					<TriangleAlert size={16} />
 					{problems.length}
 					{problems.length === 1 ? 'problém' : problems.length < 5 ? 'problémy' : 'problémů'}
 					<span class="alarm-go">
 						{problemIdx >= 0 ? `${problemIdx + 1}/${problems.length}` : 'ukázat'}
-						<ChevronRight size={14} />
+						<ChevronRight size={15} />
 					</span>
 				</button>
 			{/if}
@@ -420,7 +420,7 @@
 		<nav class="cats">
 			{#each sections as s (s.name)}
 				<button class="cat" class:on={activeCat === s.name} onclick={() => gotoSection(s.name)}>
-					<s.icon size={15} />
+					<s.icon size={16} />
 					{s.name}
 					<span class="cat-n">{s.count}</span>
 				</button>
@@ -435,11 +435,12 @@
 		{/if}
 
 		{#if componentRows.length}
-			<h2 class="sect" id="sect-Komponenty"><Cpu size={16} /> Komponenty</h2>
+			<section class="grp" id="sect-Komponenty">
+			<h2 class="sect"><Cpu size={17} /> Komponenty <span class="sect-n">{componentRows.length}</span></h2>
 			{#each componentRows as r (r.id)}
 				<article class="item" id={r.id} class:flash={flashId === r.id} class:bad={r.problem}>
 					{#if r.kind === 'cpu'}
-						<div class="ico"><Cpu size={19} /></div>
+						<div class="ico"><Cpu size={20} /></div>
 						<div class="info">
 							<h3>{statics?.cpu_name ?? 'Procesor'}</h3>
 							<p class="vendor">{cpuVendor}</p>
@@ -476,7 +477,7 @@
 							{/if}
 						</div>
 					{:else if r.kind === 'ram'}
-						<div class="ico"><MemoryStick size={19} /></div>
+						<div class="ico"><MemoryStick size={20} /></div>
 						<div class="info">
 							<h3>Paměť</h3>
 							<p class="vendor">{statics?.ram_modules?.[0]?.manufacturer ?? '—'}</p>
@@ -499,7 +500,7 @@
 						</div>
 					{:else if r.kind === 'gpu'}
 						{@const live = isLiveGpu(r.dev)}
-						<div class="ico"><Microchip size={19} /></div>
+						<div class="ico"><Microchip size={20} /></div>
 						<div class="info">
 							<h3>{r.dev.name}</h3>
 							<p class="vendor">{r.dev.manufacturer || '—'}</p>
@@ -535,7 +536,7 @@
 							{/if}
 						</div>
 					{:else if r.kind === 'disk'}
-						<div class="ico"><HardDrive size={19} /></div>
+						<div class="ico"><HardDrive size={20} /></div>
 						<div class="info">
 							<h3>{r.disk.model || `Disk ${r.disk.index}`}</h3>
 							<p class="vendor">{diskVendor(r.disk.model)}</p>
@@ -575,7 +576,7 @@
 							{/if}
 						</div>
 					{:else if r.kind === 'board'}
-						<div class="ico"><CircuitBoard size={19} /></div>
+						<div class="ico"><CircuitBoard size={20} /></div>
 						<div class="info">
 							<h3>{hw.board.product || 'Základní deska'}</h3>
 							<p class="vendor">{hw.board.manufacturer || '—'}</p>
@@ -594,7 +595,7 @@
 						</div>
 						<div class="side"><span class="pill quiet">v pořádku</span></div>
 					{:else if r.kind === 'battery'}
-						<div class="ico"><BatteryCharging size={19} /></div>
+						<div class="ico"><BatteryCharging size={20} /></div>
 						<div class="info">
 							<h3>Baterie</h3>
 							<p class="vendor">
@@ -626,13 +627,15 @@
 					{/if}
 				</article>
 			{/each}
+			</section>
 		{/if}
 
 		{#if visibleDisplays.length}
-			<h2 class="sect" id="sect-Obrazovky"><Monitor size={16} /> Obrazovky</h2>
+			<section class="grp" id="sect-Obrazovky">
+			<h2 class="sect"><Monitor size={17} /> Obrazovky <span class="sect-n">{visibleDisplays.length}</span></h2>
 			{#each visibleDisplays as d, i (d.adapter + i)}
 				<article class="item">
-					<div class="ico"><Monitor size={19} /></div>
+					<div class="ico"><Monitor size={20} /></div>
 					<div class="info">
 						<h3>{d.monitor || 'Obrazovka'}</h3>
 						<p class="vendor">{d.adapter}</p>
@@ -647,11 +650,13 @@
 					</div>
 				</article>
 			{/each}
+			</section>
 		{/if}
 
 		{#each sections.filter((s) => s.name !== 'Komponenty' && s.name !== 'Obrazovky') as s (s.name)}
-			<h2 class="sect" id="sect-{s.name}">
-				<s.icon size={16} />
+			<section class="grp" id="sect-{s.name}">
+			<h2 class="sect">
+				<s.icon size={17} />
 				{s.name}
 				<span class="sect-n">{s.count}</span>
 			</h2>
@@ -660,7 +665,7 @@
 				{@const rid = `dev-${s.name}-${i}`}
 				{@const trouble = describeProblem(d.problem_code)}
 				<article class="item" id={rid} class:flash={flashId === rid} class:bad={d.problem_code}>
-					<div class="ico"><Ico size={19} /></div>
+					<div class="ico"><Ico size={20} /></div>
 					<div class="info">
 						<h3>{d.name}</h3>
 						<p class="vendor">{d.manufacturer || '—'}</p>
@@ -680,16 +685,17 @@
 					</div>
 					<div class="side">
 						{#if d.problem_code}
-							<span class="pill bad"><TriangleAlert size={13} /> problém {d.problem_code}</span>
+							<span class="pill bad"><TriangleAlert size={14} /> problém {d.problem_code}</span>
 						{:else}
 							<span class="pill quiet">v pořádku</span>
 						{/if}
 					</div>
 				</article>
 			{/each}
+			</section>
 		{/each}
 
-		{#if !sections.length}
+			{#if !sections.length}
 			<p class="empty">
 				{filter ? 'Nic neodpovídá hledání.' : 'Soupis hardwaru se načítá…'}
 			</p>
@@ -839,8 +845,19 @@
 		padding-right: 6px;
 	}
 
-	/* Nadpis kategorie zůstává nalepený nahoře, dokud sekce scrolluje —
-	   je pořád vidět, ve které části seznamu uživatel je. */
+	/* Obal sekce. Bez něj se sticky nadpisy VŠECH minulých sekcí lepily
+	   na horní hranu přes sebe — a skok na kategorii nahoru měřil pozici
+	   přilepeného nadpisu místo začátku sekce, takže nikam neskočil.
+	   Uvnitř obalu se nadpis lepí jen po dobu své sekce. */
+	.grp {
+		margin-top: 26px;
+	}
+	.grp:first-child {
+		margin-top: 0;
+	}
+
+	/* Nadpis kategorie zůstává nalepený nahoře, dokud jeho sekce
+	   scrolluje — je pořád vidět, ve které části seznamu uživatel je. */
 	.sect {
 		position: sticky;
 		top: 0;
@@ -848,16 +865,13 @@
 		display: flex;
 		align-items: center;
 		gap: 9px;
-		margin: 26px 0 11px;
+		margin: 0 0 11px;
 		padding: 9px 2px 10px;
 		font-size: 1rem;
 		font-weight: 600;
 		letter-spacing: 0.01em;
 		color: var(--text);
 		background: linear-gradient(var(--bg) 80%, transparent);
-	}
-	.sect:first-child {
-		margin-top: 0;
 	}
 	.sect::after {
 		content: '';
@@ -876,9 +890,11 @@
 	}
 
 	/* ── Karta zařízení ── */
+	/* Pevná šířka stavového sloupce: stavy a čísla lícují pod sebou
+	   napříč všemi kartami, ne podle délky textu v každé zvlášť. */
 	.item {
 		display: grid;
-		grid-template-columns: 40px minmax(0, 1fr) minmax(140px, auto);
+		grid-template-columns: 40px minmax(0, 1fr) 180px;
 		gap: 14px;
 		align-items: start;
 		padding: 14px 16px;

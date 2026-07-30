@@ -64,7 +64,7 @@
 				Zamítnuto <i>{counts.denied}</i>
 			</button>
 		</div>
-		<button class="refresh" onclick={load} title="Obnovit"><RefreshCw size={14} /></button>
+		<button class="refresh" onclick={load} title="Obnovit"><RefreshCw size={15} /></button>
 	</header>
 
 	{#if loadError}
@@ -84,9 +84,9 @@
 				<li class="row" class:deny={a.verdict === 'deny'}>
 					<span class="r-icon">
 						{#if a.verdict === 'deny'}
-							<ShieldX size={15} />
+							<ShieldX size={16} />
 						{:else}
-							<ShieldCheck size={15} />
+							<ShieldCheck size={16} />
 						{/if}
 					</span>
 					<span class="r-main">
@@ -108,7 +108,7 @@
 							<span class="r-reason">{a.deny_reason}</span>
 						{/if}
 						{#if a.reversible}
-							<span class="r-rev"><RotateCcw size={12} /> {a.reversible}</span>
+							<span class="r-rev"><RotateCcw size={13} /> {a.reversible}</span>
 						{/if}
 					</span>
 					<span class="r-ts mono">{fmtTs(a.ts)}</span>
@@ -116,7 +116,7 @@
 			{/each}
 		</ul>
 		<p class="note">
-			<History size={12} /> Záznamy jsou trvalé — retence je nemaže. Sloupec vratnosti
+			<History size={13} /> Záznamy jsou trvalé — retence je nemaže. Sloupec vratnosti
 			ukazuje, jak se akce dá vrátit.
 		</p>
 	{/if}

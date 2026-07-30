@@ -203,11 +203,11 @@
 			</button>
 		</div>
 		<div class="filter">
-			<Search size={14} />
+			<Search size={15} />
 			<input placeholder="hledat položku…" bind:value={filter} />
 		</div>
 		<a class="audit-btn" href="/history" title="Historie zásahů do systému">
-			<History size={15} />
+			<History size={16} />
 		</a>
 	</header>
 
@@ -224,7 +224,7 @@
 				{@const visible = open ? g.items : g.items.slice(0, COLLAPSED)}
 				<section class="card grp" class:collapsed={!open && g.items.length > COLLAPSED}>
 					<header class="g-head">
-						<AppIcon src={g.identity_key ? iconUrls[g.identity_key] : null} name={g.label} size={20} />
+						<AppIcon src={g.identity_key ? iconUrls[g.identity_key] : null} name={g.label} size={21} />
 						<span class="g-name">{g.label}</span>
 						{#if isSystemApp({ identity_key: g.identity_key ?? '', display_name: g.label, publisher: g.publisher ?? '' }) || g.items.every((i) => !i.toggleable || isSystemPath(i.command))}
 							<SystemBadge compact />
@@ -235,7 +235,7 @@
 						{#each visible as i (i.id)}
 							{@const s = srcOf(i.source)}
 							<li class="item" class:off={!i.enabled}>
-								<span class="i-src" title={s.label}><s.icon size={15} /></span>
+								<span class="i-src" title={s.label}><s.icon size={16} /></span>
 								<span class="i-main">
 									<span class="i-name">{i.name}</span>
 									<span class="i-cmd mono" title={i.command}>{i.command}</span>
@@ -254,7 +254,7 @@
 									</button>
 								{:else}
 									<span class="locked" title="Systémová položka — jen k náhledu">
-										<TriangleAlert size={15} />
+										<TriangleAlert size={16} />
 									</span>
 								{/if}
 							</li>
@@ -263,9 +263,9 @@
 					{#if g.items.length > COLLAPSED}
 						<button class="more" onclick={() => toggleGroup(g.label)}>
 							{#if open}
-								<ChevronUp size={14} /> sbalit
+								<ChevronUp size={15} /> sbalit
 							{:else}
-								<ChevronDown size={14} /> zobrazit všech {g.items.length}
+								<ChevronDown size={15} /> zobrazit všech {g.items.length}
 							{/if}
 						</button>
 					{/if}

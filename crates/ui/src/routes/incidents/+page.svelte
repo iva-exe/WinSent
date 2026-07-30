@@ -99,7 +99,7 @@
 	<header class="head">
 		<h1>Incidenty</h1>
 		<span class="sub">záseky · pády aplikací · BSOD — s nahranou časovou osou</span>
-		<button class="refresh" onclick={load} title="Obnovit"><RefreshCw size={14} /></button>
+		<button class="refresh" onclick={load} title="Obnovit"><RefreshCw size={15} /></button>
 	</header>
 
 	{#if loadError}
@@ -112,11 +112,11 @@
 				to tady i s kontextem, který jinde nenajdeš:
 			</p>
 			<p>
-				<Timer size={13} /> <b>Zásek systému</b> — celé PC přestane reagovat; hlídač to změří
+				<Timer size={14} /> <b>Zásek systému</b> — celé PC přestane reagovat; hlídač to změří
 				a určí viníka (disk / RAM / CPU / přehřátí).<br />
-				<Zap size={13} /> <b>Pád aplikace</b> — proces skončil chybou; uvidíš exit kód
+				<Zap size={14} /> <b>Pád aplikace</b> — proces skončil chybou; uvidíš exit kód
 				a co se dělo 5 minut předtím.<br />
-				<MonitorX size={13} /> <b>Modrá obrazovka</b> — po restartu se přečte minidump
+				<MonitorX size={14} /> <b>Modrá obrazovka</b> — po restartu se přečte minidump
 				a bugcheck se přeloží do lidské řeči.
 			</p>
 		</div>
@@ -127,7 +127,7 @@
 					{@const k = kindOf(i.kind)}
 					<li>
 						<button class="row" class:active={selected?.id === i.id} onclick={() => select(i)}>
-							<span class="kind-ico" style:color={k.color}><k.icon size={15} /></span>
+							<span class="kind-ico" style:color={k.color}><k.icon size={16} /></span>
 							<span class="row-main">
 								<span class="row-title">{k.label}</span>
 								<span class="row-culprit">{i.culprit ?? '—'}</span>
@@ -139,7 +139,7 @@
 								tabindex="-1"
 								title="Odstranit záznam (v systému se nic nemění)"
 								onclick={(ev) => remove(i, ev)}
-								onkeydown={() => {}}><Trash2 size={14} /></span
+								onkeydown={() => {}}><Trash2 size={15} /></span
 							>
 						</button>
 					</li>
@@ -153,7 +153,7 @@
 					{@const k = kindOf(selected.kind)}
 					{@const d = parseDetail(selected)}
 					<div class="d-head">
-						<span class="kind-ico big" style:color={k.color}><k.icon size={20} /></span>
+						<span class="kind-ico big" style:color={k.color}><k.icon size={21} /></span>
 						<div>
 							<h2>{k.label}</h2>
 							<span class="d-ts">{fmtTs(selected.ts)}</span>

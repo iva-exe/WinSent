@@ -11,7 +11,6 @@
 	import { page } from '$app/state';
 	import { invoke } from '@tauri-apps/api/core';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
-	import { initScale } from '$lib/uiscale.svelte.js';
 	import { daemon, startDaemonPolling } from '$lib/daemon.svelte.js';
 	import {
 		House,
@@ -105,8 +104,6 @@
 	}
 
 	onMount(() => {
-		// Zvětšení rozhraní se použije co nejdřív, ať okno neposkočí.
-		initScale();
 		startDaemonPolling();
 		async function pollUptime() {
 			try {
@@ -149,13 +146,13 @@
 
 		<div class="win-controls">
 			<button class="wc" title="Minimalizovat" onclick={() => win()?.minimize()}>
-				<Minus size={16} strokeWidth={1.75} />
+				<Minus size={17} strokeWidth={1.75} />
 			</button>
 			<button class="wc" title="Maximalizovat" onclick={() => win()?.toggleMaximize()}>
-				<Square size={13} strokeWidth={1.75} />
+				<Square size={14} strokeWidth={1.75} />
 			</button>
 			<button class="wc close" title="Zavřít" onclick={() => win()?.close()}>
-				<X size={17} strokeWidth={1.75} />
+				<X size={18} strokeWidth={1.75} />
 			</button>
 		</div>
 	</header>
@@ -167,7 +164,7 @@
 				{#each nav as item (item.href)}
 					<li>
 						<a href={item.href} class:active={page.url.pathname.startsWith(item.href)}>
-							<item.icon size={20} strokeWidth={1.75} />
+							<item.icon size={21} strokeWidth={1.75} />
 							<span>{item.label}</span>
 							{#if badges[item.href]}
 								<span
@@ -183,7 +180,7 @@
 			</ul>
 			<div class="sidebar-bottom">
 				<a href="/settings" class:active={page.url.pathname.startsWith('/settings')}>
-					<Settings size={20} strokeWidth={1.75} />
+					<Settings size={21} strokeWidth={1.75} />
 					<span>Settings</span>
 				</a>
 				<!-- Historie zásahů do systému (audit) — vedle nastavení. -->
@@ -193,7 +190,7 @@
 					class:active={page.url.pathname.startsWith('/history')}
 					title="Historie zásahů do systému"
 				>
-					<History size={20} strokeWidth={1.75} />
+					<History size={21} strokeWidth={1.75} />
 					<span>Historie</span>
 				</a>
 			</div>

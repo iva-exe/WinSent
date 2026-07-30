@@ -422,7 +422,7 @@
 			<option value="paths">dle počtu cest</option>
 		</select>
 		<div class="filter">
-			<Search size={13} />
+			<Search size={14} />
 			<input placeholder="hledat aplikaci…" bind:value={filter} />
 		</div>
 		<button
@@ -432,7 +432,7 @@
 			disabled={rescanning}
 			title={rescanning ? 'Skenuji inventář…' : 'Přeskenovat inventář'}
 		>
-			<RefreshCw size={14} />
+			<RefreshCw size={15} />
 		</button>
 	</header>
 
@@ -453,7 +453,7 @@
 								class:active={selected?.identity_key === a.identity_key}
 								onclick={() => select(a)}
 							>
-								<AppIcon src={iconUrls[a.identity_key]} name={a.display_name} size={18} />
+								<AppIcon src={iconUrls[a.identity_key]} name={a.display_name} size={19} />
 								<span class="row-main">
 									<span class="row-title">
 										{a.display_name}
@@ -463,7 +463,7 @@
 												class="ghost-badge"
 												title="Instalační složka na disku neexistuje — po aplikaci zbyl jen záznam"
 											>
-												<PackageX size={13} /> chybí
+												<PackageX size={14} /> chybí
 											</span>
 										{/if}
 									</span>
@@ -491,7 +491,7 @@
 								{#if isSystemApp(selected)}<SystemBadge />{/if}
 								{#if selected.missing_install}
 									<span class="ghost-badge big">
-										<PackageX size={15} /> instalace chybí na disku
+										<PackageX size={16} /> instalace chybí na disku
 									</span>
 								{/if}
 							</h2>
@@ -505,13 +505,13 @@
 										title="Ukázat v Tasks"
 									>
 										{running.get(selected.identity_key)} procesů běží
-										<ExternalLink size={11} />
+										<ExternalLink size={12} />
 									</button>
 								{/if}
 							</span>
 						</div>
 						<span class="size-btn" class:loading={sizing}>
-							<Scale size={14} />
+							<Scale size={15} />
 							{sizing ? 'počítám velikosti…' : totalSize != null ? fmtSize(totalSize) : '—'}
 						</span>
 						{#if selected.kind === 'desktop' && !isSystemApp(selected)}
@@ -521,7 +521,7 @@
 								title="Spustí oficiální odinstalátor aplikace"
 								onclick={() => askUninstall(selected)}
 							>
-								<PackageX size={14} /> Odinstalovat
+								<PackageX size={15} /> Odinstalovat
 							</button>
 						{/if}
 					</div>
@@ -533,7 +533,7 @@
 							{#each map as p (p.path)}
 								{@const r = roles[p.role] ?? roles.data}
 								<li class="map-row" class:guess={p.confidence === 'guess'}>
-									<span class="m-role"><r.icon size={14} /> {r.label}</span>
+									<span class="m-role"><r.icon size={15} /> {r.label}</span>
 									{#if p.role === 'registry'}
 										<span class="m-path mono" title={p.path}>{p.path}</span>
 									{:else}
