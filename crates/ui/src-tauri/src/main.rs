@@ -173,6 +173,12 @@ fn query_hardware() -> Result<core_types::proc::HardwareReport, String> {
     ipc::client::query_hardware().map_err(|e| e.to_string())
 }
 
+/// Spojení per aplikace (v9, SPEC kap. 12) — kdo je připojený kam.
+#[tauri::command(async)]
+fn query_network() -> Result<Vec<core_types::proc::AppNetRow>, String> {
+    ipc::client::query_network().map_err(|e| e.to_string())
+}
+
 /// Svazky + zdraví disků (v4C).
 #[derive(Debug, Serialize)]
 struct VolumesDto {
@@ -519,6 +525,7 @@ fn main() {
             query_volumes,
             query_hardware,
             query_displays,
+            query_network,
             build_file_index,
             search_files,
             find_duplicates,

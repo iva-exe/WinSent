@@ -559,6 +559,35 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         // Hardwarový přehled na 5 s (v9) — tepelná kaskáda jde přes WMI.
         let hw_cache: std::sync::Mutex<Option<(Instant, core_types::proc::HardwareReport)>> =
             std::sync::Mutex::new(None);
+        // Reverzní DNS (v9, SPEC 12.3): PTR jména se cachují a překládá
+        // je vlákno na pozadí — lookup umí blokovat sekundy a obslužné
+        // vlákno pipe na něj nesmí čekat. `None` v cache = „zkoušeno,
+        // jméno není" (běžné), ať se tatáž adresa nezkouší dokola.
+        type DnsCache = std::collections::HashMap<std::net::IpAddr, Option<String>>;
+        let dns_cache: Arc<std::sync::Mutex<DnsCache>> =
+            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let (dns_tx, dns_rx) = std::sync::mpsc::sync_channel::<std::net::IpAddr>(256);
+        {
+            let cache = Arc::clone(&dns_cache);
+            std::thread::Builder::new()
+                .name("rdns".into())
+                .spawn(move || {
+                    let _ = win_sys::threading::set_current_thread_below_normal();
+                    while let Ok(ip) = dns_rx.recv() {
+                        if cache.lock().expect("dns cache lock").contains_key(&ip) {
+                            continue;
+                        }
+                        let name = win_sys::rdns::resolve(ip);
+                        let mut c = cache.lock().expect("dns cache lock");
+                        // Strop cache: adres je konečně mnoho, ale po
+                        // týdnech běhu by i tak rostla donekonečna.
+                        if c.len() >= 4096 {
+                            c.clear();
+                        }
+                        c.insert(ip, name);
+                    }
+                })?;
+        }
         let handler: ipc::server::Handler = Arc::new(move |req| match req {
             Request::QuerySysInfo => Response::SysInfo(statics.clone()),
             Request::QueryIcon { identity_key } => {
@@ -884,6 +913,37 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             Request::FindDuplicates { root, min_size } => {
                 let groups = fs_index::find_duplicates(&root, min_size.max(1), 200_000);
                 Response::Duplicates(groups.into_iter().map(|g| (g.size, g.paths)).collect())
+            }
+            // Síť (v9, SPEC kap. 12): snapshot spojení + identita ze
+            // sampleru. PTR jména jdou z cache; neznámé adresy se
+            // zařadí resolveru na pozadí — pipe vlákno NIKDY nečeká
+            // na DNS (lookup umí blokovat sekundy).
+            Request::QueryNetwork => {
+                let conns = win_sys::conns::snapshot();
+                for ip in collector_net::addrs_to_resolve(&conns) {
+                    let known = dns_cache.lock().expect("dns cache lock").contains_key(&ip);
+                    if !known {
+                        let _ = dns_tx.try_send(ip);
+                    }
+                }
+                let rows = {
+                    let live = live.read().expect("live lock poisoned");
+                    let by_pid: std::collections::HashMap<u32, &core_types::proc::ProcRow> =
+                        live.procs.iter().map(|p| (p.pid, p)).collect();
+                    let cache = dns_cache.lock().expect("dns cache lock");
+                    collector_net::per_app(
+                        &conns,
+                        |pid| {
+                            by_pid.get(&pid).map(|p| collector_net::Owner {
+                                identity_key: p.identity_key.clone(),
+                                app_name: p.app_name.clone(),
+                                publisher: p.publisher.clone(),
+                            })
+                        },
+                        |ip| cache.get(&ip).cloned().flatten(),
+                    )
+                };
+                Response::Network(rows)
             }
             // Kdo drží soubory (v8, SPEC 18.1) — čistě čtecí dotaz na
             // Restart Manager; nic se neukončuje.

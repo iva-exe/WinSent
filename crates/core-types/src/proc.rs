@@ -420,3 +420,36 @@ pub struct DisplayRow {
     pub refresh_hz: u32,
     pub primary: bool,
 }
+
+/// Jedno síťové spojení nebo naslouchající port (v9, SPEC kap. 12).
+/// Adresy jako text — UI je jen zobrazuje a postcard je tak přenese
+/// bez vlastních typů.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnRow {
+    /// "tcp" | "udp".
+    pub proto: String,
+    pub local: String,
+    pub local_port: u16,
+    /// Prázdné u naslouchajících portů a UDP.
+    pub remote: String,
+    pub remote_port: u16,
+    /// PTR jméno vzdálené adresy, když už ho resolver zná.
+    pub remote_name: Option<String>,
+    /// TCP stav ("established", "listen"…), u UDP "udp".
+    pub state: String,
+    pub pid: u32,
+}
+
+/// Spojení jedné aplikace (v9) — seskupené podle identity (kap. 4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppNetRow {
+    pub identity_key: String,
+    pub app_name: String,
+    pub publisher: Option<String>,
+    /// Kolik procesů aplikace má aspoň jedno spojení.
+    pub proc_count: u32,
+    /// Aktivní spojení (established) / naslouchající porty.
+    pub established: u32,
+    pub listening: u32,
+    pub conns: Vec<ConnRow>,
+}

@@ -542,3 +542,15 @@ pub fn query_hardware() -> Result<core_types::proc::HardwareReport, Error> {
         }),
     }
 }
+
+/// Spojení per aplikace (v9): kdo je připojený kam, porty, PTR jména.
+pub fn query_network() -> Result<Vec<core_types::proc::AppNetRow>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryNetwork)? {
+        Response::Network(rows) => Ok(rows),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}

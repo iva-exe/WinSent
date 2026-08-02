@@ -6,6 +6,7 @@
 
 pub mod battery;
 pub mod caps;
+pub mod conns;
 pub mod cpuinfo;
 pub mod devices;
 pub mod disk;
@@ -20,6 +21,7 @@ pub mod net;
 pub mod pdhq;
 pub mod proc;
 pub mod procinfo;
+pub mod rdns;
 pub mod recycle;
 pub mod registry;
 pub mod restore;

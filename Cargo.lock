@@ -3328,6 +3328,7 @@ dependencies = [
  "collector-etw",
  "collector-hw",
  "collector-inv",
+ "collector-net",
  "collector-proc",
  "core-types",
  "ctrlc",

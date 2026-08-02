@@ -21,6 +21,7 @@ collector-etw = { workspace = true }
 collector-crash = { workspace = true }
 collector-hw = { workspace = true }
 collector-inv = { workspace = true }
+collector-net = { workspace = true }
 collector-boot = { workspace = true }
 fs-index = { workspace = true }
 validate = { workspace = true }
