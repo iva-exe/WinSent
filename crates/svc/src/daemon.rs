@@ -140,9 +140,15 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     // Sampler procesů (v1, SPEC kap. 3.1): 1 Hz vlákno plní sdílený
     // poslední vzorek (pro IPC) a posílá tick zapisovacímu vláknu.
     let live: Arc<RwLock<LiveSample>> = Arc::new(RwLock::new(LiveSample::default()));
+    // Trafik per PID za poslední sekundu (v9, ETW Kernel-Network):
+    // sampler mapu 1×/s vymění, IPC handler z ní čte. Vždy jen
+    // poslední sekunda — nemá jak růst.
+    let net_rates: Arc<std::sync::Mutex<win_sys::etw::NetTotalsByPid>> =
+        Arc::new(std::sync::Mutex::new(Default::default()));
     let sampler_handle = {
         let stop = Arc::clone(&stop);
         let live = Arc::clone(&live);
+        let net_rates = Arc::clone(&net_rates);
         let mut state = sampler_state;
         std::thread::Builder::new()
             .name("sampler".into())
@@ -168,6 +174,12 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     match collector_proc::tick(&mut state) {
                         Ok((procs, system)) => {
                             let ts = unix_now();
+                            // Trafik per PID od minulého ticku (v9):
+                            // tick je 1 s, takže delta je rovnou B/s.
+                            if let Some(etw_state) = etw.as_ref() {
+                                *net_rates.lock().expect("net rates lock") =
+                                    collector_etw::take_net(etw_state);
+                            }
                             // Pády procesů z ETW exit kódů (SPEC 16.1).
                             if let Some(etw_state) = etw.as_mut() {
                                 for ev in collector_etw::drain(etw_state) {
@@ -926,7 +938,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         let _ = dns_tx.try_send(ip);
                     }
                 }
-                let rows = {
+                let mut rows = {
                     let live = live.read().expect("live lock poisoned");
                     let by_pid: std::collections::HashMap<u32, &core_types::proc::ProcRow> =
                         live.procs.iter().map(|p| (p.pid, p)).collect();
@@ -943,6 +955,21 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         |ip| cache.get(&ip).cloned().flatten(),
                     )
                 };
+                // Trafik za poslední sekundu (ETW) — součet přes
+                // unikátní PIDy skupiny.
+                {
+                    let rates = net_rates.lock().expect("net rates lock");
+                    for row in &mut rows {
+                        let pids: std::collections::HashSet<u32> =
+                            row.conns.iter().map(|c| c.pid).collect();
+                        for pid in pids {
+                            if let Some((rx, tx)) = rates.get(&pid) {
+                                row.rx_bps += rx;
+                                row.tx_bps += tx;
+                            }
+                        }
+                    }
+                }
                 Response::Network(rows)
             }
             // Kdo drží soubory (v8, SPEC 18.1) — čistě čtecí dotaz na

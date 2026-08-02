@@ -10,7 +10,7 @@
 	// informace („otevřená brána dovnitř"), ne poplach.
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
-	import { Search, ArrowUpRight, Ear, Network as NetIcon } from 'lucide-svelte';
+	import { Search, ArrowDown, ArrowUp, ArrowUpRight, Ear, Network as NetIcon } from 'lucide-svelte';
 	import AppIcon from '$lib/AppIcon.svelte';
 
 	let rows = $state([]);
@@ -84,12 +84,24 @@
 	let totals = $derived.by(() => {
 		let est = 0;
 		let listen = 0;
+		let rx = 0;
+		let tx = 0;
 		for (const r of rows) {
 			est += r.established;
 			listen += r.listening;
+			rx += r.rx_bps;
+			tx += r.tx_bps;
 		}
-		return { est, listen, apps: rows.length };
+		return { est, listen, rx, tx, apps: rows.length };
 	});
+
+	// B/s do čitelné podoby; pod 1 kB/s je to šum — pomlčka.
+	function bps(b) {
+		if (!b) return null;
+		if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB/s';
+		if (b >= 1e3) return (b / 1e3).toFixed(0) + ' kB/s';
+		return null;
+	}
 
 	// Spojení vybrané aplikace seskupená podle cíle — 40 spojení na
 	// tentýž server je jeden řádek s počtem, ne 40 řádků.
@@ -133,6 +145,12 @@
 		<span class="label-tech">
 			{totals.apps} aplikací · {totals.est} aktivních · {totals.listen} naslouchá
 		</span>
+		{#if bps(totals.rx) || bps(totals.tx)}
+			<span class="head-rates">
+				<span class="rate down"><ArrowDown size={14} />{bps(totals.rx) ?? '—'}</span>
+				<span class="rate up"><ArrowUp size={14} />{bps(totals.tx) ?? '—'}</span>
+			</span>
+		{/if}
 		<div class="filter">
 			<Search size={16} />
 			<input placeholder="hledat aplikaci, adresu, doménu…" bind:value={filter} />
@@ -162,6 +180,16 @@
 								<span class="row-pub">{r.publisher ?? '—'}</span>
 							</span>
 							<span class="row-stats">
+								{#if bps(r.rx_bps)}
+									<span class="stat down" title="stahuje">
+										<ArrowDown size={13} />{bps(r.rx_bps)}
+									</span>
+								{/if}
+								{#if bps(r.tx_bps)}
+									<span class="stat up" title="odesílá">
+										<ArrowUp size={13} />{bps(r.tx_bps)}
+									</span>
+								{/if}
 								{#if r.established}
 									<span class="stat" title="aktivní spojení">
 										<ArrowUpRight size={14} />{r.established}
@@ -204,6 +232,10 @@
 									: selected.conns.length < 5
 										? 'záznamy'
 										: 'záznamů'}
+								{#if bps(selected.rx_bps)}
+									· <span class="down">↓ {bps(selected.rx_bps)}</span>{/if}
+								{#if bps(selected.tx_bps)}
+									· <span class="up">↑ {bps(selected.tx_bps)}</span>{/if}
 							</p>
 						</div>
 					</div>
@@ -381,6 +413,24 @@
 	}
 	.stat.dim {
 		color: var(--text-dim);
+	}
+	/* Barvy sítě jako v grafech Tasks: download modrá, upload fialová. */
+	.head-rates {
+		display: flex;
+		gap: 10px;
+	}
+	.rate {
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		font-size: 0.8rem;
+		font-variant-numeric: tabular-nums;
+	}
+	.down {
+		color: var(--net-down);
+	}
+	.up {
+		color: var(--net-up);
 	}
 
 	.detail {

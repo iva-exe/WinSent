@@ -32,8 +32,12 @@ use crate::Error;
 const KERNEL_PROCESS: GUID = GUID::from_u128(0x22FB2CD6_0E7B_422B_A0C7_2FAD1FD0E716);
 /// Microsoft-Windows-Kernel-Disk.
 const KERNEL_DISK: GUID = GUID::from_u128(0xC7BDE69A_E1E0_4177_B6EF_283AD1525271);
+/// Microsoft-Windows-Kernel-Network (SPEC kap. 12.1 — trafik per PID).
+const KERNEL_NETWORK: GUID = GUID::from_u128(0x7DD42A49_5329_4832_8DFD_43D979153A88);
 /// WINEVENT_KEYWORD_PROCESS.
 const KW_PROCESS: u64 = 0x10;
+/// KERNEL_NETWORK_KEYWORD_IPV4 | IPV6 — datové události obou rodin.
+const KW_NET: u64 = 0x30;
 /// TRACE_LEVEL_INFORMATION.
 const LEVEL_INFO: u8 = 4;
 
@@ -183,9 +187,16 @@ pub fn start_session(
     })
 }
 
-/// Realtime session pro daemon: Kernel-Process (start/stop procesů).
+/// Realtime session pro daemon: Kernel-Process (start/stop procesů)
+/// a Kernel-Network (objem trafiku per PID, SPEC 12.1). Síťové
+/// události se neukládají po jedné — agregují se hned v callbacku
+/// (SPEC 15.3, pravidlo nákladu platí i tady).
 pub fn start_realtime(name: &str) -> Result<Session, Error> {
-    start_session(name, None, &[(KERNEL_PROCESS, KW_PROCESS)])
+    start_session(
+        name,
+        None,
+        &[(KERNEL_PROCESS, KW_PROCESS), (KERNEL_NETWORK, KW_NET)],
+    )
 }
 
 /// Černá skříňka: circular .etl, Kernel-Process + Kernel-Disk.
@@ -197,9 +208,15 @@ pub fn start_blackbox(name: &str, etl_path: &str) -> Result<Session, Error> {
     )
 }
 
+/// Součty bajtů per PID: (přijato, odesláno). Bere se přes
+/// `Consumer::take_net()` — mapa se vymění za prázdnou, takže drží
+/// vždy jen data od posledního odběru a nemá jak růst donekonečna.
+pub type NetTotalsByPid = std::collections::HashMap<u32, (u64, u64)>;
+
 /// Kontext konzumenta předávaný do C callbacku.
 struct ConsumerCtx {
     tx: Sender<ProcEvent>,
+    net: std::sync::Mutex<NetTotalsByPid>,
 }
 
 /// SAFETY: volá ETW runtime; record je platný po dobu callbacku.
@@ -209,6 +226,35 @@ unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
     };
     let ctx = record.UserContext as *const ConsumerCtx;
     let Some(ctx) = ctx.as_ref() else { return };
+    if record.EventHeader.ProviderId == KERNEL_NETWORK {
+        // Datové události TCP/UDP v4/v6: payload začíná PID (u32)
+        // a size (u32) — víc z něj nečteme (kam a kolik, ne co).
+        // ID dle manifestu: 10/26 TCP send, 11/27 TCP recv,
+        // 42/58 UDP send, 43/59 UDP recv.
+        let id = record.EventHeader.EventDescriptor.Id;
+        let sent = matches!(id, 10 | 26 | 42 | 58);
+        let recv = matches!(id, 11 | 27 | 43 | 59);
+        if !sent && !recv {
+            return;
+        }
+        let data = std::slice::from_raw_parts(
+            record.UserData as *const u8,
+            record.UserDataLength as usize,
+        );
+        if data.len() < 8 {
+            return;
+        }
+        let pid = u32::from_le_bytes(data[0..4].try_into().unwrap());
+        let size = u32::from_le_bytes(data[4..8].try_into().unwrap()) as u64;
+        let mut net = ctx.net.lock().expect("net totals lock");
+        let e = net.entry(pid).or_insert((0, 0));
+        if recv {
+            e.0 += size;
+        } else {
+            e.1 += size;
+        }
+        return;
+    }
     if record.EventHeader.ProviderId != KERNEL_PROCESS {
         return;
     }
@@ -256,6 +302,16 @@ pub struct Consumer {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+impl Consumer {
+    /// Odebere nasčítané síťové bajty per PID od minulého volání.
+    /// Mapa se vymění za prázdnou — volá se 1×/s ze sampleru a delta
+    /// za tu sekundu je rovnou B/s.
+    pub fn take_net(&self) -> NetTotalsByPid {
+        let mut net = self._ctx.net.lock().expect("net totals lock");
+        std::mem::take(&mut *net)
+    }
+}
+
 impl Drop for Consumer {
     fn drop(&mut self) {
         // SAFETY: handle je z OpenTraceW; CloseTrace odblokuje ProcessTrace.
@@ -274,7 +330,10 @@ impl Drop for Consumer {
 /// Připojí konzumenta na realtime session; události tečou do kanálu.
 pub fn consume(session_name: &str) -> Result<(Receiver<ProcEvent>, Consumer), Error> {
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut ctx = Box::new(ConsumerCtx { tx });
+    let mut ctx = Box::new(ConsumerCtx {
+        tx,
+        net: std::sync::Mutex::new(NetTotalsByPid::new()),
+    });
 
     let mut wname: Vec<u16> = session_name
         .encode_utf16()

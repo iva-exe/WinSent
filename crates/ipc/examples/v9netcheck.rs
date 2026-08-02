@@ -98,7 +98,35 @@ fn main() {
         println!("--  žádné PTR jméno — bez aktivních veřejných spojení je to v pořádku");
     }
 
-    // 4) Rozpočet: snapshot musí být levný (SPEC 12.3).
+    // 4) Trafik per aplikace (ETW): při stažení dat musí někdo
+    // vykazovat bajty. Stáhneme kousek dat sami, ať test nezávisí
+    // na tom, co zrovna dělá zbytek systému.
+    let _ = std::process::Command::new("curl.exe")
+        .args([
+            "-s",
+            "-o",
+            "NUL",
+            "--max-time",
+            "8",
+            "https://speed.cloudflare.com/__down?bytes=3000000",
+        ])
+        .status();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let rows2 = ipc::client::query_network().unwrap_or_default();
+    let moving: Vec<_> = rows2.iter().filter(|r| r.rx_bps + r.tx_bps > 0).collect();
+    if moving.is_empty() {
+        println!("--  žádný trafik za poslední sekundu — bez provozu je to v pořádku");
+    } else {
+        println!("OK  trafik vidí {} aplikací; nejvíc:", moving.len());
+        for r in moving.iter().take(3) {
+            println!(
+                "    {} — ↓ {} B/s · ↑ {} B/s",
+                r.app_name, r.rx_bps, r.tx_bps
+            );
+        }
+    }
+
+    // 5) Rozpočet: snapshot musí být levný (SPEC 12.3).
     let t1 = Instant::now();
     let _ = ipc::client::query_network();
     let again_ms = t1.elapsed().as_millis();

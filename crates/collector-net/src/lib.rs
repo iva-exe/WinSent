@@ -54,6 +54,8 @@ pub fn per_app(
             proc_count: 0,
             established: 0,
             listening: 0,
+            rx_bps: 0,
+            tx_bps: 0,
             conns: Vec::new(),
         });
         pids_per_group.entry(key).or_default().insert(c.pid);

@@ -74,5 +74,11 @@ pub fn drain(state: &mut State) -> Vec<ProcEvent> {
     out
 }
 
+/// Odebere síťové bajty per PID nasčítané od minulého volání
+/// (v9, SPEC 12.1). Volá se 1×/s — delta je rovnou B/s.
+pub fn take_net(state: &State) -> win_sys::etw::NetTotalsByPid {
+    state._consumer.take_net()
+}
+
 /// Korektní ukončení (Drop zastaví sessions).
 pub fn shutdown(_state: State) {}

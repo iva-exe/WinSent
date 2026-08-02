@@ -451,5 +451,8 @@ pub struct AppNetRow {
     /// Aktivní spojení (established) / naslouchající porty.
     pub established: u32,
     pub listening: u32,
+    /// Trafik aplikace teď: bajty za sekundu (ETW Kernel-Network).
+    pub rx_bps: u64,
+    pub tx_bps: u64,
     pub conns: Vec<ConnRow>,
 }
