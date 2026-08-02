@@ -566,3 +566,15 @@ pub fn query_connection() -> Result<core_types::proc::ConnectionReport, Error> {
         }),
     }
 }
+
+/// Security (v9): stav ochrany + oprávnění aplikací.
+pub fn query_security() -> Result<core_types::proc::SecurityReport, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QuerySecurity)? {
+        Response::Security(r) => Ok(r),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}

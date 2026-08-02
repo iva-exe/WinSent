@@ -7,6 +7,7 @@
 pub mod battery;
 pub mod caps;
 pub mod conns;
+pub mod consent;
 pub mod cpuinfo;
 pub mod devices;
 pub mod disk;
@@ -27,6 +28,7 @@ pub mod recycle;
 pub mod registry;
 pub mod restore;
 pub mod rm;
+pub mod security;
 pub mod services;
 pub mod shortcut;
 pub mod smart;

@@ -3330,6 +3330,7 @@ dependencies = [
  "collector-inv",
  "collector-net",
  "collector-proc",
+ "collector-sec",
  "core-types",
  "ctrlc",
  "fs-index",

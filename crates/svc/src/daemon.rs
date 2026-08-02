@@ -571,6 +571,9 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         // Hardwarový přehled na 5 s (v9) — tepelná kaskáda jde přes WMI.
         let hw_cache: std::sync::Mutex<Option<(Instant, core_types::proc::HardwareReport)>> =
             std::sync::Mutex::new(None);
+        // Stav ochrany na 30 s (v9) — SecurityCenter/Defender WMI je drahé.
+        let sec_cache: std::sync::Mutex<Option<(Instant, core_types::proc::ProtectionReport)>> =
+            std::sync::Mutex::new(None);
         // Reverzní DNS (v9, SPEC 12.3): PTR jména se cachují a překládá
         // je vlákno na pozadí — lookup umí blokovat sekundy a obslužné
         // vlákno pipe na něj nesmí čekat. `None` v cache = „zkoušeno,
@@ -971,6 +974,25 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     }
                 }
                 Response::Network(rows)
+            }
+            // Security (v9, SPEC kap. 13): ochrana + oprávnění.
+            // Ochrana jde přes WMI (drahé) → cache 30 s; oprávnění
+            // jsou registr (levné) → vždy čerstvá, kvůli živé tečce
+            // „používá kameru právě teď".
+            Request::QuerySecurity => {
+                win_sys::wic::init_com_for_thread();
+                let mut cache = sec_cache.lock().expect("sec cache lock");
+                let fresh = cache
+                    .as_ref()
+                    .is_some_and(|(t, _): &(Instant, _)| t.elapsed() < Duration::from_secs(30));
+                if !fresh {
+                    *cache = Some((Instant::now(), collector_sec::protection()));
+                }
+                let protection = cache.as_ref().map(|(_, p)| p.clone()).unwrap_or_default();
+                Response::Security(core_types::proc::SecurityReport {
+                    protection,
+                    permissions: collector_sec::permissions(),
+                })
             }
             // Připojení (v9): adaptéry + IP konfigurace + WiFi.
             // Jen čtení — WiFi sken se nevyvolává, čte se cache systému.

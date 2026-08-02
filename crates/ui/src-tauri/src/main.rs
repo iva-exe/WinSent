@@ -173,6 +173,12 @@ fn query_hardware() -> Result<core_types::proc::HardwareReport, String> {
     ipc::client::query_hardware().map_err(|e| e.to_string())
 }
 
+/// Security (v9) — stav ochrany + oprávnění aplikací.
+#[tauri::command(async)]
+fn query_security() -> Result<core_types::proc::SecurityReport, String> {
+    ipc::client::query_security().map_err(|e| e.to_string())
+}
+
 /// Stav připojení (v9) — adaptéry, IP konfigurace, WiFi.
 #[tauri::command(async)]
 fn query_connection() -> Result<core_types::proc::ConnectionReport, String> {
@@ -533,6 +539,7 @@ fn main() {
             query_displays,
             query_network,
             query_connection,
+            query_security,
             build_file_index,
             search_files,
             find_duplicates,

@@ -493,3 +493,52 @@ pub struct ConnectionReport {
     pub wifi_connection: Option<WifiNetworkRow>,
     pub wifi_networks: Vec<WifiNetworkRow>,
 }
+
+/// Stav ochrany Windows (v9, SPEC kap. 13.1). `None` = nejde zjistit
+/// nebo neexistuje (legacy BIOS nemá Secure Boot) — nikdy se nehádá.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProtectionReport {
+    /// Antiviry ze Security Center: (jméno, běží, aktuální definice).
+    pub av: Vec<(String, bool, bool)>,
+    /// Defender detaily, když je aktivní: (realtime, stáří definic
+    /// ve dnech, stáří rychlého skenu ve dnech).
+    pub defender: Option<(bool, Option<u32>, Option<u32>)>,
+    /// Firewall per profil: doména, privátní, veřejná.
+    pub fw_domain: Option<bool>,
+    pub fw_private: Option<bool>,
+    pub fw_public: Option<bool>,
+    pub uac_enabled: bool,
+    /// 0 = bez výzvy … 5; 2 je výchozí souhlas na zabezpečené ploše.
+    pub uac_admin_prompt: Option<u32>,
+    pub secure_boot: Option<bool>,
+    /// (zapnutý, verze specifikace).
+    pub tpm: Option<(bool, String)>,
+    /// BitLocker per svazek: (písmeno, 0 nešifrováno / 1 chráněno / 2 jiné).
+    pub encryption: Vec<(String, u32)>,
+}
+
+/// Oprávnění jedné aplikace k jedné schopnosti (v9, SPEC kap. 13.4).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionRow {
+    /// webcam | microphone | location | …
+    pub capability: String,
+    /// PackageFamilyName, nebo cesta k .exe u klasických aplikací.
+    pub app: String,
+    /// Čitelné jméno aplikace (z cesty nebo z PFN).
+    pub app_name: String,
+    /// Balená aplikace — jen u té Windows Deny tvrdě VYNUTÍ.
+    /// UI podle toho barví: zelená jen kde vynucení opravdu je.
+    pub enforced: bool,
+    pub allow: bool,
+    /// Používá schopnost právě teď (živá tečka).
+    pub in_use: bool,
+    /// Konec posledního použití (unix).
+    pub last_used: Option<i64>,
+}
+
+/// Security sekce (v9): ochrana + oprávnění.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SecurityReport {
+    pub protection: ProtectionReport,
+    pub permissions: Vec<PermissionRow>,
+}
