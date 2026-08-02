@@ -554,3 +554,15 @@ pub fn query_network() -> Result<Vec<core_types::proc::AppNetRow>, Error> {
         }),
     }
 }
+
+/// Stav připojení (v9): adaptéry, IP konfigurace, WiFi.
+pub fn query_connection() -> Result<core_types::proc::ConnectionReport, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryConnection)? {
+        Response::Connection(r) => Ok(r),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}

@@ -972,6 +972,50 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 }
                 Response::Network(rows)
             }
+            // Připojení (v9): adaptéry + IP konfigurace + WiFi.
+            // Jen čtení — WiFi sken se nevyvolává, čte se cache systému.
+            Request::QueryConnection => {
+                let adapters = win_sys::ipcfg::adapters()
+                    .into_iter()
+                    .map(|a| core_types::proc::NetAdapterRow {
+                        name: a.name,
+                        description: a.description,
+                        mac: a.mac,
+                        kind: a.kind.to_string(),
+                        up: a.up,
+                        link_mbps: a.link_mbps,
+                        ips: a.ips.iter().map(|i| i.to_string()).collect(),
+                        gateways: a.gateways.iter().map(|i| i.to_string()).collect(),
+                        dns: a.dns.iter().map(|i| i.to_string()).collect(),
+                        dhcp: a.dhcp,
+                    })
+                    .collect();
+                let (ifaces, networks) = win_sys::wlan::snapshot();
+                let wifi_connection = ifaces.iter().find_map(|i| {
+                    i.connection
+                        .as_ref()
+                        .map(|c| core_types::proc::WifiNetworkRow {
+                            ssid: c.ssid.clone(),
+                            signal_pct: c.signal_pct,
+                            secured: c.secured,
+                            connected: true,
+                        })
+                });
+                Response::Connection(core_types::proc::ConnectionReport {
+                    adapters,
+                    wifi_present: !ifaces.is_empty(),
+                    wifi_connection,
+                    wifi_networks: networks
+                        .into_iter()
+                        .map(|n| core_types::proc::WifiNetworkRow {
+                            ssid: n.ssid,
+                            signal_pct: n.signal_pct,
+                            secured: n.secured,
+                            connected: n.connected,
+                        })
+                        .collect(),
+                })
+            }
             // Kdo drží soubory (v8, SPEC 18.1) — čistě čtecí dotaz na
             // Restart Manager; nic se neukončuje.
             Request::QueryHolders { paths } => match win_sys::rm::holders(&paths) {

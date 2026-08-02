@@ -173,6 +173,12 @@ fn query_hardware() -> Result<core_types::proc::HardwareReport, String> {
     ipc::client::query_hardware().map_err(|e| e.to_string())
 }
 
+/// Stav připojení (v9) — adaptéry, IP konfigurace, WiFi.
+#[tauri::command(async)]
+fn query_connection() -> Result<core_types::proc::ConnectionReport, String> {
+    ipc::client::query_connection().map_err(|e| e.to_string())
+}
+
 /// Spojení per aplikace (v9, SPEC kap. 12) — kdo je připojený kam.
 #[tauri::command(async)]
 fn query_network() -> Result<Vec<core_types::proc::AppNetRow>, String> {
@@ -526,6 +532,7 @@ fn main() {
             query_hardware,
             query_displays,
             query_network,
+            query_connection,
             build_file_index,
             search_files,
             find_duplicates,

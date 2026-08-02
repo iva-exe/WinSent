@@ -456,3 +456,40 @@ pub struct AppNetRow {
     pub tx_bps: u64,
     pub conns: Vec<ConnRow>,
 }
+
+/// Síťový adaptér s IP konfigurací (v9, sekce Connection).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetAdapterRow {
+    pub name: String,
+    pub description: String,
+    pub mac: String,
+    /// "ethernet" | "wifi" | "virtual" | "other".
+    pub kind: String,
+    pub up: bool,
+    /// Rychlost linky v Mb/s (0 = nehlásí).
+    pub link_mbps: u64,
+    pub ips: Vec<String>,
+    pub gateways: Vec<String>,
+    pub dns: Vec<String>,
+    pub dhcp: bool,
+}
+
+/// WiFi síť viditelná z poslední cache skenování (v9).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WifiNetworkRow {
+    pub ssid: String,
+    pub signal_pct: u32,
+    pub secured: bool,
+    pub connected: bool,
+}
+
+/// Stav připojení (v9, sekce Connection): adaptéry + WiFi.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionReport {
+    pub adapters: Vec<NetAdapterRow>,
+    /// Má stroj vůbec WiFi kartu? Bez ní se sekce WiFi nepředstírá.
+    pub wifi_present: bool,
+    /// Aktuální připojení: (popis karty, SSID, signál %, rx/tx Mb/s).
+    pub wifi_connection: Option<WifiNetworkRow>,
+    pub wifi_networks: Vec<WifiNetworkRow>,
+}

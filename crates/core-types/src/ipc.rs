@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 28;
+pub const PROTOCOL_VERSION: u32 = 29;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,6 +83,8 @@ pub enum Request {
     QueryHardware,
     /// Síť: spojení seskupená per aplikace (v9, SPEC kap. 12).
     QueryNetwork,
+    /// Připojení: adaptéry, IP konfigurace, WiFi (v9).
+    QueryConnection,
     /// Kdo drží soubory (v8, Restart Manager) — „proč to nejde smazat".
     QueryHolders { paths: Vec<String> },
 
@@ -181,6 +183,8 @@ pub enum Response {
     Hardware(crate::proc::HardwareReport),
     /// Spojení per aplikace (v9).
     Network(Vec<crate::proc::AppNetRow>),
+    /// Stav připojení (v9).
+    Connection(crate::proc::ConnectionReport),
 
     /// Zbytky po odinstalaci: cesty, které na disku pořád jsou.
     Leftovers(Vec<String>),

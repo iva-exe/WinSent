@@ -15,6 +15,7 @@ pub mod gpu;
 pub mod gpubasic;
 pub mod gpuproc;
 pub mod icon;
+pub mod ipcfg;
 pub mod msi;
 pub mod msix;
 pub mod net;
@@ -39,6 +40,7 @@ pub mod usn;
 pub mod verinfo;
 pub mod volumes;
 pub mod wic;
+pub mod wlan;
 pub mod wmi;
 
 /// Chyby win-sys vrstvy. Každé selhání Win32 volání nese kód, nic
