@@ -31,16 +31,48 @@ $version = "$base+$(Get-Date -Format 'yyyyMMdd.HHmm')"
 Write-Host "Winsent — vydávám $version" -ForegroundColor Cyan
 
 # ── Build ──────────────────────────────────────────────────────────
-Write-Host "1/4  Frontend"
+# UI se MUSÍ stavět přes Tauri CLI, ne přes holé `cargo build`.
+# `tauri::generate_context!` se podle prostředí rozhoduje, jestli do
+# binárky vestaví soubory frontendu, nebo jen adresu vývojového
+# serveru. Bez CLI vyhraje ta druhá možnost a nainstalovaná aplikace
+# ukáže „localhost se odmítl připojit" — vypadá to jako rozbitá
+# aplikace, přitom jde jen o špatně postavenou binárku.
+# CLI si samo pustí `beforeBuildCommand` (vite build), takže se
+# frontend staví v rámci tohohle kroku.
+Write-Host "1/4  Aplikace (Tauri build)"
 Push-Location (Join-Path $root 'crates\ui')
-& npm.cmd run build
+& .\node_modules\.bin\tauri.exe build --no-bundle
 $code = $LASTEXITCODE
 Pop-Location
-if ($code -ne 0) { throw "npm run build selhal ($code)" }
+if ($code -ne 0) { throw "tauri build selhal ($code)" }
 
-Write-Host "2/4  Binárky (release)"
-& cargo build --release -p svc -p ui -p installer
+Write-Host "2/4  Služba a instalátor (release)"
+& cargo build --release -p svc -p installer
 if ($LASTEXITCODE -ne 0) { throw "cargo build selhal ($LASTEXITCODE)" }
+
+# Kontrola, že v binárce OPRAVDU jsou soubory frontendu.
+# Špatně postavená binárka se pozná až u testera prázdným oknem
+# s „localhost se odmítl připojit" — a vypadá to jako rozbitá
+# aplikace, ne jako rozbitý build. Klíče assetů (_app/immutable/…)
+# jsou v binárce nekomprimované, takže stačí hledat je; samotné
+# soubory jsou zabalené a hledat se v nich nedá.
+$uiExe = Join-Path $root 'target\release\syswatch-ui.exe'
+$bytes = [IO.File]::ReadAllBytes($uiExe)
+$needle = [Text.Encoding]::UTF8.GetBytes('_app/immutable')
+$found = $false
+for ($i = 0; $i -le $bytes.Length - $needle.Length; $i++) {
+    if ($bytes[$i] -eq $needle[0]) {
+        $match = $true
+        for ($j = 1; $j -lt $needle.Length; $j++) {
+            if ($bytes[$i + $j] -ne $needle[$j]) { $match = $false; break }
+        }
+        if ($match) { $found = $true; break }
+    }
+}
+if (-not $found) {
+    throw "syswatch-ui.exe neobsahuje soubory frontendu — postav UI přes Tauri CLI, ne přes 'cargo build -p ui'"
+}
+Write-Host "     UI má vestavěný frontend" -ForegroundColor DarkGray
 
 # ── release/ = to, co si stahuje instalátor ────────────────────────
 Write-Host "3/4  Skládám release/"
