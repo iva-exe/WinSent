@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod display;
+mod repair;
 mod uninstall;
 use serde::Serialize;
 
@@ -369,6 +370,13 @@ fn start_uninstall(plan_id: u64, identity_key: String) -> Result<UninstallStarte
     }
 }
 
+/// Zvedne zastavenou službu — pustí instalátor v opravném režimu.
+/// Výzvu UAC zobrazí Windows, potvrzuje ji uživatel.
+#[tauri::command(async)]
+fn repair_service() -> Result<(), String> {
+    repair::launch().map_err(|e| e.to_string())
+}
+
 /// Odinstalace, krok 2 — BĚŽÍ JEŠTĚ? UI se ptá po sekundách a mezitím
 /// ukazuje, co se děje.
 #[tauri::command(async)]
@@ -566,6 +574,7 @@ fn main() {
             finish_uninstall,
             query_leftovers,
             query_holders,
+            repair_service,
             execute_plan
         ])
         .setup(|app| {

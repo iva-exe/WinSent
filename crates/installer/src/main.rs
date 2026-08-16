@@ -81,8 +81,12 @@ fn main() {
             0
         }
         Err(e) => {
+            // Žádné paušální „nic se nezměnilo" — co se opravdu stalo,
+            // ví jen ta konkrétní chyba a ta si to nese s sebou. Slepé
+            // ujištění by tu jen zakrylo zastavenou službu.
             println!("\n  CHYBA: {e}");
-            println!("\n  Nic se nezměnilo. Když chyba trvá, pošli tenhle výpis vydavateli.");
+            println!("\n  Zkus instalátor spustit ještě jednou — umí i opravit rozbitou instalaci.");
+            println!("  Když chyba trvá, pošli tenhle výpis vydavateli.");
             1
         }
     };
@@ -133,10 +137,26 @@ fn do_install() -> Result<String, String> {
     }
     println!("  Nejnovější verze: {version}");
 
+    // Shodná verze sama o sobě neznamená, že aplikace funguje: binárky
+    // mohly zmizet, služba mohla zůstat zastavená. Za „nainstalováno"
+    // se považuje až verze + obě binárky na disku.
+    let files_ok = FILES.iter().all(|n| dir.join(n).is_file());
     match installed_version() {
-        Some(v) if v == version => {
-            return Ok(format!("Už máš nejnovější verzi ({v}). Nic se nemění."));
+        Some(v) if v == version && files_ok => {
+            // Nic se nestahuje, ale služba se prověří a v případě
+            // potřeby nastartuje. Tím je „spusť instalátor znovu"
+            // jediná rada, kterou tester kdy potřebuje — opraví to
+            // i zastavenou službu, kterou by jinak nikdo nezvedl.
+            println!("  Verze sedí — kontroluji službu…");
+            service::install(&dir.join("syswatch.exe"))?;
+            service::start_and_wait()?;
+            launch_ui(&dir);
+            return Ok(format!(
+                "Winsent {v} je aktuální a služba běží.\n  \
+                 Aplikaci najdeš v nabídce Start."
+            ));
         }
+        Some(v) if v == version => println!("  Verze {v} sedí, ale chybí soubory → instaluji znovu"),
         Some(v) => println!("  Nainstalováno: {v} → aktualizuji"),
         None => println!("  Zatím nenainstalováno → instaluji"),
     }
@@ -171,24 +191,27 @@ fn do_install() -> Result<String, String> {
         .output();
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    std::fs::create_dir_all(&dir).map_err(|e| format!("nelze vytvořit {}: {e}", dir.display()))?;
-    let mut total_kb = 0u32;
-    for (name, data) in &payload {
-        let path = dir.join(name);
-        std::fs::write(&path, data).map_err(|e| format!("nelze zapsat {}: {e}", path.display()))?;
-        total_kb += (data.len() / 1024) as u32;
-    }
-    std::fs::write(dir.join("version.txt"), &version)
-        .map_err(|e| format!("nelze zapsat verzi: {e}"))?;
+    // Od téhle chvíle je systém rozestavěný: služba stojí a soubory
+    // se přepisují. Cokoliv od teď selže, nesmí uživatele nechat bez
+    // monitoringu — proto se výsledek zachytí a služba se v každém
+    // případě vrátí do běhu.
+    let outcome = write_payload(&dir, &payload, &version);
 
-    // Instalátor si uloží kopii vedle aplikace — odinstalace přes
-    // Programy a funkce pak funguje i po smazání staženého souboru.
-    let setup_dst = dir.join("WinsentSetup.exe");
-    if let Ok(me) = std::env::current_exe() {
-        if me != setup_dst {
-            let _ = std::fs::copy(&me, &setup_dst);
+    let total_kb = match outcome {
+        Ok(kb) => kb,
+        Err(e) => {
+            println!("  Instalace selhala — vracím službu do běhu…");
+            let back = service::install(&dir.join("syswatch.exe"))
+                .and_then(|()| service::start_and_wait());
+            return Err(match back {
+                Ok(()) => format!("{e}\n  Službu jsem vrátil do běhu, monitoring jede dál."),
+                Err(e2) => format!(
+                    "{e}\n  Navíc se nepodařilo nastartovat službu ({e2}) — \
+                     zkus instalátor spustit znovu."
+                ),
+            });
         }
-    }
+    };
 
     // ── 4. Služba a zápisy do systému ──────────────────────────────
     println!("  Registruji službu…");
@@ -199,22 +222,77 @@ fn do_install() -> Result<String, String> {
     if let Err(e) = shell::create_shortcut(&dir.join("syswatch-ui.exe"), &start_menu_lnk()) {
         println!("  (zástupce se nepodařilo vytvořit: {e})");
     }
-    if let Err(e) = shell::register_uninstall(&setup_dst, &dir, &version, total_kb) {
+    if let Err(e) = shell::register_uninstall(&dir.join("WinsentSetup.exe"), &dir, &version, total_kb)
+    {
         println!("  (záznam v Programech a funkcích: {e})");
     }
 
-    // ── 5. Spuštění aplikace ───────────────────────────────────────
-    // Instalátor běží jako správce, ale aplikace musí běžet pod
-    // běžným uživatelem (SPEC 2.1). Explorer je spuštěný pod ním,
-    // takže spuštění „přes něj" práva vrátí na normální úroveň.
-    let _ = std::process::Command::new("explorer.exe")
-        .arg(dir.join("syswatch-ui.exe"))
-        .spawn();
+    launch_ui(&dir);
 
     Ok(format!(
         "Hotovo — Winsent {version} nainstalován.\n  \
          Najdeš ho v nabídce Start. Aktualizuje se spuštěním tohohle souboru znovu."
     ))
+}
+
+/// Přepíše binárky a verzi. Vrací celkovou velikost v KiB pro záznam
+/// v Programech a funkcích.
+fn write_payload(
+    dir: &std::path::Path,
+    payload: &[(&str, Vec<u8>)],
+    version: &str,
+) -> Result<u32, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("nelze vytvořit {}: {e}", dir.display()))?;
+    let mut total_kb = 0u32;
+    for (name, data) in payload {
+        write_retry(&dir.join(name), data)?;
+        total_kb += (data.len() / 1024) as u32;
+    }
+    // Verze se zapisuje až nakonec: kdyby zápis binárek selhal,
+    // zůstane u nich sedět stará verze a příští spuštění instalátoru
+    // je opraví. Nová verze u starých souborů by opravu zablokovala.
+    write_retry(&dir.join("version.txt"), version.as_bytes())?;
+
+    // Instalátor si uloží kopii vedle aplikace — odinstalace přes
+    // Programy a funkce pak funguje i po smazání staženého souboru.
+    let setup_dst = dir.join("WinsentSetup.exe");
+    if let Ok(me) = std::env::current_exe() {
+        if me != setup_dst {
+            let _ = std::fs::copy(&me, &setup_dst);
+        }
+    }
+    Ok(total_kb)
+}
+
+/// Zápis s několika pokusy.
+///
+/// Správce služeb hlásí „zastaveno" ve chvíli, kdy to služba ohlásí —
+/// proces ale ještě chvíli dobíhá a drží vlastní .exe zamčený. Jedno
+/// selhání by přitom znamenalo přerušenou instalaci se zastavenou
+/// službou, takže pár sekund trpělivosti je tu jednoznačně levnější.
+fn write_retry(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
+    let mut last = String::new();
+    for _ in 0..20 {
+        match std::fs::write(path, data) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last = e.to_string();
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        }
+    }
+    Err(format!("nelze zapsat {}: {last}", path.display()))
+}
+
+/// Spustí aplikaci pod přihlášeným uživatelem.
+///
+/// Instalátor běží jako správce, ale aplikace musí běžet pod běžným
+/// uživatelem (SPEC 2.1). Explorer je spuštěný pod ním, takže
+/// spuštění „přes něj" práva vrátí na normální úroveň.
+fn launch_ui(dir: &std::path::Path) {
+    let _ = std::process::Command::new("explorer.exe")
+        .arg(dir.join("syswatch-ui.exe"))
+        .spawn();
 }
 
 fn do_uninstall() -> Result<String, String> {

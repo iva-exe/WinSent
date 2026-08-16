@@ -62,6 +62,23 @@
 	// Uptime systému (z démona, GetTickCount64) — poll 1×/5 s.
 	let sysUptime = $state(null);
 
+	// Zvednutí zastavené služby. Instalátor si o práva správce řekne sám,
+	// UI jen počká — jakmile služba naběhne, ukazatel se rozsvítí pollem.
+	let fixing = $state(false);
+	let fixHint = $state('Spustit službu (vyžádá si práva správce)');
+	async function fixService() {
+		fixing = true;
+		try {
+			await invoke('repair_service');
+			fixHint = 'Instalátor běží — potvrď výzvu Windows';
+		} catch (e) {
+			fixHint = String(e);
+		}
+		// Instalátor chvíli stahuje a kontroluje; dřív než za pár sekund
+		// nemá smysl tlačítko vracet.
+		setTimeout(() => (fixing = false), 8000);
+	}
+
 	function fmtUp(s) {
 		if (s == null) return '—';
 		const d = Math.floor(s / 86400);
@@ -135,6 +152,14 @@
 		<div class="daemon" title={daemon.detail} data-tauri-drag-region>
 			<span class="dot" class:alive={daemon.alive}></span>
 			<span class="daemon-label">{daemon.alive ? 'služba běží' : 'služba neběží'}</span>
+			<!-- Zastavená služba není jen zpráva, ale i cesta ven: klik
+			     pustí instalátor v opravném režimu (vyžádá si práva
+			     správce). Rozhodnutí zůstává na uživateli. -->
+			{#if !daemon.alive}
+				<button class="fix" onclick={fixService} disabled={fixing} title={fixHint}>
+					{fixing ? 'spouštím…' : 'spustit'}
+				</button>
+			{/if}
 		</div>
 
 		<!-- Uptime systému a démona -->
@@ -264,6 +289,25 @@
 		font-size: 11px;
 		letter-spacing: 0.04em;
 		color: var(--text-dim);
+	}
+	.fix {
+		font-family: var(--font-mono);
+		font-size: 10px;
+		letter-spacing: 0.04em;
+		padding: 0.1rem 0.4rem;
+		border-radius: 4px;
+		border: 1px solid var(--danger);
+		background: transparent;
+		color: var(--danger);
+		cursor: pointer;
+	}
+	.fix:hover:not(:disabled) {
+		background: var(--danger);
+		color: var(--bg);
+	}
+	.fix:disabled {
+		opacity: 0.55;
+		cursor: default;
 	}
 	.uptimes {
 		display: flex;
