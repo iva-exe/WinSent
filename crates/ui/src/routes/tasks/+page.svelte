@@ -285,6 +285,11 @@
 			const disk_bps = ease((p.disk_r_bps ?? 0) + (p.disk_w_bps ?? 0), 'disk_bps');
 			return {
 			pid: p.pid,
+			// Bez času vzniku se proces nedá ukončit: validační vrstva
+			// jím ověřuje, že je to pořád tentýž proces a ne cizí, který
+			// mezitím dostal recyklované PID. Dokud tu chyběl, pravý klik
+			// se tiše ztratil — askKill() se bez něj rovnou vrací.
+			create_time: p.create_time ?? null,
 			name: p.name,
 			cpu_pct,
 			ws_bytes: p.ws_bytes,
@@ -412,13 +417,26 @@
 		});
 	}
 
-	// Jeden průchod: nové hodnoty, seřazené procesy, seřazené aplikace.
-	// Řadí se pokaždé — o klid seznamu se stará vyhlazení hodnot, ne
-	// zmrazené pořadí (viz SMOOTH).
+	// Dorazil nový vzorek: přepočítat hodnoty (posune vyhlazení o krok)
+	// a seřadit. Řadí se pokaždé — o klid seznamu se stará vyhlazení
+	// hodnot, ne zmrazené pořadí (viz SMOOTH).
 	function refreshTable() {
 		displayRows = sortRows(buildRows());
-		// Aplikace se staví ze VŠECH řádků — filtr se uplatní až při
-		// vykreslení, ať součty zůstanou celé.
+		regroup();
+	}
+
+	// Jen přeřadit to, co už je na obrazovce (klik na hlavičku sloupce,
+	// přepnutí pohledu). Odděleně od příjmu vzorku schválně: společná
+	// cesta by na každý klik posunula vyhlazení o krok navíc, aniž by
+	// přišla nová data.
+	function resort() {
+		displayRows = sortRows([...displayRows]);
+		regroup();
+	}
+
+	// Aplikace se staví ze VŠECH řádků — filtr se uplatní až při
+	// vykreslení, ať součty zůstanou celé.
+	function regroup() {
 		displayGroups = sortGroups(aggregate(displayRows));
 	}
 
@@ -429,7 +447,7 @@
 			sortKey = key;
 			sortDir = key === 'name' || key === 'publisher' ? 1 : -1;
 		}
-		refreshTable();
+		resort();
 	}
 
 	const push = (arr, v) => [...arr.slice(-(CAP - 1)), v];
@@ -1082,7 +1100,7 @@
 						class:active={viewMode === 'apps'}
 						onclick={() => {
 							viewMode = 'apps';
-							refreshTable();
+							resort();
 						}}
 					>
 						Aplikace
@@ -1091,7 +1109,7 @@
 						class:active={viewMode === 'procs'}
 						onclick={() => {
 							viewMode = 'procs';
-							refreshTable();
+							resort();
 						}}
 					>
 						Procesy
@@ -1125,8 +1143,16 @@
 						<th class="t-pub" onclick={() => setSort('publisher')}>
 							Vydavatel {#if sortKey === 'publisher'}{arrow}{/if}
 						</th>
-						<th class="t-num" onclick={() => setSort('pid')}>
-							PID {#if sortKey === 'pid'}{arrow}{/if}
+						<!-- PID má proces, ne aplikace. V seskupeném pohledu je
+						     buňka u víceprocesových aplikací prázdná, takže
+						     řadit podle ní nedává smysl — hlavička je tam
+						     mrtvá, aby nesvítila šipka u ničeho. -->
+						<th
+							class="t-num"
+							class:dead={viewMode === 'apps'}
+							onclick={() => viewMode !== 'apps' && setSort('pid')}
+						>
+							PID {#if sortKey === 'pid' && viewMode !== 'apps'}{arrow}{/if}
 						</th>
 						<th class="t-num" onclick={() => setSort('sys_pct')}>
 							Sys {#if sortKey === 'sys_pct'}{arrow}{/if}
@@ -1572,6 +1598,14 @@
 		color: var(--text-faint);
 		padding: 0.45rem 1rem;
 		white-space: nowrap;
+	}
+	/* Sloupec, podle kterého v tomhle pohledu nelze řadit. */
+	thead th.dead {
+		cursor: default;
+		opacity: 0.5;
+	}
+	thead th.dead:hover {
+		color: var(--text-faint);
 	}
 	thead th:hover {
 		color: var(--text-dim);
