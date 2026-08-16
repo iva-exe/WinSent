@@ -16,6 +16,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import {
 		Camera,
+		ChevronRight,
 		FileLock2,
 		Flame,
 		FolderOpen,
@@ -171,6 +172,15 @@
 	// Pořadí: nejcitlivější první.
 	const CAP_ORDER = Object.keys(CAPS);
 
+	// Rozbalené aplikace se starými verzemi (klíč = kategorie + aplikace).
+	let openVersions = $state(new Set());
+	function toggleVersions(key) {
+		const s = new Set(openVersions);
+		if (s.has(key)) s.delete(key);
+		else s.add(key);
+		openVersions = s;
+	}
+
 	let permGroups = $derived.by(() => {
 		if (!report) return [];
 		const by = new Map();
@@ -179,7 +189,38 @@
 			by.get(p.capability).push(p);
 		}
 		return CAP_ORDER.filter((c) => by.has(c)).map((c) => {
-			const items = by.get(c);
+			// Verze téže aplikace do jednoho řádku.
+			//
+			// Windows si oprávnění pamatují ke KAŽDÉ cestě zvlášť, takže
+			// aplikace, která se instaluje do složky s číslem verze, si
+			// za roky nasbírá vlastní záznam pro každou verzi — Discord
+			// jich má na mikrofon 141, nejstarší z roku 2020. Všechny
+			// říkají totéž a zajímá jen ta, kterou uživatel používá teď.
+			// Staré se neztrácejí, jen se schovají pod rozklik.
+			const byApp = new Map();
+			for (const p of by.get(c)) {
+				const k = p.group_key ?? p.app;
+				if (!byApp.has(k)) byApp.set(k, []);
+				byApp.get(k).push(p);
+			}
+			const items = [...byApp.entries()].map(([key, versions]) => {
+				// Nahoru ta verze, která se používá teď, jinak naposledy
+				// použitá — ta je pro uživatele ta „aktuální".
+				versions.sort(
+					(a, b) => b.in_use - a.in_use || (b.last_used ?? 0) - (a.last_used ?? 0)
+				);
+				const head = versions[0];
+				return {
+					key,
+					...head,
+					versions,
+					// Liší se některá stará verze povolením? Pak se to musí
+					// říct — jinak by rozklik ukázal něco jiného než řádek.
+					mixed: versions.some((v) => v.allow !== head.allow),
+					// Aplikace „se používá", i kdyby to hlásila jiná verze.
+					in_use: versions.some((v) => v.in_use)
+				};
+			});
 			items.sort(
 				(a, b) =>
 					b.in_use - a.in_use ||
@@ -195,6 +236,10 @@
 			};
 		});
 	});
+
+	// Počty do hlavičky: aplikací, ne záznamů. „254 oprávnění" je
+	// pravda o registru, ale ne o tom, co uživatel na stránce vidí.
+	let permCount = $derived(permGroups.reduce((n, g) => n + g.items.length, 0));
 
 	let liveNow = $derived(
 		(report?.permissions ?? []).filter(
@@ -219,7 +264,7 @@
 	<header class="head">
 		<h1>Security</h1>
 		<span class="label-tech">
-			{report?.permissions?.length ?? 0} oprávnění · {permGroups.length} kategorií
+			{permCount} aplikací · {permGroups.length} kategorií
 		</span>
 		{#if liveNow.length}
 			<span class="live-warn">
@@ -263,13 +308,31 @@
 						<span class="sect-live"><span class="live-dot"></span>používá se právě teď</span>
 					{/if}
 				</h2>
-				{#each g.items as p (g.cap + p.app)}
+				{#each g.items as p (g.cap + p.key)}
+					{@const okey = g.cap + p.key}
+					{@const open = openVersions.has(okey)}
 					<article class="item slim" class:live={p.in_use && p.allow}>
 						<div class="info">
 							<h3 class="perm-name">
 								{p.app_name}
 								{#if p.in_use && p.allow}
 									<span class="live-dot" title="používá právě teď"></span>
+								{/if}
+								{#if p.versions.length > 1}
+									<!-- Staré verze se nemažou ani neschovávají před
+									     uživatelem — jen ustoupí za rozklik. -->
+									<button
+										class="vers"
+										class:mixed={p.mixed}
+										onclick={() => toggleVersions(okey)}
+										title={p.mixed
+											? 'Starší verze mají jiné nastavení — rozklikni'
+											: 'Starší verze téže aplikace'}
+									>
+										{p.versions.length - 1} starších verzí
+										{#if p.mixed}· liší se{/if}
+										<ChevronRight class="vers-caret" size={12} strokeWidth={2.25} />
+									</button>
 								{/if}
 							</h3>
 							<p class="vendor mono">{p.app}</p>
@@ -296,6 +359,21 @@
 							{/if}
 						</div>
 					</article>
+					{#if open}
+						{#each p.versions.slice(1) as v (v.app)}
+							<article class="item slim ver-row">
+								<div class="info">
+									<p class="vendor mono">{v.app}</p>
+								</div>
+								<div class="side">
+									<span class="pill dim">
+										{v.allow ? 'povoleno' : 'odepřeno'}{#if v.last_used}&nbsp;· naposledy
+											{fmtWhen(v.last_used)}{/if}
+									</span>
+								</div>
+							</article>
+						{/each}
+					{/if}
 				{/each}
 			{/each}
 
@@ -448,6 +526,37 @@
 		font-size: 0.78rem;
 		color: var(--text-dim);
 		word-break: break-all;
+	}
+	/* Rozklik starších verzí — drobný, ať nepřebije jméno aplikace. */
+	.vers {
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		margin-left: 8px;
+		padding: 1px 6px;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		background: transparent;
+		color: var(--text-faint);
+		font-family: var(--font-mono);
+		font-size: 0.66rem;
+		letter-spacing: 0.02em;
+		cursor: pointer;
+		vertical-align: middle;
+	}
+	.vers:hover {
+		color: var(--text);
+		border-color: var(--text-dim);
+	}
+	.vers.mixed {
+		color: var(--warn);
+		border-color: var(--warn);
+	}
+	/* Řádek staré verze: odsazený, tlumený — je to jen doklad. */
+	.ver-row {
+		margin-left: 22px;
+		border-left: 2px solid var(--border);
+		opacity: 0.72;
 	}
 	.mono {
 		font-family: var(--font-mono);

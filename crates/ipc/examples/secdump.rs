@@ -17,8 +17,7 @@ fn main() {
         }
     };
 
-    // Seskupení podle čitelného jména — právě to uživatel čte a právě
-    // tam se duplicity projeví.
+    // Seskupení přesně tak, jak to dělá UI — podle group_key.
     let mut by_name: std::collections::BTreeMap<(&str, &str), Vec<&core_types::proc::PermissionRow>> =
         std::collections::BTreeMap::new();
     for p in &rep.permissions {
@@ -28,17 +27,18 @@ fn main() {
             }
         }
         by_name
-            .entry((p.capability.as_str(), p.app_name.as_str()))
+            .entry((p.capability.as_str(), p.group_key.as_str()))
             .or_default()
             .push(p);
     }
 
     let mut dupes = 0;
-    for ((cap, name), rows) in &by_name {
+    for ((cap, key), rows) in &by_name {
         if rows.len() > 1 {
             dupes += 1;
         }
-        println!("{cap} · {name}  ({} záznamů)", rows.len());
+        let name = rows.first().map(|r| r.app_name.as_str()).unwrap_or(key);
+        println!("{cap} · {name}  ({} záznamů)  [{key}]", rows.len());
         for r in rows {
             println!(
                 "    allow={} vynuceno={} používá={} naposledy={}  {}",

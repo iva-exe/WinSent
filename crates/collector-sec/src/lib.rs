@@ -47,10 +47,12 @@ pub fn permissions() -> Vec<PermissionRow> {
         .into_iter()
         .map(|c| {
             let app_name = friendly_name(&c.app, c.packaged);
+            let group_key = group_key(&c.app, c.packaged);
             PermissionRow {
                 capability: c.capability,
                 app: c.app,
                 app_name,
+                group_key,
                 enforced: c.packaged,
                 allow: c.allow,
                 in_use: c.in_use,
@@ -58,6 +60,45 @@ pub fn permissions() -> Vec<PermissionRow> {
             }
         })
         .collect()
+}
+
+/// Klíč, pod kterým patří záznamy téže aplikace k sobě.
+///
+/// ConsentStore klíčuje oprávnění CESTOU k .exe. Aplikace, která se
+/// instaluje do složky s číslem verze, tak po každé aktualizaci založí
+/// nový záznam a ten starý zůstane ležet — naměřeno 141 řádků pro
+/// mikrofon Discordu (`…\Discord\app-1.0.9184\Discord.exe`), nejstarší
+/// z roku 2020, a 46 pro Overwolf.
+///
+/// Sdružuje se proto podle cesty, ve které je číslo verze nahrazené
+/// hvězdičkou. Sdružovat podle jména .exe by nešlo: dvě různé Javy
+/// (`jdk-17…\javaw.exe` vs `zulu21…\javaw.exe`) ani dvě různá OBS
+/// (obs-studio vs Streamlabs) nejsou tytéž aplikace, přestože se
+/// jejich soubory jmenují stejně.
+fn group_key(app: &str, packaged: bool) -> String {
+    // Balené aplikace mají v klíči PackageFamilyName — ten je napříč
+    // verzemi stejný, není co srovnávat.
+    if packaged {
+        return app.to_ascii_lowercase();
+    }
+    app.split('\\')
+        .map(|seg| if is_version_segment(seg) { "*" } else { seg })
+        .collect::<Vec<_>>()
+        .join("\\")
+        .to_ascii_lowercase()
+}
+
+/// Vypadá segment cesty jako samotné číslo verze?
+///
+/// Projít smí jen to, co kromě verze nenese žádný jiný význam:
+/// „app-1.0.9184" a „0.169.0.24" ano, „jdk-17.0.8.7-hotspot" ne —
+/// tím se totiž odlišují dvě různé Javy a sloučit se nesmějí.
+fn is_version_segment(seg: &str) -> bool {
+    let rest = seg.trim_start_matches(|c: char| c.is_ascii_alphabetic());
+    let rest = rest.strip_prefix(['-', '_']).unwrap_or(rest);
+    !rest.is_empty()
+        && rest.contains('.')
+        && rest.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 /// Čitelné jméno: u cesty poslední komponenta bez .exe, u PFN část
@@ -98,6 +139,43 @@ mod tests {
             friendly_name("Microsoft.WindowsCamera_8wekyb3d8bbwe", true),
             "WindowsCamera"
         );
+    }
+
+    // Verze téže aplikace patří k sobě, různé aplikace se stejně
+    // pojmenovaným .exe ne. Data z reálného ConsentStore.
+    #[test]
+    fn versions_group_but_different_apps_do_not() {
+        let d1 = group_key(r"C:\Users\IVA\AppData\Local\Discord\app-0.0.307\Discord.exe", false);
+        let d2 = group_key(r"C:\Users\IVA\AppData\Local\Discord\app-1.0.9184\Discord.exe", false);
+        assert_eq!(d1, d2, "verze Discordu se musí sloučit");
+
+        let o1 = group_key(r"C:\Program Files (x86)\Overwolf\0.166.1.16\obs\bin\64bit\ow-obs.exe", false);
+        let o2 = group_key(r"C:\Program Files (x86)\Overwolf\0.169.0.24\obs\bin\64bit\ow-obs.exe", false);
+        assert_eq!(o1, o2, "verze Overwolfu se musí sloučit");
+
+        // Dvě různé Javy — shodné jméno souboru, jiná aplikace.
+        let j1 = group_key(r"C:\Program Files\Eclipse Adoptium\jdk-17.0.8.7-hotspot\bin\javaw.exe", false);
+        let j2 = group_key(
+            r"C:\Users\IVA\AppData\Roaming\ModrinthApp\meta\java_versions\zulu21.36.17-ca-jre21.0.4-win_x64\bin\javaw.exe",
+            false,
+        );
+        assert_ne!(j1, j2, "dvě různé Javy se sloučit nesmějí");
+
+        // OBS Studio vs Streamlabs OBS.
+        let b1 = group_key(r"C:\Program Files\obs-studio\bin\64bit\obs64.exe", false);
+        let b2 = group_key(
+            r"C:\Program Files\Streamlabs OBS\resources\app.asar.unpacked\node_modules\obs-studio-node\obs64.exe",
+            false,
+        );
+        assert_ne!(b1, b2, "OBS Studio a Streamlabs nejsou táž aplikace");
+
+        // „64bit" ani „app.asar.unpacked" nejsou čísla verze.
+        assert!(!is_version_segment("64bit"));
+        assert!(!is_version_segment("app.asar.unpacked"));
+        assert!(!is_version_segment("Apex Legends"));
+        assert!(is_version_segment("app-1.0.9184"));
+        assert!(is_version_segment("0.169.0.24"));
+        assert!(is_version_segment("v1.2"));
     }
 
     // Report jde sestavit a enforced nese jen balené aplikace.

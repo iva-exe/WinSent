@@ -530,6 +530,11 @@ pub struct PermissionRow {
     pub app: String,
     /// Čitelné jméno aplikace (z cesty nebo z PFN).
     pub app_name: String,
+    /// Klíč, pod který patří všechny verze téže aplikace. ConsentStore
+    /// klíčuje podle cesty, takže aplikace instalovaná do složky s číslem
+    /// verze má vlastní záznam za každou verzi, kterou kdy měla —
+    /// pod tímhle klíčem se v UI slijí do jednoho řádku.
+    pub group_key: String,
     /// Balená aplikace — jen u té Windows Deny tvrdě VYNUTÍ.
     /// UI podle toho barví: zelená jen kde vynucení opravdu je.
     pub enforced: bool,
