@@ -81,7 +81,16 @@ pub struct RawProc {
     /// Čas vzniku procesu (FILETIME) — spolu s PID tvoří identitu
     /// odolnou proti recyklaci PID.
     pub create_time: i64,
+    /// Celá pracovní sada — včetně stránek sdílených s jinými procesy
+    /// (systémové DLL, sdílená paměť). Sečíst ji přes procesy jedné
+    /// aplikace znamená počítat totéž několikrát.
     pub ws_bytes: u64,
+    /// Soukromá část pracovní sady — jen stránky, které patří tomuhle
+    /// procesu. Přesně tohle ukazuje Správce úloh ve sloupci „Paměť"
+    /// a jen tohle se smí sčítat.
+    pub ws_priv_bytes: u64,
+    /// Soukromě potvrzená paměť (commit) — bývá vyšší než soukromá
+    /// pracovní sada, protože zahrnuje i to, co je odloženo na disk.
     pub priv_bytes: u64,
     pub threads: u32,
     pub session_id: u32,
@@ -160,6 +169,7 @@ pub fn snapshot_processes(buf: &mut Vec<u8>) -> Result<Vec<RawProc>, Error> {
             cpu_time_100ns: (p.kernel_time.max(0) + p.user_time.max(0)) as u64,
             create_time: p.create_time,
             ws_bytes: p.working_set_size as u64,
+            ws_priv_bytes: p.working_set_private_size.max(0) as u64,
             priv_bytes: p.private_page_count as u64,
             threads: p.number_of_threads,
             session_id: p.session_id,

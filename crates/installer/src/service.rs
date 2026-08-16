@@ -91,6 +91,8 @@ pub fn install(exe: &std::path::Path) -> Result<()> {
     // Pád služby nesmí znamenat konec sběru — tři pokusy o restart.
     // Actions API windows-service je pro tenhle případ zbytečně
     // upovídané; sc.exe tu nemá co pokazit (argumenty bez mezer).
+    // `.output()` místo `.status()`: sc.exe jinak vypíše své
+    // „[SC] ChangeServiceConfig2 SUCCESS" doprostřed hlášení instalátoru.
     let _ = std::process::Command::new("sc.exe")
         .args([
             "failure",
@@ -100,7 +102,7 @@ pub fn install(exe: &std::path::Path) -> Result<()> {
             "actions=",
             "restart/5000/restart/10000/restart/30000",
         ])
-        .status();
+        .output();
     Ok(())
 }
 

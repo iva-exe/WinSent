@@ -242,8 +242,13 @@
 	const visibleRows = $derived.by(() => {
 		const q = filter.trim().toLowerCase();
 		if (!q) return displayRows;
+		// Hledá se i podle jména aplikace — v seskupeném pohledu je to
+		// jediné jméno, které je vidět.
 		return displayRows.filter(
-			(r) => r.name.toLowerCase().includes(q) || String(r.pid).includes(q)
+			(r) =>
+				r.name.toLowerCase().includes(q) ||
+				r.app_name.toLowerCase().includes(q) ||
+				String(r.pid).includes(q)
 		);
 	});
 
@@ -278,11 +283,13 @@
 		expanded = s;
 	}
 
-	// Skupiny odvozené z displayRows (pořadí i přeskupení už throttlované).
-	// Pořadí skupin = první výskyt člena → stabilní stejně jako list.
-	const groups = $derived.by(() => {
+	// Součty za aplikaci z jejích procesů. Stejná funkce slouží pro
+	// zobrazení (čerstvé hodnoty každou sekundu) i pro určení pořadí
+	// při reorderu — jinak by se řadilo podle jiných čísel, než jaká
+	// jsou v tabulce vidět.
+	function aggregate(rows) {
 		const map = new Map();
-		for (const p of visibleRows) {
+		for (const p of rows) {
 			let g = map.get(p.identity_key);
 			if (!g) {
 				g = {
@@ -297,6 +304,7 @@
 					ws_bytes: 0,
 					disk_bps: 0,
 					gpu_pct: 0,
+					threads: 0,
 					sys_pct: 0
 				};
 				map.set(p.identity_key, g);
@@ -306,6 +314,7 @@
 			g.ws_bytes += p.ws_bytes;
 			g.disk_bps += p.disk_bps;
 			g.gpu_pct += p.gpu_pct;
+			g.threads += p.threads ?? 0;
 			if (protRank(p.protection) < protRank(g.protection)) g.protection = p.protection;
 			if (p.confidence === 'guess') g.confidence = 'guess';
 		}
@@ -315,6 +324,25 @@
 			g.sys_pct = sysLoad([g.cpu_pct, total > 0 ? (g.ws_bytes / total) * 100 : null]);
 		}
 		return [...map.values()];
+	}
+
+	// Hotové skupiny se zmrazeným pořadím — plní je refreshTable ze
+	// VŠECH řádků, ne z odfiltrovaných.
+	let displayGroups = $state([]);
+
+	// Filtr vybírá celé aplikace, nesahá do jejich součtů. Kdyby se
+	// skupiny skládaly až z odfiltrovaných procesů, ukazoval by řádek
+	// aplikace součet jen přes tu část, která zrovna prošla filtrem —
+	// tedy číslo, které nikde jinde neplatí.
+	const groups = $derived.by(() => {
+		const q = filter.trim().toLowerCase();
+		if (!q) return displayGroups;
+		return displayGroups.filter(
+			(g) =>
+				g.app_name.toLowerCase().includes(q) ||
+				(g.publisher ?? '').toLowerCase().includes(q) ||
+				g.children.some((p) => p.name.toLowerCase().includes(q) || String(p.pid).includes(q))
+		);
 	});
 
 	// Pořadí přísnosti pro výběr ikony skupiny.
@@ -326,32 +354,70 @@
 		return rows.sort((a, b) => {
 			const va = a[sortKey];
 			const vb = b[sortKey];
-			const cmp = typeof va === 'string' ? va.localeCompare(vb) : (va ?? -1) - (vb ?? -1);
+			const cmp = typeof va === 'string' ? va.localeCompare(vb, 'cs') : (va ?? -1) - (vb ?? -1);
 			// Stabilní dorovnání PIDem — stejné hodnoty se nepřehazují.
 			return cmp !== 0 ? cmp * sortDir : a.pid - b.pid;
 		});
 	}
 
+	// Sloupec přeložený na úroveň aplikace: aplikace nemá vlastní PID
+	// a jmenuje se jinak než její proces (Discord vs Discord.exe).
+	function groupSortKey() {
+		return sortKey === 'name' || sortKey === 'pid' ? 'app_name' : sortKey;
+	}
+
+	// Aplikace se řadí podle SVÝCH součtů.
+	//
+	// Dřív se řadily jen procesy a pořadí aplikace určoval ten její
+	// proces, který se v seřazeném seznamu trefil první. Sloupec tedy
+	// ukazoval součet za aplikaci, ale řadil podle jednoho jejího
+	// procesu — u aplikací s víc procesy to dávalo pořadí, které
+	// s ničím v tabulce nesouhlasilo.
+	function sortGroups(gs) {
+		const k = groupSortKey();
+		return gs.sort((a, b) => {
+			const va = a[k];
+			const vb = b[k];
+			const cmp = typeof va === 'string' ? va.localeCompare(vb, 'cs') : (va ?? -1) - (vb ?? -1);
+			return cmp !== 0 ? cmp * sortDir : a.app_name.localeCompare(b.app_name, 'cs');
+		});
+	}
+
+	/// Nové hodnoty do starého pořadí: co zůstalo, drží pozici, nováčci
+	/// jdou na konec, zaniklé mizí. Používá se mezi reordery pro řádky
+	/// (klíč PID) i pro aplikace (klíč identity).
+	function keepOrder(old, fresh, keyOf) {
+		const map = new Map(fresh.map((x) => [keyOf(x), x]));
+		const kept = [];
+		for (const o of old) {
+			const cur = map.get(keyOf(o));
+			if (cur) {
+				kept.push(cur);
+				map.delete(keyOf(o));
+			}
+		}
+		return [...kept, ...map.values()];
+	}
+
 	function refreshTable(force = false) {
 		const rows = buildRows();
 		const now = Date.now();
-		if (force || now - lastOrderAt >= REORDER_MS || displayRows.length === 0) {
+		const reorder = force || now - lastOrderAt >= REORDER_MS || displayRows.length === 0;
+
+		if (reorder) {
 			lastOrderAt = now;
 			displayRows = sortRows(rows);
-			return;
+		} else {
+			displayRows = keepOrder(displayRows, rows, (r) => r.pid);
 		}
-		// Jen aktualizace hodnot: řádky drží pozice, nové na konec,
-		// zaniklé zmizí. Přeskupí se až příští reorder.
-		const map = new Map(rows.map((r) => [r.pid, r]));
-		const kept = [];
-		for (const r of displayRows) {
-			const cur = map.get(r.pid);
-			if (cur) {
-				kept.push(cur);
-				map.delete(r.pid);
-			}
-		}
-		displayRows = [...kept, ...map.values()];
+
+		// Aplikace se staví ze VŠECH řádků (filtr až při vykreslení) a
+		// pořadí se mrazí stejně jako u procesů — jinak by seznam
+		// aplikací poskakoval každou sekundu.
+		const fresh = aggregate(displayRows);
+		displayGroups = reorder
+			? sortGroups(fresh)
+			: keepOrder(displayGroups, fresh, (g) => g.key);
 	}
 
 	function setSort(key) {
@@ -1005,12 +1071,27 @@
 					placeholder="filtr (název / PID)…"
 					bind:value={filter}
 				/>
-				<!-- Přepínač: seskupené aplikace / plochý seznam procesů -->
+				<!-- Přepínač: seskupené aplikace / plochý seznam procesů.
+				     Přepnutí přerovná hned — aplikace a procesy se řadí
+				     podle jiných čísel a čekat na další reorder by
+				     znamenalo pár sekund viditelně špatného pořadí. -->
 				<div class="seg">
-					<button class:active={viewMode === 'apps'} onclick={() => (viewMode = 'apps')}>
+					<button
+						class:active={viewMode === 'apps'}
+						onclick={() => {
+							viewMode = 'apps';
+							refreshTable(true);
+						}}
+					>
 						Aplikace
 					</button>
-					<button class:active={viewMode === 'procs'} onclick={() => (viewMode = 'procs')}>
+					<button
+						class:active={viewMode === 'procs'}
+						onclick={() => {
+							viewMode = 'procs';
+							refreshTable(true);
+						}}
+					>
 						Procesy
 					</button>
 				</div>
@@ -1109,7 +1190,7 @@
 								<td class="t-num value-mono">{g.gpu_pct > 0.05 ? `${g.gpu_pct.toFixed(1)} %` : '—'}</td>
 								<td class="t-num value-mono">{fmtMem(g.ws_bytes)}</td>
 								<td class="t-num value-mono">{g.disk_bps > 0 ? fmtBps(g.disk_bps) : '—'}</td>
-								<td class="t-num value-mono">{single ? (g.children[0].threads ?? '—') : ''}</td>
+								<td class="t-num value-mono">{g.threads || '—'}</td>
 							</tr>
 							{#if !single && open}
 								{#each g.children as p (p.pid)}

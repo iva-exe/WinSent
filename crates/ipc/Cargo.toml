@@ -21,7 +21,10 @@ windows = { workspace = true, features = [
     "Win32_Storage_FileSystem",
 ] }
 
-# Brány (examples) sahají na validační vrstvu — čtení registru.
+# Brány (examples) sahají na validační vrstvu — čtení registru —
+# a memcheck si navíc bere syrový snapshot procesů, aby měl s čím
+# porovnat čísla, která hlásí služba.
 [dev-dependencies]
 serde_json = "1"
 validate = { workspace = true }
+win-sys = { workspace = true }

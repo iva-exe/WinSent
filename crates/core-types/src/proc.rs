@@ -14,7 +14,11 @@ pub struct ProcRow {
     pub name: String,
     /// CPU v % celkové kapacity všech jader (0–100), z delty vzorků.
     pub cpu_pct: f32,
-    /// Working set v bajtech.
+    /// SOUKROMÁ pracovní sada v bajtech — paměť, kterou proces nesdílí
+    /// s nikým jiným. Právě tohle číslo ukazuje Správce úloh ve sloupci
+    /// „Paměť" a jen tohle jde bezpečně sčítat přes procesy jedné
+    /// aplikace; celá pracovní sada by sdílené stránky započítala
+    /// u každého procesu znovu.
     pub ws_bytes: u64,
     /// Private bytes (commit) v bajtech.
     pub priv_bytes: u64,

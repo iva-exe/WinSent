@@ -199,7 +199,16 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
             create_time: p.create_time,
             name: p.name.clone(),
             cpu_pct: cpu_pct.clamp(0.0, 100.0),
-            ws_bytes: p.ws_bytes,
+            // Soukromá pracovní sada, ne celá.
+            //
+            // Celá pracovní sada obsahuje i stránky sdílené mezi
+            // procesy (systémové DLL, sdílená paměť). U aplikace
+            // z jednoho procesu je rozdíl malý, ale prohlížeč nebo hra
+            // jich mají deset a součet pak počítá tytéž stránky
+            // pořád dokola — aplikace se ukázala klidně dvakrát
+            // větší, než ji hlásí Správce úloh. Ten sčítá právě tohle
+            // pole (sloupec „Paměť" = soukromá pracovní sada).
+            ws_bytes: p.ws_priv_bytes,
             priv_bytes: p.priv_bytes,
             threads: p.threads,
             session_id: p.session_id,
