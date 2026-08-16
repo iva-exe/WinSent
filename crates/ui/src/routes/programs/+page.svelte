@@ -104,13 +104,36 @@
 			return true;
 		});
 		const cmp = {
-			name: (a, b) => a.display_name.localeCompare(b.display_name, 'cs'),
+			// Nejdřív sekce, teprve pak název.
+			//
+			// Samotné české řazení rozhází položky, které nezačínají
+			// písmenem, po celé abecedě: „7-Zip" je před „A", ale
+			// „µTorrent" až za „Z". Obě přitom patří do sekce „#", takže
+			// ta by v seznamu vznikla dvakrát — jednou na začátku,
+			// podruhé na konci.
+			name: (a, b) => {
+				const la = initial(a);
+				const lb = initial(b);
+				if (la !== lb) {
+					// Sekce „#" nakonec, ať abeceda začíná písmenem.
+					if (la === '#') return 1;
+					if (lb === '#') return -1;
+					return la.localeCompare(lb, 'cs');
+				}
+				return a.display_name.localeCompare(b.display_name, 'cs');
+			},
 			publisher: (a, b) => (a.publisher ?? '￿').localeCompare(b.publisher ?? '￿', 'cs'),
 			date: (a, b) => (b.install_ts ?? 0) - (a.install_ts ?? 0),
 			paths: (a, b) => b.path_count - a.path_count
 		}[sortKey];
 		return list.toSorted(cmp);
 	});
+
+	/// Písmeno sekce v abecedním pohledu; co nezačíná písmenem, jde do „#".
+	function initial(a) {
+		const c = a.display_name[0]?.toUpperCase() ?? '#';
+		return /[A-ZÁ-Ž]/.test(c) ? c : '#';
+	}
 
 	// Seskupení seznamu do sekcí s hlavičkami — ať se v 500 položkách
 	// dá orientovat: dle názvu → písmena, dle vydavatele → vydavatel,
@@ -124,21 +147,26 @@
 				return d.toLocaleDateString('cs-CZ', { month: 'long', year: 'numeric' });
 			}
 			if (sortKey === 'paths') return null;
-			const c = a.display_name[0]?.toUpperCase() ?? '#';
-			return /[A-ZÁ-Ž]/.test(c) ? c : '#';
+			return initial(a);
 		};
 		const groups = [];
 		let current = null;
+		// Klíč sekce nese pořadí, ne jen popisek. Dva stejné popisky se
+		// v seznamu objevit MOHOU (vydavatelé lišící se jen velikostí
+		// písmen), a dvakrát stejný klíč znamená, že Svelte přestane
+		// seznam správně překreslovat — klik na přepínač zobrazení pak
+		// vypadá jako mrtvý, i když stav změnil.
+		const open = (l) => {
+			groups.push((current = { key: `${groups.length}:${l ?? ''}`, label: l, items: [] }));
+		};
 		for (const a of shown) {
 			const l = label(a);
 			if (l === null) {
-				if (!current) groups.push((current = { label: null, items: [] }));
+				if (!current) open(null);
 				current.items.push(a);
 				continue;
 			}
-			if (!current || current.label !== l) {
-				groups.push((current = { label: l, items: [] }));
-			}
+			if (!current || current.label !== l) open(l);
 			current.items.push(a);
 		}
 		return groups;
@@ -441,7 +469,21 @@
 	{:else}
 		<div class="cols">
 			<ul class="list">
-				{#each groupedList as g (g.label ?? '·')}
+				<!-- Prázdné zobrazení musí říct, že je prázdné. Bez toho
+				     vypadá přepnutí na segment bez položek stejně jako
+				     rozbité tlačítko. -->
+				{#if !groupedList.length}
+					<li class="empty-row label-tech">
+						{#if !apps.length}
+							načítám inventář…
+						{:else if filter.trim()}
+							hledání „{filter.trim()}" nic nenašlo
+						{:else}
+							v tomhle zobrazení není žádná aplikace
+						{/if}
+					</li>
+				{/if}
+				{#each groupedList as g (g.key)}
 					{#if g.label}
 						<li class="grp-head label-tech">{g.label}</li>
 					{/if}
@@ -957,6 +999,11 @@
 		color: var(--text-faint);
 		border-bottom: 1px dashed var(--border);
 		z-index: 1;
+	}
+	.empty-row {
+		padding: 18px 12px;
+		color: var(--text-faint);
+		font-size: 0.72rem;
 	}
 	.m-load {
 		color: var(--text-faint);
