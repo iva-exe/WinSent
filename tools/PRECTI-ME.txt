@@ -1,0 +1,78 @@
+Winsent — testovací verze
+=========================
+
+Co to je
+--------
+Nástroj na správu a sledování Windows. Ukazuje, co se v počítači
+opravdu děje: procesy a jejich zátěž, historii záseků a pádů,
+nainstalované programy včetně toho, co po nich zbylo na disku, co
+startuje s Windows, hardware a jeho zdraví, síťová spojení podle
+aplikací, stav zabezpečení a oprávnění ke kameře a mikrofonu.
+
+Skládá se ze dvou částí:
+  syswatch.exe      služba na pozadí, sbírá data (běží pod systémem)
+  syswatch-ui.exe   okno aplikace, běží pod tvým účtem
+
+
+Než to nainstaluješ — čti prosím
+--------------------------------
+* Je to ROZPRACOVANÁ TESTOVACÍ VERZE. Něco může chybět a něco se může
+  chovat divně. Nepouštěj to na počítači, na kterém ti záleží na
+  nepřerušeném provozu.
+
+* Binárky NEJSOU DIGITÁLNĚ PODEPSANÉ (podpis přijde až s ostrou
+  verzí). Windows SmartScreen proto ukáže modré okno „Systém Windows
+  ochránil váš počítač" — je potřeba kliknout na „Další informace" →
+  „Přesto spustit". Antivirus může soubory zablokovat nebo dát do
+  karantény; pak je musíš povolit ručně. Je to normální u každého
+  nepodepsaného programu, ale je fér, abys to věděl dopředu.
+
+* Instalace zaregistruje SLUŽBU, která běží pod systémovým účtem
+  a startuje s Windows. Potřebuje to kvůli čtení dat, ke kterým se
+  běžný program nedostane (ETW události, MFT disku, SMART).
+
+* Aplikace nic neposílá po internetu. Žádná telemetrie, žádný účet,
+  žádné odesílání dat. Všechno zůstává v C:\ProgramData\syswatch.
+
+
+Co potřebuješ
+-------------
+* Windows 10 (verze 1809 nebo novější) nebo Windows 11, 64bit
+* práva správce pro instalaci
+* WebView2 Runtime — Win11 a aktualizovaná Win10 ho už mají; když
+  chybí, instalátor to pozná a řekne, odkud ho vzít
+
+
+Instalace
+---------
+1. Rozbal CELÝ archiv do jedné složky (ne spouštět přímo ze zipu).
+2. Klikni pravým na  install.cmd  →  Spustit jako správce.
+3. Potvrď výzvu Windows a případné varování SmartScreenu.
+4. Aplikaci pak najdeš v nabídce Start jako „Winsent".
+
+
+Odinstalace
+-----------
+Pravým na  uninstall.cmd  →  Spustit jako správce.
+Odebere službu i soubory a zeptá se, jestli smazat i nasbíraná data.
+
+
+Co si aplikace ukládá
+---------------------
+Všechno v C:\ProgramData\syswatch:
+  syswatch.db        historie metrik (má stropy, sama se prořezává)
+  logs\svc.log       log služby (rotuje po 8 MB)
+  incident-*.etl     záznam okna kolem pádu (drží se poslední tři)
+  config.toml        nastavení
+
+Celkem to po týdnech běhu drží řádově stovky MB a dál to neroste.
+
+
+Kdyby se něco pokazilo
+----------------------
+* Aplikace hlásí „služba neběží" → zkontroluj ve Službách (services.msc)
+  službu „Winsent — systémový monitor".
+* Okno je prázdné → chybí WebView2 Runtime.
+* Cokoliv jiného → pošli mi soubor C:\ProgramData\syswatch\logs\svc.log
+
+Díky za testování.

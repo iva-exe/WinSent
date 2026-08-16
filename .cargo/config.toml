@@ -1,0 +1,12 @@
+# Statické linkování CRT (INFRA: distribuce bez závislostí).
+#
+# Bez tohohle binárky importují VCRUNTIME140.dll, která NENÍ součástí
+# Windows — je z Visual C++ Redistributable. Na čistém stroji, kde ho
+# nikdo nenainstaloval, by se aplikace nespustila s hláškou o chybějící
+# DLL. Univerzální CRT (api-ms-win-crt-*) součástí Windows 10+ je,
+# takže stačí staticky přilinkovat vcruntime.
+#
+# Cena: o pár set kB větší binárka. Zisk: soubor, který se prostě
+# spustí — bez „nejdřív si nainstaluj tohle".
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
