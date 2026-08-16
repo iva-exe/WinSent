@@ -43,23 +43,42 @@ pub fn protection() -> ProtectionReport {
 /// Oprávnění aplikací z ConsentStore. Levné (registr) — jde volat
 /// při každém dotazu.
 pub fn permissions() -> Vec<PermissionRow> {
-    win_sys::consent::consents()
-        .into_iter()
-        .map(|c| {
-            let app_name = friendly_name(&c.app, c.packaged);
-            let group_key = group_key(&c.app, c.packaged);
-            PermissionRow {
-                capability: c.capability,
-                app: c.app,
-                app_name,
-                group_key,
-                enforced: c.packaged,
-                allow: c.allow,
-                in_use: c.in_use,
-                last_used: c.last_used,
+    // Registr se čte napříč hivemi VŠECH uživatelů, takže tentýž program
+    // dorazí jednou za každý profil, ve kterém má záznam. Do seznamu
+    // patří jednou — a to tou verzí, která o něm ví nejvíc: používá se
+    // teď, případně byla použita naposledy. Dvojí řádek by nebyl jen
+    // šum; UI je klíčuje dvojicí schopnost + cesta a shodný klíč
+    // v seznamu shodí vykreslování celé stránky.
+    let mut best: std::collections::HashMap<(String, String), PermissionRow> =
+        std::collections::HashMap::new();
+    for c in win_sys::consent::consents() {
+        let app_name = friendly_name(&c.app, c.packaged);
+        let group_key = group_key(&c.app, c.packaged);
+        let row = PermissionRow {
+            capability: c.capability,
+            app: c.app,
+            app_name,
+            group_key,
+            enforced: c.packaged,
+            allow: c.allow,
+            in_use: c.in_use,
+            last_used: c.last_used,
+        };
+        match best.entry((row.capability.clone(), row.app.clone())) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(row);
             }
-        })
-        .collect()
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                let old = e.get();
+                let better = row.in_use && !old.in_use
+                    || row.in_use == old.in_use && row.last_used > old.last_used;
+                if better {
+                    e.insert(row);
+                }
+            }
+        }
+    }
+    best.into_values().collect()
 }
 
 /// Klíč, pod kterým patří záznamy téže aplikace k sobě.

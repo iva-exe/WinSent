@@ -252,6 +252,8 @@
 	let filter = $state('');
 	// Pohled: seskupené aplikace (default, v2) / plochý seznam procesů.
 	let viewMode = $state('apps');
+	// Byl předchozí obsah tabulky ze živých dat? (viz vyhlazování)
+	let prevLive = false;
 
 	const visibleRows = $derived.by(() => {
 		const q = filter.trim().toLowerCase();
@@ -273,7 +275,13 @@
 		// Předchozí (už vyhlazené) hodnoty podle PID. V historii se
 		// nevyhlazuje — tam musí být přesně ten vzorek, na který
 		// uživatel ukazuje v grafu.
-		const prev = live ? new Map(displayRows.map((r) => [r.pid, r])) : null;
+		//
+		// Podmínka `prevLive` řeší návrat ze zamčeného času: v tabulce
+		// tehdy sedí řádky staré klidně minuty a smíchat je s čerstvým
+		// vzorkem by dalo čísla, která nikdy nenastala. První živý
+		// vzorek po odemčení se proto bere celý.
+		const prev = live && prevLive ? new Map(displayRows.map((r) => [r.pid, r])) : null;
+		prevLive = live;
 		return src.map((p) => {
 			const was = prev?.get(p.pid);
 			const ease = (cur, key) => (was ? was[key] + (cur - was[key]) * SMOOTH : cur);

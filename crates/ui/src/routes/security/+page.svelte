@@ -360,7 +360,10 @@
 						</div>
 					</article>
 					{#if open}
-						{#each p.versions.slice(1) as v (v.app)}
+						<!-- Klíč nese i pořadí: dvakrát stejný klíč ve {#each}
+					     je v produkci tvrdá chyba, která zabije překreslování
+					     celé stránky. -->
+					{#each p.versions.slice(1) as v, vi (vi + ':' + v.app)}
 							<article class="item slim ver-row">
 								<div class="info">
 									<p class="vendor mono">{v.app}</p>
