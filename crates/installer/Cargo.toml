@@ -7,9 +7,15 @@ publish.workspace = true
 # Jediný soubor, který se posílá testerovi. Stáhne aktuální binárky
 # z repozitáře, nainstaluje je jako aplikaci a zaregistruje službu.
 # Druhé spuštění = aktualizace na to, co je v repu teď.
+#
+# `test = false`: manifest binárky si vynucuje práva správce, takže ji
+# `cargo test` neumí spustit (chyba 740) a shodila by celou sadu testů.
+# Testovat tu stejně není co — logika instalace je v krocích, které
+# sahají na systém, a ověřuje je brána spuštěním naostro.
 [[bin]]
 name = "WinsentSetup"
 path = "src/main.rs"
+test = false
 
 [build-dependencies]
 winresource = "0.1"
