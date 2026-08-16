@@ -21,9 +21,24 @@
 
 	// Buffery na celou dostupnou historii (1 h retence surových vzorků).
 	const CAP = 90000; // 24 h: 1s vzorky (1 h) + 10s/1m agregáty kaskády
-	// Tabulka: hodnoty se mění každou sekundu, ale PŘESKUPUJE se nejvýš
-	// jednou za REORDER_MS — jinak list neustále tancuje (výkon i klid).
-	const REORDER_MS = 3000;
+	// Vyhlazení kolísavých hodnot v tabulce (klouzavý průměr).
+	//
+	// Tabulka se dřív přeskupovala jen jednou za tři sekundy, aby
+	// netancovala — jenže hodnoty se mezitím překreslovaly každou
+	// sekundu, takže seznam běžně ukazoval 4,7 % pod 3,2 %. Pořadí
+	// prostě odporovalo číslům, podle kterých se řadilo.
+	//
+	// Řadit každý vzorek to opravuje, ale samo o sobě je to nepoužitelné:
+	// změřeno (brána sortchurn na 227 procesech) se pak přehází 5 z 10
+	// pozic každou sekundu. Ne proto, že by hodnoty divoce skákaly —
+	// průměrný skok je 0,18 p.b. — ale protože jsou aplikace namačkané
+	// těsně u sebe a i takový skok je prohodí.
+	//
+	// Vyhlazená hodnota řeší obojí najednou: řadí se KAŽDÝ vzorek podle
+	// TÉHOŽ čísla, které je ve sloupci vidět, a přeháže se jen 1,8
+	// pozice za sekundu. α=0,3 je kompromis — skoková změna je z 90 %
+	// promítnutá za 7 s, z poloviny za 2 s.
+	const SMOOTH = 0.3;
 
 	let ts = $state([]);
 	let cpu = $state([]);
@@ -118,7 +133,7 @@
 					histProcs = null;
 					histDetail = null;
 					pinnedCores = null;
-					refreshTable(true);
+					refreshTable();
 				}
 				return;
 			}
@@ -150,7 +165,7 @@
 				} catch {
 					pinnedCores = null;
 				}
-				refreshTable(true);
+				refreshTable();
 				// Ikony i pro identity_key z náhledu historie.
 				refreshIcons();
 			}, 150);
@@ -229,7 +244,7 @@
 		return rgb(DANGER_C);
 	}
 
-	// ── Tabulka: zmrazené pořadí mezi reordery ──
+	// ── Tabulka: seřazené procesy (pořadí = vyhlazené hodnoty) ──
 	let displayRows = $state([]);
 	let sortKey = $state('sys_pct');
 	let sortDir = $state(-1);
@@ -237,7 +252,6 @@
 	let filter = $state('');
 	// Pohled: seskupené aplikace (default, v2) / plochý seznam procesů.
 	let viewMode = $state('apps');
-	let lastOrderAt = 0;
 
 	const visibleRows = $derived.by(() => {
 		const q = filter.trim().toLowerCase();
@@ -254,16 +268,30 @@
 
 	function buildRows() {
 		const total = (system?.mem_total_mb ?? 0) * 1024 * 1024;
+		const live = !histProcs;
 		const src = histProcs ? histProcs.rows : procs;
-		return src.map((p) => ({
+		// Předchozí (už vyhlazené) hodnoty podle PID. V historii se
+		// nevyhlazuje — tam musí být přesně ten vzorek, na který
+		// uživatel ukazuje v grafu.
+		const prev = live ? new Map(displayRows.map((r) => [r.pid, r])) : null;
+		return src.map((p) => {
+			const was = prev?.get(p.pid);
+			const ease = (cur, key) => (was ? was[key] + (cur - was[key]) * SMOOTH : cur);
+			// Vyhlazují se jen kolísavé veličiny. Paměť a vlákna se mezi
+			// vzorky skoro nehýbou a mají sedět přesně (paměť se porovnává
+			// se Správcem úloh).
+			const cpu_pct = ease(p.cpu_pct, 'cpu_pct');
+			const gpu_pct = ease(p.gpu_pct ?? 0, 'gpu_pct');
+			const disk_bps = ease((p.disk_r_bps ?? 0) + (p.disk_w_bps ?? 0), 'disk_bps');
+			return {
 			pid: p.pid,
 			name: p.name,
-			cpu_pct: p.cpu_pct,
+			cpu_pct,
 			ws_bytes: p.ws_bytes,
 			threads: p.threads ?? null,
-			disk_bps: (p.disk_r_bps ?? 0) + (p.disk_w_bps ?? 0),
-			gpu_pct: p.gpu_pct ?? 0,
-			sys_pct: sysLoad([p.cpu_pct, total > 0 ? (p.ws_bytes / total) * 100 : null]),
+			disk_bps,
+			gpu_pct,
+			sys_pct: sysLoad([cpu_pct, total > 0 ? (p.ws_bytes / total) * 100 : null]),
 			// Identita aplikace (v2). Historie ji nemá → fallback na jméno.
 			identity_key: p.identity_key ?? `name:${p.name}`,
 			app_name: p.app_name ?? p.name,
@@ -271,7 +299,8 @@
 			publisher: p.publisher ?? '',
 			protection: p.protection ?? 'user',
 			confidence: p.confidence ?? 'exact'
-		}));
+			};
+		});
 	}
 
 	// Rozbalené skupiny (strom aplikace → procesy).
@@ -383,41 +412,14 @@
 		});
 	}
 
-	/// Nové hodnoty do starého pořadí: co zůstalo, drží pozici, nováčci
-	/// jdou na konec, zaniklé mizí. Používá se mezi reordery pro řádky
-	/// (klíč PID) i pro aplikace (klíč identity).
-	function keepOrder(old, fresh, keyOf) {
-		const map = new Map(fresh.map((x) => [keyOf(x), x]));
-		const kept = [];
-		for (const o of old) {
-			const cur = map.get(keyOf(o));
-			if (cur) {
-				kept.push(cur);
-				map.delete(keyOf(o));
-			}
-		}
-		return [...kept, ...map.values()];
-	}
-
-	function refreshTable(force = false) {
-		const rows = buildRows();
-		const now = Date.now();
-		const reorder = force || now - lastOrderAt >= REORDER_MS || displayRows.length === 0;
-
-		if (reorder) {
-			lastOrderAt = now;
-			displayRows = sortRows(rows);
-		} else {
-			displayRows = keepOrder(displayRows, rows, (r) => r.pid);
-		}
-
-		// Aplikace se staví ze VŠECH řádků (filtr až při vykreslení) a
-		// pořadí se mrazí stejně jako u procesů — jinak by seznam
-		// aplikací poskakoval každou sekundu.
-		const fresh = aggregate(displayRows);
-		displayGroups = reorder
-			? sortGroups(fresh)
-			: keepOrder(displayGroups, fresh, (g) => g.key);
+	// Jeden průchod: nové hodnoty, seřazené procesy, seřazené aplikace.
+	// Řadí se pokaždé — o klid seznamu se stará vyhlazení hodnot, ne
+	// zmrazené pořadí (viz SMOOTH).
+	function refreshTable() {
+		displayRows = sortRows(buildRows());
+		// Aplikace se staví ze VŠECH řádků — filtr se uplatní až při
+		// vykreslení, ať součty zůstanou celé.
+		displayGroups = sortGroups(aggregate(displayRows));
 	}
 
 	function setSort(key) {
@@ -427,7 +429,7 @@
 			sortKey = key;
 			sortDir = key === 'name' || key === 'publisher' ? 1 : -1;
 		}
-		refreshTable(true);
+		refreshTable();
 	}
 
 	const push = (arr, v) => [...arr.slice(-(CAP - 1)), v];
@@ -1080,7 +1082,7 @@
 						class:active={viewMode === 'apps'}
 						onclick={() => {
 							viewMode = 'apps';
-							refreshTable(true);
+							refreshTable();
 						}}
 					>
 						Aplikace
@@ -1089,7 +1091,7 @@
 						class:active={viewMode === 'procs'}
 						onclick={() => {
 							viewMode = 'procs';
-							refreshTable(true);
+							refreshTable();
 						}}
 					>
 						Procesy
