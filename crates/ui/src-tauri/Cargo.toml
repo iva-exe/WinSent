@@ -19,6 +19,9 @@ ipc = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tauri = { version = "2", features = ["tray-icon"] }
+# Hlídač jediné instance: druhé spuštění nesmí vyrobit další proces
+# s další ikonou v traye — jen ukáže okno té běžící.
+tauri-plugin-single-instance = "2"
 
 # Win32 jen pro to, co je vázané na RELACI uživatele a služba v session 0
 # to nevidí: spuštění odinstalátoru (src/uninstall.rs) a připojené

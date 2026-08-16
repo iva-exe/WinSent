@@ -514,6 +514,16 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 
 fn main() {
     tauri::Builder::default()
+        // MUSÍ být první plugin (vyžaduje dokumentace pluginu).
+        //
+        // Bez něj vyrobí každé spuštění další proces s vlastní ikonou
+        // v oznamovací oblasti — a protože se okno zavřením jen schová,
+        // nasčítaly se ikony jedna za druhou. Teď druhá instance jen
+        // ukáže okno té běžící a sama hned skončí: první spuštění
+        // rozjede aplikaci, každé další je „otevři okno".
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main_window(app);
+        }))
         .invoke_handler(tauri::generate_handler![
             ping_daemon,
             query_procs,
