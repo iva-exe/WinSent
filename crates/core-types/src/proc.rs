@@ -408,6 +408,13 @@ pub struct DeviceRow {
     pub class_desc: String,
     /// Hardwarové ID — obsahuje VID/PID, tedy skutečný model.
     pub hardware_id: String,
+    /// Klíč FYZICKÉHO zařízení. Jedna klávesnice se v systému objeví
+    /// jako několik zařízení (rozhraní, HID kolekce) — pod tímhle klíčem
+    /// patří k sobě. Podrobnosti v collector-hw::device_group_key.
+    pub group_key: String,
+    /// Jméno pro celou skupinu — to nejvýstižnější, které se o zařízení
+    /// dá zjistit. Všechny řádky jedné skupiny ho mají shodné.
+    pub group_name: String,
     pub driver_version: String,
     pub driver_date: String,
     /// 0 = běží v pořádku; jinak kód problému (vykřičník ve Správci).

@@ -37,6 +37,10 @@ pub struct Device {
     /// Verze a datum ovladače, když je zařízení hlásí.
     pub driver_version: String,
     pub driver_date: String,
+    /// Jméno, kterým se zařízení hlásí samo (BusReportedDeviceDesc).
+    /// Bývá výstižnější než popis od ovladače — „USB Receiver" místo
+    /// „USB Input Device". Prázdné u zařízení, která nejsou na sběrnici.
+    pub bus_desc: String,
     /// Kód problému z CM_Get_DevNode_Status (0 = běží v pořádku).
     /// Přesně to, co Správce zařízení kreslí vykřičníkem.
     pub problem_code: u32,
@@ -58,6 +62,17 @@ const DEVPKEY_DRIVER_VERSION: DEVPROPKEY = DEVPROPKEY {
 const DEVPKEY_DRIVER_DATE: DEVPROPKEY = DEVPROPKEY {
     fmtid: windows::core::GUID::from_u128(0xa8b865dd_2e3d_4094_ad97_e593a70c75d6),
     pid: 2,
+};
+/// DEVPKEY_Device_BusReportedDeviceDesc — {540b947e-8b40-45bc-a8a2-6a0b894cbda2} 4.
+///
+/// Jméno, kterým se zařízení hlásí samo, ne jak ho pojmenoval ovladač.
+/// Rozdíl je zásadní: ovladač napíše „USB Input Device", zařízení řekne
+/// „USB Receiver", a u klávesnice rovnou svůj model. Bez tohohle pole
+/// se skupina několika rozhraní jednoho zařízení nedá pojmenovat jinak
+/// než obecným popisem, který uživateli nic neřekne.
+const DEVPKEY_BUS_REPORTED_DESC: DEVPROPKEY = DEVPROPKEY {
+    fmtid: windows::core::GUID::from_u128(0x540b947e_8b40_45bc_a8a2_6a0b894cbda2),
+    pid: 4,
 };
 
 /// Vyjmenuje všechna PŘÍTOMNÁ zařízení. Odpojené se neukazují —
@@ -102,6 +117,7 @@ pub fn devices() -> Vec<Device> {
                 hardware_id: prop(set, &info, SPDRP_HARDWAREID),
                 driver_version: dev_prop(set, &info, &DEVPKEY_DRIVER_VERSION),
                 driver_date: dev_prop(set, &info, &DEVPKEY_DRIVER_DATE),
+                bus_desc: dev_prop(set, &info, &DEVPKEY_BUS_REPORTED_DESC),
                 problem_code: 0,
             };
             let mut status = Default::default();

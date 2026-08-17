@@ -273,14 +273,82 @@
 		return c >= hot ? 'hot' : c >= warn ? 'warm' : 'cool';
 	}
 
-	// Zařízení rozdělená do kategorií, v pořadí důležitosti. Procesor,
-	// grafika a disky se přeskočí — mají vlastní bohatší karty nahoře.
+	// Rozbalené skupiny zařízení (klíč skupiny).
+	let openDevices = $state(new Set());
+	function toggleDevice(key) {
+		const s = new Set(openDevices);
+		if (s.has(key)) s.delete(key);
+		else s.add(key);
+		openDevices = s;
+	}
+
+	// Výrobce, který nic neříká — Windows ho doplní, když se zařízení
+	// nehlásí samo („(Standard system devices)", „Microsoft").
+	function vendorSaysNothing(m) {
+		return !m || m.startsWith('(') || m === 'Microsoft';
+	}
+
+	// Zařízení sloučená do skutečných kusů hardwaru a rozdělená do
+	// kategorií. Procesor, grafika a disky se přeskočí — mají vlastní
+	// bohatší karty nahoře.
+	//
+	// Windows rozepíšou jeden kus hardwaru na řadu zařízení: rozhraní,
+	// HID kolekce, vlastní sběrnice výrobce. Naměřeno na tomhle stroji
+	// 16 řádků pro jednu myš a 10 pro jeden bezdrátový přijímač. Co
+	// k sobě patří, určuje group_key ze služby; tady se z toho skládá
+	// jeden řádek se vším, co členové vědí.
 	let deviceSections = $derived.by(() => {
 		const map = new Map(CATEGORIES.map((c) => [c.name, []]));
+		const groups = new Map();
+		const rank = new Map(CATEGORIES.map((c, i) => [c.name, i]));
+
 		for (const d of hw?.devices ?? []) {
 			if (d.class === 'Processor' || d.class === 'DiskDrive' || d.class === 'Display') continue;
-			if (!matches(`${d.name} ${d.manufacturer} ${d.class_desc} ${d.class}`)) continue;
-			map.get(categoryOf(d))?.push(d);
+			const key = d.group_key || `${d.hardware_id}|${d.name}`;
+			let g = groups.get(key);
+			if (!g) {
+				g = {
+					key,
+					name: d.group_name || d.name,
+					manufacturer: '',
+					class_desc: d.class_desc,
+					hardware_id: d.hardware_id,
+					driver_version: d.driver_version,
+					driver_date: d.driver_date,
+					problem_code: 0,
+					category: categoryOf(d),
+					icon: d,
+					members: []
+				};
+				groups.set(key, g);
+			}
+			g.members.push(d);
+			// Vykřičník u kteréhokoliv rozhraní je problém celého
+			// zařízení — schovat ho do rozkliku by znamenalo zamlčet ho.
+			if (d.problem_code && !g.problem_code) {
+				g.problem_code = d.problem_code;
+				g.class_desc = d.class_desc;
+			}
+			// Ze jmen výrobců vyhrává ten, který opravdu někoho jmenuje.
+			if (vendorSaysNothing(g.manufacturer) && !vendorSaysNothing(d.manufacturer)) {
+				g.manufacturer = d.manufacturer;
+				g.icon = d;
+			}
+			// Skupina sedí v té nejvýstižnější kategorii svých členů:
+			// bezdrátový přijímač klávesnice je periferie, ne řadič,
+			// i když jedno jeho rozhraní je třídy USB.
+			const cat = categoryOf(d);
+			if ((rank.get(cat) ?? 99) < (rank.get(g.category) ?? 99)) g.category = cat;
+		}
+
+		for (const g of groups.values()) {
+			// Hledá se napříč celou skupinou — jinak by filtr našel
+			// zařízení podle názvu, který je schovaný pod rozklikem.
+			const hay = g.members
+				.map((m) => `${m.name} ${m.manufacturer} ${m.class_desc} ${m.class}`)
+				.join(' ');
+			if (!matches(`${g.name} ${hay}`)) continue;
+			map.get(g.category)?.push(g);
 		}
 		return map;
 	});
@@ -299,6 +367,12 @@
 		}
 		return out;
 	});
+
+	// Kolik je kusů hardwaru dohromady (bez filtru počítá všechny
+	// skupiny, i ty, které padly mimo zobrazené kategorie).
+	let deviceCount = $derived(
+		[...deviceSections.values()].reduce((n, list) => n + list.length, 0)
+	);
 
 	let visibleDisplays = $derived(
 		displays.filter((d) => matches(`${d.monitor} ${d.adapter} monitor obrazovka`))
@@ -397,7 +471,14 @@
 	<header class="head">
 		<div class="head-top">
 			<h1>Hardware</h1>
-			<span class="total label-tech">{hw?.devices?.length ?? 0} zařízení</span>
+			<!-- Počítají se kusy hardwaru, ne řádky ze systému. Číslo
+			     v závorce říká, kolik zařízení z toho Windows udělaly. -->
+			<span class="total label-tech" title="V systému {hw?.devices?.length ?? 0} zařízení">
+				{deviceCount} zařízení
+				{#if (hw?.devices?.length ?? 0) > deviceCount}
+					<i>({hw.devices.length} položek systému)</i>
+				{/if}
+			</span>
 			{#if problems.length}
 				<button class="alarm" onclick={jumpToProblem}>
 					<TriangleAlert size={16} />
@@ -660,14 +741,26 @@
 				{s.name}
 				<span class="sect-n">{s.count}</span>
 			</h2>
-			{#each deviceSections.get(s.name) ?? [] as d, i (d.name + d.hardware_id + i)}
-				{@const Ico = iconOf(d)}
+			{#each deviceSections.get(s.name) ?? [] as d, i (d.key)}
+				{@const Ico = iconOf(d.icon)}
 				{@const rid = `dev-${s.name}-${i}`}
 				{@const trouble = describeProblem(d.problem_code)}
+				{@const open = openDevices.has(d.key)}
 				<article class="item" id={rid} class:flash={flashId === rid} class:bad={d.problem_code}>
 					<div class="ico"><Ico size={20} /></div>
 					<div class="info">
-						<h3>{d.name}</h3>
+						<h3>
+							{d.name}
+							<!-- Rozhraní se neschovávají před uživatelem, jen
+							     ustoupí za rozklik — tam je pořád vidět, co
+							     přesně systém hlásí. -->
+							{#if d.members.length > 1}
+								<button class="parts" onclick={() => toggleDevice(d.key)}>
+									{d.members.length} rozhraní
+									<ChevronRight class="parts-caret" size={12} strokeWidth={2.25} />
+								</button>
+							{/if}
+						</h3>
 						<p class="vendor">{d.manufacturer || '—'}</p>
 						<div class="facts">
 							{#if driver(d)}<span class="fact">{driver(d)}</span>{/if}
@@ -681,6 +774,19 @@
 								<strong>{trouble.what}</strong>
 								{trouble.means}
 							</p>
+						{/if}
+						{#if open}
+							<ul class="parts-list">
+								{#each d.members as m, mi (mi + ':' + m.hardware_id)}
+									<li class:bad={m.problem_code}>
+										<span class="p-name">{m.name}</span>
+										<span class="p-id mono">{m.hardware_id}</span>
+										{#if m.problem_code}
+											<span class="p-bad">problém {m.problem_code}</span>
+										{/if}
+									</li>
+								{/each}
+							</ul>
 						{/if}
 					</div>
 					<div class="side">
@@ -960,6 +1066,56 @@
 		margin: 3px 0 0;
 		font-size: 0.82rem;
 		color: var(--text-dim);
+	}
+	/* Rozklik na jednotlivá rozhraní — drobný, ať nepřebije název. */
+	.parts {
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		margin-left: 8px;
+		padding: 1px 7px;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		background: transparent;
+		color: var(--text-faint);
+		font-family: var(--font-mono);
+		font-size: 0.64rem;
+		letter-spacing: 0.02em;
+		cursor: pointer;
+		vertical-align: middle;
+	}
+	.parts:hover {
+		color: var(--text);
+		border-color: var(--text-dim);
+	}
+	.parts-list {
+		margin: 8px 0 0;
+		padding: 0 0 0 12px;
+		list-style: none;
+		border-left: 2px solid var(--border);
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.parts-list li {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 4px 10px;
+		font-size: 0.76rem;
+		color: var(--text-dim);
+	}
+	.parts-list li.bad .p-name {
+		color: var(--danger);
+	}
+	.p-id {
+		font-size: 0.68rem;
+		color: var(--text-faint);
+		word-break: break-all;
+	}
+	.p-bad {
+		font-size: 0.68rem;
+		color: var(--danger);
 	}
 	.facts {
 		display: flex;
