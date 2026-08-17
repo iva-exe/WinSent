@@ -48,6 +48,10 @@ features = [
     "Win32_System_RestartManager",
     "Win32_System_Services",
     "Win32_System_TaskScheduler",
+    # Lokální účty a skupiny (v9E). Přes netapi32, ne přes WMI —
+    # Win32_UserAccount umí na stroji v doméně zatuhnout na desítky
+    # sekund, což brána v9 výslovně zakazuje.
+    "Win32_NetworkManagement_NetManagement",
     "Win32_System_Variant",
     "Win32_System_Ole",
     "Win32_System_ApplicationInstallationAndServicing",

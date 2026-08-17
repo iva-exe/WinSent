@@ -552,6 +552,51 @@ pub struct PermissionRow {
     pub last_used: Option<i64>,
 }
 
+/// Jeden účet na tomhle počítači (v9E, SPEC kap. 14).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserRow {
+    pub name: String,
+    /// Celé jméno, když ho účet má.
+    pub full_name: String,
+    pub comment: String,
+    pub sid: String,
+    /// Má práva správce — hlavní otázka celé sekce (ROADMAP v9 DoD).
+    pub admin: bool,
+    pub disabled: bool,
+    pub locked: bool,
+    /// Windows u účtu heslo nevyžadují (`UF_PASSWD_NOTREQD`). NENÍ to
+    /// totéž co „účet nemá heslo" — u účtů Microsoft bývá příznak
+    /// nastavený běžně, takže se z něj nesmí dělat poplach.
+    pub password_not_required: bool,
+    /// Přihlašuje se účtem Microsoft (e-mailem).
+    pub microsoft: bool,
+    /// Poslední přihlášení NA TOMHLE počítači (unix; 0 = nikdy).
+    /// Windows tenhle údaj mezi stroji nesdílejí.
+    pub last_logon: i64,
+    pub logons: u32,
+}
+
+/// Správce, který není lokálním účtem (doménová skupina, Entra).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForeignAdminRow {
+    pub name: String,
+    pub sid: String,
+    pub kind: String,
+}
+
+/// Users sekce (v9E): kdo na tomhle počítači je a kdo je správce.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsersReport {
+    pub users: Vec<UserRow>,
+    /// Správci mimo lokální účty. Prázdný seznam na domácím stroji je
+    /// normální; na firemním by jejich zamlčení byla lež.
+    pub foreign_admins: Vec<ForeignAdminRow>,
+    /// Jméno skupiny správců v jazyce systému („Správci").
+    pub admin_group: String,
+    /// Kdo je právě přihlášený (jméno účtu UI procesu).
+    pub current_user: String,
+}
+
 /// Security sekce (v9): ochrana + oprávnění.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SecurityReport {

@@ -567,6 +567,18 @@ pub fn query_connection() -> Result<core_types::proc::ConnectionReport, Error> {
     }
 }
 
+/// Users (v9E): účty na tomhle počítači a kdo z nich je správce.
+pub fn query_users() -> Result<core_types::proc::UsersReport, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryUsers)? {
+        Response::Users(r) => Ok(r),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Security (v9): stav ochrany + oprávnění aplikací.
 pub fn query_security() -> Result<core_types::proc::SecurityReport, Error> {
     let mut stream = connect()?;

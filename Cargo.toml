@@ -87,6 +87,7 @@ collector-hw = { path = "crates/collector-hw" }
 collector-inv = { path = "crates/collector-inv" }
 collector-net = { path = "crates/collector-net" }
 collector-sec = { path = "crates/collector-sec" }
+collector-users = { path = "crates/collector-users" }
 collector-boot = { path = "crates/collector-boot" }
 fs-index = { path = "crates/fs-index" }
 actor-toggle = { path = "crates/actor-toggle" }

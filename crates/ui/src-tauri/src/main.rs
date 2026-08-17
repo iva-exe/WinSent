@@ -180,6 +180,33 @@ fn query_security() -> Result<core_types::proc::SecurityReport, String> {
     ipc::client::query_security().map_err(|e| e.to_string())
 }
 
+/// Users (v9E) — účty a kdo z nich je správce.
+///
+/// Přihlášeného uživatele doplňuje UI, ne služba: ta běží jako SYSTEM
+/// v session 0 a o relaci přihlášeného člověka nic neví. Zeptat se na
+/// to odsud je jediné místo, kde odpověď platí.
+#[tauri::command(async)]
+fn query_users() -> Result<core_types::proc::UsersReport, String> {
+    let mut r = ipc::client::query_users().map_err(|e| e.to_string())?;
+    r.current_user = current_user_name();
+    Ok(r)
+}
+
+/// Jméno účtu, pod kterým běží tenhle proces.
+fn current_user_name() -> String {
+    use windows::Win32::System::WindowsProgramming::GetUserNameW;
+    let mut buf = [0u16; 257];
+    let mut len = buf.len() as u32;
+    // SAFETY: buffer má hlášenou velikost; při chybě zůstane prázdný.
+    unsafe {
+        if GetUserNameW(Some(windows::core::PWSTR(buf.as_mut_ptr())), &mut len).is_err() {
+            return String::new();
+        }
+    }
+    // Délka zahrnuje ukončovací nulu.
+    String::from_utf16_lossy(&buf[..len.saturating_sub(1) as usize])
+}
+
 /// Stav připojení (v9) — adaptéry, IP konfigurace, WiFi.
 #[tauri::command(async)]
 fn query_connection() -> Result<core_types::proc::ConnectionReport, String> {
@@ -558,6 +585,7 @@ fn main() {
             query_network,
             query_connection,
             query_security,
+            query_users,
             build_file_index,
             search_files,
             find_duplicates,

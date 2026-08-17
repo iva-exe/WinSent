@@ -4,8 +4,14 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
-# Crate čtecí cesty. Nikdy nesmí nic měnit (SPEC kap. 2 — oddělené cesty).
+# Účty a oprávnění (v9E, SPEC kap. 14) — čistě čtecí sekce.
+# Sběr je levný (netapi32, lokální SAM), ale běží na dotaz a s cache,
+# ne v sekundovém cyklu: účty se během minuty nemění.
 [dependencies]
 core-types = { workspace = true }
 win-sys = { workspace = true }
-thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dependencies.windows]
+workspace = true
+features = ["Win32_Foundation", "Win32_System_WindowsProgramming"]

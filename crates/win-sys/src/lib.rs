@@ -38,6 +38,7 @@ pub mod tasksched;
 pub mod thermal;
 pub mod threading;
 pub mod trust;
+pub mod users;
 pub mod usn;
 pub mod verinfo;
 pub mod volumes;

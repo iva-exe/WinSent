@@ -574,6 +574,9 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         // Stav ochrany na 30 s (v9) — SecurityCenter/Defender WMI je drahé.
         let sec_cache: std::sync::Mutex<Option<(Instant, core_types::proc::ProtectionReport)>> =
             std::sync::Mutex::new(None);
+        // Účty na 60 s (v9E) — čtení je levné, ale mění se zřídka.
+        let users_cache: std::sync::Mutex<Option<(Instant, core_types::proc::UsersReport)>> =
+            std::sync::Mutex::new(None);
         // Reverzní DNS (v9, SPEC 12.3): PTR jména se cachují a překládá
         // je vlákno na pozadí — lookup umí blokovat sekundy a obslužné
         // vlákno pipe na něj nesmí čekat. `None` v cache = „zkoušeno,
@@ -993,6 +996,22 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     protection,
                     permissions: collector_sec::permissions(),
                 })
+            }
+            // Účty (v9E): kdo na tomhle počítači je a kdo je správce.
+            //
+            // Cache na 60 s: čtení místní databáze účtů je levné, ale
+            // účty se během minuty nemění a UI se ptá při každém
+            // otevření sekce. Přihlášeného uživatele doplňuje UI —
+            // služba běží jako SYSTEM a o relaci uživatele neví.
+            Request::QueryUsers => {
+                let mut cache = users_cache.lock().expect("users cache lock");
+                let fresh = cache
+                    .as_ref()
+                    .is_some_and(|(t, _): &(Instant, _)| t.elapsed() < Duration::from_secs(60));
+                if !fresh {
+                    *cache = Some((Instant::now(), collector_users::report()));
+                }
+                Response::Users(cache.as_ref().map(|(_, r)| r.clone()).unwrap_or_default())
             }
             // Připojení (v9): adaptéry + IP konfigurace + WiFi.
             // Jen čtení — WiFi sken se nevyvolává, čte se cache systému.
