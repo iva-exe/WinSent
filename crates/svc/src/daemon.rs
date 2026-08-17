@@ -426,7 +426,13 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         break;
                     }
                     let t = Instant::now();
-                    let b = fs_index::largest_items(&format!("{letter}:\\"), 60, 900_000);
+                    // Rozbor umí běžet minuty (naměřeno 290 s). Musí se
+                    // umět přerušit, jinak drží celou službu při životě
+                    // a instalátor marně čeká, až se zastaví.
+                    let cancel = Arc::clone(&stop);
+                    let b = fs_index::largest_items_until(&format!("{letter}:\\"), 60, 900_000, &|| {
+                        cancel.load(Ordering::SeqCst)
+                    });
                     tracing::info!(
                         volume = %letter,
                         ms = t.elapsed().as_millis() as u64,

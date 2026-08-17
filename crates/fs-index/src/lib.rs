@@ -403,6 +403,22 @@ const DIR_DEPTH: usize = 4;
 
 /// Projde svazek a vrátí top N souborů a složek dle velikosti.
 pub fn largest_items(root: &str, top_n: usize, max_entries: usize) -> BigItems {
+    largest_items_until(root, top_n, max_entries, &|| false)
+}
+
+/// Totéž, ale s možností práci přerušit.
+///
+/// Průchod stromem umí trvat minuty — naměřeno 290 s na zaplněném disku.
+/// Bez téhle možnosti drží celý ten čas službu při životě: signál
+/// „zastav se" dorazí, ale démon ho nemá jak předat dovnitř smyčky.
+/// Instalátor pak marně čeká na zastavení a ohlásí chybu, přestože je
+/// všechno v pořádku — jen se zrovna počítá.
+pub fn largest_items_until(
+    root: &str,
+    top_n: usize,
+    max_entries: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> BigItems {
     let mut files: Vec<(String, u64)> = Vec::new();
     let mut dirs: HashMap<String, u64> = HashMap::new();
     // Práh pro udržení souboru v kandidátech (roste, ať Vec nepřeteče).
@@ -411,11 +427,20 @@ pub fn largest_items(root: &str, top_n: usize, max_entries: usize) -> BigItems {
     let mut seen = 0usize;
 
     while let Some((dir, depth)) = stack.pop() {
+        if cancelled() {
+            break;
+        }
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
         for e in rd.flatten() {
             seen += 1;
+            // Kontrola po tisícovkách položek: čtení atomického příznaku
+            // je levné, ale v nejvnitřnější smyčce se to sčítá.
+            if seen % 4096 == 0 && cancelled() {
+                stack.clear();
+                break;
+            }
             if seen > max_entries {
                 stack.clear();
                 break;

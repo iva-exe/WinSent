@@ -42,7 +42,12 @@ pub fn stop_and_wait() -> Result<()> {
     }
     let _ = svc.stop();
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    // Trpělivost místo tří vteřin navíc: služba může zrovna dopočítávat
+    // rozbor disku a zastavit se až po něm. Vzdát to dřív znamená
+    // ohlásit chybu tam, kde stačilo počkat — a nechat uživatele
+    // s rozestavěnou instalací.
+    let deadline = Instant::now() + Duration::from_secs(180);
+    let mut waited = 0u64;
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(300));
         if let Ok(s) = svc.query_status() {
@@ -50,8 +55,14 @@ pub fn stop_and_wait() -> Result<()> {
                 return Ok(());
             }
         }
+        waited += 300;
+        // Po pěti vteřinách už je ticho podezřelé — ať uživatel vidí,
+        // že se něco děje a instalátor nezamrzl.
+        if waited % 5_000 == 0 {
+            println!("    …čekám na zastavení služby ({} s)", waited / 1000);
+        }
     }
-    Err("služba se nezastavila do 30 s".into())
+    Err("služba se nezastavila ani za 3 minuty".into())
 }
 
 /// Zaregistruje službu, nebo u existující jen aktualizuje konfiguraci.
