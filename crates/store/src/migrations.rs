@@ -181,6 +181,20 @@ const MIGRATIONS: &[&str] = &[
         detail      TEXT
     );
     CREATE INDEX ix_audit_ts ON audit(ts DESC);",
+    // Historie použití oprávnění (v9D). ConsentStore si pamatuje jen
+    // POSLEDNÍ použití — jakmile aplikace sáhne na mikrofon podruhé,
+    // ten předchozí záznam přepíše. Aby šlo říct „Discord používal
+    // mikrofon včera 3 h 12 min", musí si sezení zapisovat služba sama.
+    // Klíč přes (app, capability, start) dělá zápis idempotentní: totéž
+    // sezení se při opakovaném čtení jen aktualizuje, nepřidá.
+    "CREATE TABLE perm_use (
+        app        TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        start_ts   INTEGER NOT NULL,
+        stop_ts    INTEGER,
+        PRIMARY KEY (app, capability, start_ts)
+    ) WITHOUT ROWID;
+    CREATE INDEX ix_perm_use_ts ON perm_use(start_ts DESC);",
 ];
 
 /// Aplikuje všechny dosud neaplikované migrace. Bezpečné volat při

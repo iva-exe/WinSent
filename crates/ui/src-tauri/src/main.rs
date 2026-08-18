@@ -180,6 +180,21 @@ fn query_security() -> Result<core_types::proc::SecurityReport, String> {
     ipc::client::query_security().map_err(|e| e.to_string())
 }
 
+
+/// Historie použití oprávnění (v9D) — sezení a součet za období.
+#[derive(Debug, Serialize)]
+struct PermUseDto {
+    sessions: Vec<core_types::proc::PermUseRow>,
+    total_s: i64,
+}
+
+#[tauri::command(async)]
+fn query_perm_use(app: String, capability: String, days: u32) -> Result<PermUseDto, String> {
+    ipc::client::query_perm_use(app, capability, days)
+        .map(|(sessions, total_s)| PermUseDto { sessions, total_s })
+        .map_err(|e| e.to_string())
+}
+
 /// Users (v9E) — účty a kdo z nich je správce.
 ///
 /// Přihlášeného uživatele doplňuje UI, ne služba: ta běží jako SYSTEM
@@ -586,6 +601,7 @@ fn main() {
             query_connection,
             query_security,
             query_users,
+            query_perm_use,
             build_file_index,
             search_files,
             find_duplicates,

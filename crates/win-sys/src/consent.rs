@@ -34,6 +34,11 @@ pub struct Consent {
     pub in_use: bool,
     /// Konec posledního použití (unix), když je znám.
     pub last_used: Option<i64>,
+    /// Začátek posledního použití (unix). Spolu s koncem dává dobu,
+    /// po kterou aplikace kameru nebo mikrofon opravdu držela —
+    /// „naposledy včera, 3 h 12 min" je informace úplně jiné váhy
+    /// než holé „naposledy včera".
+    pub last_start: Option<i64>,
 }
 
 /// Schopnosti, které mají pro uživatele význam. Ostatní podklíče
@@ -133,6 +138,7 @@ fn read_entry(
         allow,
         in_use: start != 0 && stop == 0,
         last_used: filetime_to_unix(stop.max(start)),
+        last_start: filetime_to_unix(start),
     })
 }
 
@@ -161,4 +167,16 @@ mod tests {
             "žádný webcam/microphone záznam"
         );
     }
+}
+
+/// SIDy skutečných uživatelů, jejichž souhlasy se čtou.
+///
+/// Služba běží jako SYSTEM, takže její `HKEY_CURRENT_USER` je hive
+/// SYSTEMU a o souhlasech lidí neví nic. Sledování změn potřebuje
+/// vědět, do kterých hive se dívat.
+pub fn user_hives() -> Vec<String> {
+    enum_subkeys(HKEY_USERS, "")
+        .into_iter()
+        .filter(|sid| sid.starts_with("S-1-5-21") && !sid.ends_with("_Classes"))
+        .collect()
 }

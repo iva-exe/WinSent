@@ -579,6 +579,31 @@ pub fn query_users() -> Result<core_types::proc::UsersReport, Error> {
     }
 }
 
+
+/// Historie použití oprávnění (v9D): sezení za posledních `days` dní
+/// a jejich součet v sekundách.
+pub fn query_perm_use(
+    app: String,
+    capability: String,
+    days: u32,
+) -> Result<(Vec<core_types::proc::PermUseRow>, i64), Error> {
+    let mut stream = connect()?;
+    match request(
+        &mut stream,
+        &Request::QueryPermUse {
+            app,
+            capability,
+            days,
+        },
+    )? {
+        Response::PermUse { sessions, total_s } => Ok((sessions, total_s)),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Security (v9): stav ochrany + oprávnění aplikací.
 pub fn query_security() -> Result<core_types::proc::SecurityReport, Error> {
     let mut stream = connect()?;

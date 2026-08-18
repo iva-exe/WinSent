@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 33;
+pub const PROTOCOL_VERSION: u32 = 34;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -90,6 +90,14 @@ pub enum Request {
     /// Users: účty na tomhle počítači a kdo z nich je správce
     /// (v9E, SPEC kap. 14). Čistě čtecí — účty se odsud nespravují.
     QueryUsers,
+    /// Historie použití jedné schopnosti aplikací (v9D): sezení
+    /// za posledních `days` dní. ConsentStore drží jen to poslední,
+    /// tohle je to, co si služba zapsala sama.
+    QueryPermUse {
+        app: String,
+        capability: String,
+        days: u32,
+    },
     /// Kdo drží soubory (v8, Restart Manager) — „proč to nejde smazat".
     QueryHolders { paths: Vec<String> },
 
@@ -194,6 +202,11 @@ pub enum Response {
     Security(crate::proc::SecurityReport),
     /// Účty a správci (v9E).
     Users(crate::proc::UsersReport),
+    /// Sezení použití oprávnění + součet sekund za období (v9D).
+    PermUse {
+        sessions: Vec<crate::proc::PermUseRow>,
+        total_s: i64,
+    },
 
     /// Zbytky po odinstalaci: cesty, které na disku pořád jsou.
     Leftovers(Vec<String>),

@@ -550,6 +550,19 @@ pub struct PermissionRow {
     pub in_use: bool,
     /// Konec posledního použití (unix).
     pub last_used: Option<i64>,
+    /// Začátek posledního použití (unix). S koncem dává dobu, po kterou
+    /// aplikace kameru nebo mikrofon opravdu držela — „naposledy včera,
+    /// 3 h 12 min" je jiná váha informace než holé „naposledy včera".
+    pub last_start: Option<i64>,
+}
+
+
+/// Jedno sezení, kdy aplikace držela kameru, mikrofon nebo polohu (v9D).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermUseRow {
+    pub start_ts: i64,
+    /// `None` = drží ji právě teď.
+    pub stop_ts: Option<i64>,
 }
 
 /// Jeden účet na tomhle počítači (v9E, SPEC kap. 14).

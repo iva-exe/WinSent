@@ -245,3 +245,48 @@ pub fn enum_subkeys(root: HKEY, subkey: &str) -> Vec<String> {
     }
     out
 }
+
+/// Počká, až se pod klíčem něco změní — nebo až vyprší čas.
+///
+/// Proti opakovanému dotazování má tohle dvě výhody, kvůli kterým to
+/// SPEC 13.4 přímo předepisuje: sledování stojí jedno spící vlákno
+/// místo probouzení po sekundách, a hlavně se **nic nepropásne** —
+/// aplikace, která si sáhne na mikrofon na dvě vteřiny mezi dvěma
+/// dotazy, by jinak v historii nebyla.
+///
+/// `subtree` sleduje i podklíče (ConsentStore má aplikaci na každý
+/// podklíč). Vrací `true`, když se něco změnilo, `false` při vypršení
+/// nebo chybě — volající tak umí odejít i bez události.
+pub fn wait_for_change(root: HKEY, subkey: &str, subtree: bool, timeout_ms: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows::Win32::System::Registry::{
+        RegNotifyChangeKeyValue, REG_NOTIFY_CHANGE_LAST_SET, REG_NOTIFY_CHANGE_NAME,
+    };
+    use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+
+    let sub = HSTRING::from(subkey);
+    let mut key = HKEY::default();
+    // SAFETY: klíč se zavírá na všech cestách ven.
+    unsafe {
+        if RegOpenKeyExW(root, &sub, Some(0), KEY_READ, &mut key).is_err() {
+            return false;
+        }
+        // Ruční událost — na signál se čeká jednou a pak se zahodí.
+        let Ok(ev) = CreateEventW(None, true, false, None) else {
+            let _ = RegCloseKey(key);
+            return false;
+        };
+        let ok = RegNotifyChangeKeyValue(
+            key,
+            subtree,
+            REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET,
+            Some(ev),
+            true,
+        )
+        .is_ok();
+        let changed = ok && WaitForSingleObject(ev, timeout_ms) == WAIT_OBJECT_0;
+        let _ = CloseHandle(ev);
+        let _ = RegCloseKey(key);
+        changed
+    }
+}

@@ -247,6 +247,28 @@
 		)
 	);
 
+	// Historie použití: kolik času aplikace kameru nebo mikrofon opravdu
+	// držela. ConsentStore drží jen poslední sezení — tohle je to, co si
+	// služba zapsala sama, jak to viděla přicházet.
+	let useHist = $state({});
+	async function loadHistory(key, app, capability) {
+		if (useHist[key]) return;
+		try {
+			const r = await invoke('query_perm_use', { app, capability, days: 30 });
+			useHist = { ...useHist, [key]: r };
+		} catch {
+			/* historie je bonus — bez ní řádek pořád dává smysl */
+		}
+	}
+
+	// Doba trvání lidsky. Vteřiny se u „držel mikrofon" nikoho neptají.
+	function fmtDur(s) {
+		if (!s || s < 60) return `${Math.max(0, Math.round(s || 0))} s`;
+		const h = Math.floor(s / 3600);
+		const m = Math.round((s % 3600) / 60);
+		return h ? `${h} h ${m} min` : `${m} min`;
+	}
+
 	function fmtWhen(ts) {
 		if (!ts) return null;
 		const d = new Date(ts * 1000);
@@ -340,10 +362,30 @@
 						<div class="side">
 							{#if p.in_use && p.allow}
 								<span class="pill bad-live">používá právě teď</span>
-							{:else if p.allow}
-								<span class="pill dim">
-									povoleno{#if p.last_used}&nbsp;· naposledy {fmtWhen(p.last_used)}{/if}
-								</span>
+						{:else if p.allow}
+							<span class="pill dim">
+								povoleno{#if p.last_used}&nbsp;· naposledy {fmtWhen(p.last_used)}{/if}
+							</span>
+							<!-- Kolik času to opravdu zabralo. „Naposledy včera"
+							     a „naposledy včera, 3 h 12 min" jsou dvě úplně
+							     jiné informace. Historii si vede služba sama —
+							     Windows si pamatují jen poslední sezení. -->
+							{#if p.last_used}
+								{@const hk = g.cap + p.app}
+								{#if useHist[hk]}
+									{#if useHist[hk].total_s > 0}
+										<span class="pill dim" title="Součet za posledních 30 dní z {useHist[hk].sessions.length} použití">
+											za 30 dní {fmtDur(useHist[hk].total_s)}
+										</span>
+									{:else}
+										<span class="pill dim">za 30 dní nepoužito</span>
+									{/if}
+								{:else}
+									<button class="pill dim link" onclick={() => loadHistory(hk, p.app, g.cap)}>
+										kolik času?
+									</button>
+								{/if}
+							{/if}
 							{:else if p.enforced}
 								<!-- Balená aplikace: Windows Deny VYNUTÍ — jediné
 								     místo, kde smí být zelený zámek. -->
@@ -531,6 +573,17 @@
 		word-break: break-all;
 	}
 	/* Rozklik starších verzí — drobný, ať nepřebije jméno aplikace. */
+	/* Odznak, na který jde kliknout — historie se dotahuje na vyžádání,
+	   ať se u každého řádku nechodí do databáze zbytečně. */
+	.pill.link {
+		cursor: pointer;
+		font: inherit;
+		font-size: 0.74rem;
+	}
+	.pill.link:hover {
+		color: var(--text);
+		border-color: var(--text-dim);
+	}
 	.vers {
 		display: inline-flex;
 		align-items: center;

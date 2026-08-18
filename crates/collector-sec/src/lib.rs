@@ -63,6 +63,7 @@ pub fn permissions() -> Vec<PermissionRow> {
             allow: c.allow,
             in_use: c.in_use,
             last_used: c.last_used,
+            last_start: c.last_start,
         };
         match best.entry((row.capability.clone(), row.app.clone())) {
             std::collections::hash_map::Entry::Vacant(e) => {

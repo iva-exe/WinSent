@@ -17,6 +17,7 @@ pub mod audit;
 pub mod events;
 pub mod history;
 pub mod migrations;
+pub mod permuse;
 pub mod retention;
 pub mod samples;
 

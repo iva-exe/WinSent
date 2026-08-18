@@ -272,14 +272,14 @@ jednu crate, pak k ní testy, pak měření. Teprve pak další.
 
 ## v9 — Čtecí sekce: Hardware, Network, Security, Users
 
-**Cíl:** Doplnit levné čtecí sekce, které dělají z nástroje švýcarský nůž. Skoro vše jen čte; Security má vratné **přepínače soukromí (třída T0)**, které jdou přes validační vrstvu — proto tato část závisí na v5. Zbytek (Hardware, Network, Users, čtecí část Security) je nezávislý na v5–v8 a dá se dělat i dřív.
+**Cíl:** Doplnit levné čtecí sekce, které dělají z nástroje švýcarský nůž. Všechno jen čte. Přepínače soukromí (Allow/Deny jako T0 akce) se ZRUŠILY — viz rozhodnutí na konci sekce. Celá v9 je tím nezávislá na v5–v8 a dala se dělat i dřív.
 
 **Staví se:**
 - `collector-hw` — inventář hardwaru + SMART + baterie (SPEC kap. 15.1).
 - `collector-sensors` — **CPU teploty** degradační kaskádou (HWiNFO/LHM → ACPI → throttling+takty, SPEC kap. 15.2) + **FPS/frame time** přes ETW DXGI/Dwm, opt-in per proces (SPEC kap. 15.3). GPU teploty už jsou z v3.
 - Komponentově orientované karty (SPEC kap. 15.4): graf nahoře, údaje pod ním, historie v kartě.
 - `collector-net` — spojení per aplikace, porty, trafik v čase, geo (offline), WiFi, signály (SPEC kap. 12). **Bez DPI.**
-- `collector-sec` — stav ochrany, signály procesů, telemetrie (čtení) + **oprávnění aplikací přes CapabilityAccessManager ConsentStore** (SPEC kap. 13.4): kdo má přístup, **kdo právě používá** (`LastUsedTimeStop == 0`), historie použití. Čteno **událostně** (`RegNotifyChangeKeyValue`), ne pollem. Přepínače Allow/Deny jako **T0 akce** přes validační vrstvu (SPEC kap. 13, 17.2).
+- `collector-sec` — stav ochrany, signály procesů, telemetrie (čtení) + **oprávnění aplikací přes CapabilityAccessManager ConsentStore** (SPEC kap. 13.4): kdo má přístup, **kdo právě používá** (`LastUsedTimeStop == 0`), historie použití. Čteno **událostně** (`RegNotifyChangeKeyValue`), ne pollem. Přepínače Allow/Deny se NESTAVÍ (rozhodnutí na konci sekce).
 - `collector-users` — účty, oprávnění, historie přihlášení (SPEC kap. 14).
 - UI: obrazovky Hardware (komponentově), Network, Security, Users.
 
@@ -288,11 +288,26 @@ jednu crate, pak k ní testy, pak měření. Teprve pak další.
 - GPU teplota vždy; CPU teplota když ji zařízení hlásí, jinak throttling+takty se zdrojem „nedostupné".
 - FPS/frame time měřené u hry bez injektáže; spiky se napojí na záseky.
 - Network mapuje spojení na aplikace, ukazuje kam a kolik.
-- Security ukáže stav ochrany na jedné obrazovce; přepínače soukromí i oprávnění jsou vratné.
+- Security ukáže stav ochrany na jedné obrazovce.
 - **Oprávnění:** živá tečka u aplikace, která právě používá kameru/mikrofon. Historie: *„Discord používal mikrofon včera 3 h 12 min."*
 - **Vynucení je barevně rozlišené:** MSIX = zeleně „zablokováno" (Windows vynutí), Win32 = jantarově „odepřeno, ale nevynuceno". **Zelená nikdy tam, kde vynucení není.**
 - Users ukáže, kdo má admin práva.
 - Všechny sekce v rozpočtu, žádné WMI zatuhnutí, žádný kernel driver.
+
+**Rozhodnutí (18. 8. 2026): přepínače soukromí se nestaví.**
+
+Nástroj se během vývoje posunul k tomu, aby o systému **vypovídal**, ne
+aby ho ovládal. Přepínač Allow/Deny u oprávnění by navíc u klasických
+aplikací stejně nic nevynutil — Windows ho tvrdě vymáhají jen
+u balených, což sekce sama přiznává jantarovou barvou. Nabízet vypínač,
+který v půlce případů nevypíná, je horší než ho nemít.
+
+Co tím padá: `actor-consent`, T0 akce nad ConsentStore a závislost v9
+na validační vrstvě z v5. Co zůstává: čtení oprávnění, živá tečka
+u aplikace, která právě používá kameru nebo mikrofon, a historie
+použití. Existující ovládací prvky (odinstalace, ukončení procesu,
+přepínače po spuštění) se tím neruší — rozhodnutí se týká toho, co se
+nově přidává.
 
 **Brána v9:** Každá sekce v rozpočtu na Win10 i Win11. Žádný verdikt tam, kde má být signál (Security, Network). CPU teplota nikdy nepředstírá číslo, které nemá (vždy uveď zdroj). **U oprávnění nikdy nepředstírej tvrdý zámek u Win32 aplikací** — to je nejdůležitější kontrola této fáze, protože falešný pocit ochrany je horší než žádný.
 

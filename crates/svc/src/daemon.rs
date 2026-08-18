@@ -128,6 +128,8 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     // Klony pro inventární vlákno a IPC handler (lazy velikosti cest).
     let inv_tx = sample_tx.clone();
     let size_tx = sample_tx.clone();
+    // Klon pro sledování oprávnění (v9D) — vlákno spí na registru.
+    let perm_tx = sample_tx.clone();
 
     let store_handle = {
         let stop = Arc::clone(&stop);
@@ -460,6 +462,74 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             })?
     };
 
+
+    // Oprávnění (v9D): sledovat, ne se ptát.
+    //
+    // ConsentStore si pamatuje jen POSLEDNÍ použití — jakmile aplikace
+    // sáhne na mikrofon podruhé, ten předchozí záznam přepíše. Kdyby se
+    // sekce jen dotazovala při otevření, historie by z principu nemohla
+    // vzniknout a krátká použití mezi dvěma pohledy by se ztratila úplně.
+    // Vlákno proto spí na `RegNotifyChangeKeyValue` a probouzí se, jen
+    // když se v registru něco hne (SPEC 13.4 to přímo předepisuje).
+    // Handle se schválně NEDRŽÍ: vlákno spí až minutu na registru
+    // a čekat na něj při vypínání by službu zdrželo přesně tak, jak to
+    // dělal dlouhý rozbor disku. Nic nemutuje — jen čte a posílá do
+    // kanálu, takže s koncem procesu může zmizet.
+    let _permwatch = {
+        let stop = Arc::clone(&stop);
+        let tx = perm_tx;
+        std::thread::Builder::new()
+            .name("permwatch".into())
+            .spawn(move || {
+                let _ = win_sys::threading::set_current_thread_below_normal();
+                const STORE_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore";
+                // Sleduje se hive prvního skutečného uživatele. Číst se
+                // pak čtou hive všechny — na stroji s víc účty se změny
+                // těch ostatních zachytí do minuty přes timeout.
+                let watched = win_sys::consent::user_hives()
+                    .into_iter()
+                    .next()
+                    .map(|sid| format!(r"{sid}\{STORE_KEY}"));
+
+                while !stop.load(Ordering::SeqCst) {
+                    // Zapisuje se po KAŽDÉM probuzení i hned napoprvé:
+                    // první čtení po startu služby zachytí i to, co
+                    // běželo, než jsme se začali dívat.
+                    let batch: Vec<crate::incidents::PermUseEntry> = collector_sec::permissions()
+                        .into_iter()
+                        .filter_map(|c| {
+                            Some(crate::incidents::PermUseEntry {
+                                start_ts: c.last_start?,
+                                // Běžící sezení nemá konec — doplní se,
+                                // až aplikace schopnost pustí.
+                                stop_ts: if c.in_use { None } else { c.last_used },
+                                app: c.app,
+                                capability: c.capability,
+                            })
+                        })
+                        .collect();
+                    if !batch.is_empty() {
+                        let _ = tx.try_send(crate::incidents::StoreMsg::PermUse(batch));
+                    }
+                    match watched.as_deref() {
+                        // Timeout je pojistka: kdyby se sledování nedalo
+                        // navázat, sekce se obnoví aspoň jednou za minutu,
+                        // ne nikdy.
+                        Some(key) => {
+                            win_sys::registry::wait_for_change(
+                                win_sys::registry::HKEY_USERS,
+                                key,
+                                true,
+                                60_000,
+                            );
+                        }
+                        // Ještě se nikdo nepřihlásil — není co sledovat.
+                        None => std::thread::sleep(Duration::from_secs(60)),
+                    }
+                }
+                tracing::info!("sledování oprávnění ukončeno");
+            })?
+    };
     // Inventář aplikací (v4, SPEC kap. 5): sken na pozadí při startu
     // a pak řídce (6 h); RescanApps ho vyžádá dřív. Nikdy v cyklu.
     let rescan = Arc::new(AtomicBool::new(false));
@@ -1009,6 +1079,35 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             // účty se během minuty nemění a UI se ptá při každém
             // otevření sekce. Přihlášeného uživatele doplňuje UI —
             // služba běží jako SYSTEM a o relaci uživatele neví.
+            // Historie použití oprávnění (v9D). Čte se z NAŠÍ databáze,
+            // ne z registru — ConsentStore drží jen poslední sezení.
+            Request::QueryPermUse {
+                app,
+                capability,
+                days,
+            } => {
+                let now = unix_now();
+                let from = now - (days.max(1) as i64) * 86_400;
+                match store::open_readonly(&db_path) {
+                    Ok(c) => {
+                        let sessions = store::permuse::history(&c, &app, &capability, 200)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|s| s.stop_ts.unwrap_or(now) >= from)
+                            .map(|s| core_types::proc::PermUseRow {
+                                start_ts: s.start_ts,
+                                stop_ts: s.stop_ts,
+                            })
+                            .collect();
+                        let total_s = store::permuse::total_seconds(&c, &app, &capability, from, now)
+                            .unwrap_or(0);
+                        Response::PermUse { sessions, total_s }
+                    }
+                    Err(e) => Response::Error {
+                        message: format!("databáze nedostupná: {e}"),
+                    },
+                }
+            }
             Request::QueryUsers => {
                 let mut cache = users_cache.lock().expect("users cache lock");
                 let fresh = cache
@@ -1344,6 +1443,19 @@ fn store_msg(
     use crate::incidents::StoreMsg;
     match msg {
         StoreMsg::Tick(ts, procs, sys) => store::samples::insert_tick(conn, ts, &sys, &procs),
+        StoreMsg::PermUse(entries) => {
+            // Jedna transakce na celou dávku — dvě stě samostatných
+            // zápisů by zbytečně mlelo diskem.
+            let tx = conn.transaction()?;
+            for e in &entries {
+                if let Err(err) =
+                    store::permuse::record(&tx, &e.app, &e.capability, e.start_ts, e.stop_ts)
+                {
+                    tracing::warn!(app = %e.app, error = %err, "zápis použití oprávnění");
+                }
+            }
+            tx.commit()
+        }
         StoreMsg::Inventory(apps) => {
             let n = apps.len();
             let r = store::apps::replace_inventory(conn, &apps);

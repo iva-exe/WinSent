@@ -6,6 +6,17 @@ use core_types::proc::{ProcRow, SystemSnapshot};
 
 /// Zpráva pro zapisovací vlákno store — vzorky i události jdou jedním
 /// kanálem, aby DB měla jediného zapisovatele.
+
+/// Jedno sezení použití oprávnění pro zápis do databáze (v9D).
+#[derive(Debug, Clone)]
+pub struct PermUseEntry {
+    pub app: String,
+    pub capability: String,
+    pub start_ts: i64,
+    /// `None` = aplikace ji drží právě teď.
+    pub stop_ts: Option<i64>,
+}
+
 pub enum StoreMsg {
     Tick(i64, Vec<ProcRow>, SystemSnapshot),
     /// Výsledek skenu inventáře (v4) — nahradí obsah app/app_path.
@@ -19,6 +30,14 @@ pub enum StoreMsg {
     },
     /// Smazání záznamu incidentu (vlastní DB, žádná mutace OS).
     DeleteIncident(i64),
+    /// Sezení, ve kterých aplikace držely kameru, mikrofon nebo polohu
+    /// (v9D) — celá dávka najednou.
+    ///
+    /// Schválně dávka, ne zpráva na sezení: ConsentStore jich má na
+    /// běžném stroji přes dvě stovky a kanál má šestnáct míst. Posílat
+    /// je po jedné znamenalo, že se drtivá většina tiše zahodila a
+    /// historie nevznikla vůbec.
+    PermUse(Vec<PermUseEntry>),
     Event {
         ts: i64,
         kind: &'static str,
