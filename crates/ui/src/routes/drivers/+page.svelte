@@ -8,7 +8,7 @@
 	// Správce zařízení dělá mizerně a která nikoho nemůže rozbít.
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
-	import { Search, Cpu, Package, PackageCheck, TriangleAlert, Calendar } from 'lucide-svelte';
+	import { Search, Package, PackageCheck, TriangleAlert, Calendar } from 'lucide-svelte';
 
 	let report = $state(null);
 	let loadError = $state('');
@@ -44,11 +44,16 @@
 	}
 
 	const thisYear = new Date().getFullYear();
-	// „Starý" je relativní pojem: ovladač čipsetu z roku 2019 je v pořádku,
-	// ovladač grafiky z roku 2019 ne. Pět let je hranice, za kterou už
-	// stojí za to se podívat — ne poplach, jen zvednutý prst.
+	// „Starý" má smysl jen u ovladačů od výrobců.
+	//
+	// Windows dávají VŠEM svým vestavěným ovladačům jedno a totéž datum
+	// (21. 6. 2006) bez ohledu na to, kdy vznikly — naměřeno na tomhle
+	// stroji u stovky z nich. Kdyby se počítaly, byl by seznam „starých"
+	// zaplavený ovladači, se kterými není nic špatně, a ten jeden
+	// skutečně zastaralý od výrobce by v tom zapadl.
 	const OLD_YEARS = 5;
 	function isOld(d) {
+		if (!d.third_party) return false;
 		const y = yearOf(d);
 		return y != null && thisYear - y >= OLD_YEARS;
 	}
@@ -85,7 +90,7 @@
 				Od výrobců <i>{counts.oem}</i>
 			</button>
 			<button class:active={segment === 'old'} onclick={() => (segment = 'old')}>
-				Starší {OLD_YEARS} let <i>{counts.old}</i>
+				Zastaralé od výrobců <i>{counts.old}</i>
 			</button>
 			<button class:active={segment === 'problem'} onclick={() => (segment = 'problem')}>
 				S problémem <i>{counts.problem}</i>
@@ -154,7 +159,7 @@
 				který to má vyzkoušené na milionech strojů a v případě problému se umí vrátit zpátky.
 				„Od výrobce" znamená, že ovladač doinstaloval někdo zvenčí (soubor <code>oem*.inf</code>);
 				u grafiky, zvukovky nebo síťovky je to obvyklé a správné. Stáří je zvednutý prst,
-				ne poplach — ovladač čipsetu z roku 2019 může být poslední, který kdy vyšel.
+				ne poplach: ovladač čipsetu z roku 2019 může být poslední, který kdy vyšel. Počítá se jen u ovladačů od výrobců — Windows dávají všem svým vestavěným jedno a totéž datum 21. 6. 2006 bez ohledu na to, kdy vznikly.
 			</p>
 		</div>
 	{:else}

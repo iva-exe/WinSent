@@ -24,7 +24,7 @@ $all = @(
     'ping', 'snapshot', 'history', 'v5check', 'rescancheck', 'startupcheck',
     'auditcheck', 'killcheck', 'filecheck', 'cleanupcheck', 'appcheck',
     'iconcheck', 'incidents', 'v8check', 'v8dcheck', 'v9check', 'v9netcheck',
-    'v9conncheck', 'v9seccheck', 'v9usercheck', 'permusecheck', 'memcheck',
+    'v9conncheck', 'v9seccheck', 'v9usercheck', 'permusecheck', 'v10check', 'memcheck',
     'hwgroupcheck'
 )
 $gates = if ($Only) { $Only } else { $all }
