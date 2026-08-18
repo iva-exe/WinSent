@@ -90,7 +90,10 @@ Copy-Item (Join-Path $root 'target\release\WinsentSetup.exe') (Join-Path $rel 'W
 # ── Push ───────────────────────────────────────────────────────────
 Write-Host "4/4  Pushuji do repozitáře"
 & git add release
-& git commit -m "release: $version"
+# Commit JEN release/ — bez omezení cestou by se svezlo cokoliv, co má
+# člověk zrovna nachystané, a zpráva „release: …" by pak popisovala
+# úplně jinou práci. Naletěl jsem na to.
+& git commit -m "release: $version" -- release
 if ($LASTEXITCODE -ne 0) { Write-Host "  (nic nového k odeslání)" -ForegroundColor Yellow }
 & git push origin main
 if ($LASTEXITCODE -ne 0) { throw "git push selhal" }
