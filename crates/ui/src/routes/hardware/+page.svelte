@@ -18,6 +18,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { describeProblem } from '$lib/devproblem.js';
 	import { CATEGORIES, categoryOf, hasVidPid } from '$lib/devcategory.js';
+	import { mergeSame } from '$lib/mergesame.js';
 	import {
 		AudioLines,
 		BatteryCharging,
@@ -294,6 +295,18 @@
 				.join(' ');
 			if (!matches(`${g.name} ${hay}`)) continue;
 			map.get(g.category)?.push(g);
+		}
+		// Druhá úroveň: co se jmenuje stejně, do jednoho řádku.
+		//
+		// Po sloučení na fyzická zařízení zbývá sedm „PCI HOST Bridge",
+		// osm „Volume" a šest „Motherboard resources" — pro uživatele
+		// sedmkrát tentýž řádek. Skupina ale netvrdí, že je to jeden
+		// kus: nese počet a pod rozklikem každý kus zvlášť.
+		for (const [cat, list] of map) {
+			map.set(
+				cat,
+				mergeSame(list, (g) => `${g.name}|${g.class_desc ?? ''}`)
+			);
 		}
 		return map;
 	});
@@ -686,21 +699,31 @@
 				{s.name}
 				<span class="sect-n">{s.count}</span>
 			</h2>
-			{#each deviceSections.get(s.name) ?? [] as d, i (d.key)}
+			{#each deviceSections.get(s.name) ?? [] as mg, i (mg.key)}
+				{@const d = mg.head}
 				{@const Ico = iconOf(d.icon)}
 				{@const rid = `dev-${s.name}-${i}`}
 				{@const trouble = describeProblem(d.problem_code)}
-				{@const open = openDevices.has(d.key)}
+				{@const open = openDevices.has(mg.key)}
+				<!-- `mg.count > 1` = víc kusů se shodným jménem (sedm PCI
+				     mostů). Řádek to nikdy nevydává za jeden kus — nese
+				     počet a pod rozklikem je každý zvlášť. -->
+				{@const parts = mg.count > 1 ? mg.members : d.members}
 				<article class="item" id={rid} class:flash={flashId === rid} class:bad={d.problem_code}>
 					<div class="ico"><Ico size={20} /></div>
 					<div class="info">
 						<h3>
 							{d.name}
-							<!-- Rozhraní se neschovávají před uživatelem, jen
-							     ustoupí za rozklik — tam je pořád vidět, co
-							     přesně systém hlásí. -->
-							{#if d.members.length > 1}
-								<button class="parts" onclick={() => toggleDevice(d.key)}>
+							<!-- Dva různé důvody k rozkliku a nesmí se plést:
+							     „kusů" = víc zařízení se shodným jménem,
+							     „rozhraní" = jeden kus rozepsaný systémem. -->
+							{#if mg.count > 1}
+								<button class="parts many" onclick={() => toggleDevice(mg.key)}>
+									{mg.count} kusů
+									<ChevronRight class="parts-caret" size={12} strokeWidth={2.25} />
+								</button>
+							{:else if d.members.length > 1}
+								<button class="parts" onclick={() => toggleDevice(mg.key)}>
 									{d.members.length} rozhraní
 									<ChevronRight class="parts-caret" size={12} strokeWidth={2.25} />
 								</button>
@@ -722,10 +745,10 @@
 						{/if}
 						{#if open}
 							<ul class="parts-list">
-								{#each d.members as m, mi (mi + ':' + m.hardware_id)}
+								{#each parts as m, mi (mi + ":" + (m.hardware_id ?? m.key))}
 									<li class:bad={m.problem_code}>
 										<span class="p-name">{m.name}</span>
-										<span class="p-id mono">{m.hardware_id}</span>
+										<span class="p-id mono">{m.hardware_id ?? (m.members?.[0]?.hardware_id ?? "")}</span>
 										{#if m.problem_code}
 											<span class="p-bad">problém {m.problem_code}</span>
 										{/if}
@@ -1028,6 +1051,12 @@
 		letter-spacing: 0.02em;
 		cursor: pointer;
 		vertical-align: middle;
+	}
+	/* Víc kusů se shodným jménem — odlišené, ať se to neplete
+	   s rozhraními jednoho kusu. */
+	.parts.many {
+		border-color: var(--text-dim);
+		color: var(--text-dim);
 	}
 	.parts:hover {
 		color: var(--text);

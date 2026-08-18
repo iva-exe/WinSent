@@ -6,9 +6,11 @@
 	// je Windows Update, který to má vyzkoušené a umí se vrátit zpátky.
 	// Ukázat, který ovladač je z roku 2015 a od koho, je práce, kterou
 	// Správce zařízení dělá mizerně a která nikoho nemůže rozbít.
-	import { onMount } from 'svelte';
+	import { onMount, tick as nextTick } from 'svelte';
+	import CategoryNav from '$lib/CategoryNav.svelte';
+	import { mergeSame } from '$lib/mergesame.js';
 	import { invoke } from '@tauri-apps/api/core';
-	import { Search, Package, PackageCheck, TriangleAlert, Calendar } from 'lucide-svelte';
+	import { Search, Package, PackageCheck, TriangleAlert, Calendar, ChevronRight } from 'lucide-svelte';
 	import { byCategory } from '$lib/devcategory.js';
 
 	let report = $state(null);
@@ -78,7 +80,16 @@
 	// Signál „je to USB periferie" nesou ovladače v prefixu klíče
 	// skupiny: prefix "dev:" vzniká v collector-hw právě z VID+PID,
 	// ostatní prefixy jsou "chip:" a "id:".
-	let sections = $derived(byCategory(shown, (d) => (d.group_key ?? '').startsWith('dev:')));
+	// Ovladače se slučují podle toho, co JE jeden ovladač: shodný název,
+	// verze a poskytovatel. Tentýž ovladač obsluhuje klidně deset
+	// zařízení a vypisovat ho desetkrát je jen šum — zajímavé je, že
+	// existuje a jak je starý.
+	let sections = $derived(
+		byCategory(shown, (d) => (d.group_key ?? '').startsWith('dev:')).map((s) => ({
+			...s,
+			merged: mergeSame(s.items, (d) => `${d.device}|${d.version}|${d.provider}`)
+		}))
+	);
 
 	let counts = $derived({
 		all: report?.drivers?.length ?? 0,
@@ -86,62 +97,102 @@
 		old: (report?.drivers ?? []).filter(isOld).length,
 		problem: report?.with_problem ?? 0
 	});
+	// Skok na problémový ovladač; opakovaný klik cykluje mezi nimi.
+	// Stejné chování jako v Hardwaru — tam si na to uživatel zvykl.
+	let bodyEl = $state(null);
+	let catNav = $state(null);
+	let flashId = $state('');
+	let problemIdx = $state(-1);
+
+	let problems = $derived.by(() => {
+		const out = [];
+		for (const s of sections) {
+			s.merged.forEach((mg, i) => {
+				if (mg.head.problem_code)
+					out.push({ id: `drv-${s.name}-${i}`, label: mg.head.device });
+			});
+		}
+		return out;
+	});
+
+	async function jumpToProblem() {
+		if (!problems.length) return;
+		problemIdx = (problemIdx + 1) % problems.length;
+		const target = problems[problemIdx];
+		await nextTick();
+		const el = document.getElementById(target.id);
+		if (!el) return;
+		el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		flashId = target.id;
+		setTimeout(() => {
+			if (flashId === target.id) flashId = '';
+		}, 1600);
+	}
 </script>
 
 <div class="page">
+	<!-- Pevná hlavička: nescrolluje pryč. Stejná stavba jako Hardware —
+	     nadpis, segmenty, filtr, a pod tím přepínač kategorií. -->
 	<header class="head">
-		<h1>Drivers</h1>
-		<div class="seg">
-			<button class:active={segment === 'all'} onclick={() => (segment = 'all')}>
-				Vše <i>{counts.all}</i>
-			</button>
-			<button class:active={segment === 'oem'} onclick={() => (segment = 'oem')}>
-				Od výrobců <i>{counts.oem}</i>
-			</button>
-			<button class:active={segment === 'old'} onclick={() => (segment = 'old')}>
-				Zastaralé od výrobců <i>{counts.old}</i>
-			</button>
-			<button class:active={segment === 'problem'} onclick={() => (segment = 'problem')}>
-				S problémem <i>{counts.problem}</i>
-			</button>
+		<div class="head-top">
+			<h1>Drivers</h1>
+			<div class="seg">
+				<button class:active={segment === 'all'} onclick={() => (segment = 'all')}>
+					Vše <i>{counts.all}</i>
+				</button>
+				<button class:active={segment === 'oem'} onclick={() => (segment = 'oem')}>
+					Od výrobců <i>{counts.oem}</i>
+				</button>
+				<button class:active={segment === 'old'} onclick={() => (segment = 'old')}>
+					Zastaralé od výrobců <i>{counts.old}</i>
+				</button>
+				<button class:active={segment === 'problem'} onclick={() => (segment = 'problem')}>
+					S problémem <i>{counts.problem}</i>
+				</button>
+			</div>
+			{#if problems.length}
+				<!-- Skok na problémový ovladač; opakovaný klik cykluje.
+				     Stejné chování jako v Hardwaru. -->
+				<button class="alarm" onclick={jumpToProblem}>
+					<TriangleAlert size={16} />
+					{problems.length}
+					{problems.length === 1 ? "problém" : problems.length < 5 ? "problémy" : "problémů"}
+					<span class="alarm-go">
+						{problemIdx >= 0 ? problemIdx + 1 + "/" + problems.length : "ukázat"}
+						<ChevronRight size={15} />
+					</span>
+				</button>
+			{/if}
+			<div class="filter">
+				<Search size={14} />
+				<input placeholder="hledat ovladač…" bind:value={filter} />
+			</div>
 		</div>
-		<div class="filter">
-			<Search size={14} />
-			<input placeholder="hledat ovladač…" bind:value={filter} />
-		</div>
+		{#if sections.length > 1}
+			<CategoryNav bind:this={catNav} {sections} {bodyEl} idPrefix="sect" />
+		{/if}
 	</header>
 
 	{#if loadError}
 		<p class="empty">Nelze načíst ovladače: {loadError}</p>
 	{:else if report}
-		<div class="body">
-			<!-- Čipy kategorií: v seznamu o dvou stovkách ovladačů je
-			     skákání po sekcích rychlejší než rolování. -->
-			{#if sections.length > 1}
-				<nav class="chips">
-					{#each sections as s (s.key)}
-						<a class="chip" href="#drv-{s.key}">
-							<s.icon size={13} />
-							{s.name}
-							<i>{s.items.length}</i>
-						</a>
-					{/each}
-				</nav>
-			{/if}
+		<div class="body" bind:this={bodyEl} onscroll={() => catNav?.onScroll()}>
 			{#if !shown.length}
 				<p class="empty">
 					{filter.trim() ? 'Nic neodpovídá hledání.' : 'V tomhle zobrazení nic není.'}
 				</p>
 			{/if}
 			{#each sections as s (s.key)}
-				<h2 class="sect" id="drv-{s.key}">
+				<section class="grp" id="sect-{s.name}">
+				<h2 class="sect">
 					<s.icon size={16} />
 					{s.name}
-					<span class="sect-n">{s.items.length}</span>
+					<span class="sect-n">{s.merged.length}</span>
 				</h2>
-				{#each s.items as d, i (i + ':' + d.group_key)}
+				{#each s.merged as mg, i (mg.key)}
+				{@const d = mg.head}
 				{@const year = yearOf(d)}
-				<article class="item" class:bad={d.problem_code}>
+				<article class="item" id="drv-{s.name}-{i}" class:flash={flashId === `drv-${s.name}-${i}`} class:bad={d.problem_code}>
 					<div class="ico">
 						{#if d.problem_code}
 							<TriangleAlert size={19} />
@@ -152,7 +203,15 @@
 						{/if}
 					</div>
 					<div class="info">
-						<h3>{d.device}</h3>
+					<h3>
+						{d.device}
+						<!-- Tentýž ovladač obsluhuje klidně deset zařízení.
+						     Vypisovat ho desetkrát je šum; kolika slouží,
+						     je ale informace, která má cenu. -->
+						{#if mg.count > 1}
+							<span class="serves">slouží {mg.count} zařízením</span>
+						{/if}
+					</h3>
 						<p class="vendor">{d.provider || '—'}</p>
 						<div class="facts">
 							{#if d.version}<span class="fact">verze {d.version}</span>{/if}
@@ -181,6 +240,7 @@
 					</div>
 				</article>
 				{/each}
+				</section>
 			{/each}
 
 			<p class="note">
@@ -197,22 +257,52 @@
 </div>
 
 <style>
-	/* Sekce kategorií — stejný jazyk jako Hardware a Security. */
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		min-height: 0;
+		gap: 12px;
+	}
+	.head {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		flex: none;
+	}
+	.head-top {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+	}
+	.body {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		padding-right: 6px;
+	}
+	.grp {
+		margin-top: 26px;
+	}
+	.grp:first-child {
+		margin-top: 0;
+	}
 	.sect {
+		position: sticky;
+		top: 0;
+		z-index: 1;
 		display: flex;
 		align-items: center;
 		gap: 9px;
-		margin: 20px 0 9px;
+		margin: 0 0 11px;
+		padding: 9px 2px 10px;
 		font-family: var(--font-mono);
 		font-size: 0.8rem;
 		font-weight: 500;
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
 		color: var(--text-dim);
-		scroll-margin-top: 8px;
-	}
-	.sect:first-of-type {
-		margin-top: 0;
+		background: linear-gradient(var(--bg) 80%, transparent);
 	}
 	.sect::after {
 		content: '';
@@ -226,82 +316,168 @@
 		color: var(--text-faint);
 		font-variant-numeric: tabular-nums;
 	}
-	.chips {
+	.alarm {
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
+		margin-left: auto;
+		background: color-mix(in srgb, var(--danger) 12%, transparent);
+		border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+		border-radius: 999px;
+		color: var(--danger);
+		font: inherit;
+		font-size: 0.84rem;
+		padding: 8px 10px 8px 15px;
+		cursor: pointer;
+	}
+	.alarm:hover {
+		background: color-mix(in srgb, var(--danger) 20%, transparent);
+	}
+	.alarm-go {
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+		background: color-mix(in srgb, var(--danger) 22%, transparent);
+		border-radius: 999px;
+		padding: 2px 6px 2px 8px;
+		font-variant-numeric: tabular-nums;
+	}
+	.item {
+		display: grid;
+		grid-template-columns: 40px minmax(0, 1fr) 180px;
+		gap: 14px;
+		align-items: start;
+		padding: 14px 16px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		margin-bottom: 8px;
+		background: var(--surface);
+		scroll-margin: 20px;
+	}
+	.item:hover {
+		background: var(--surface-hover);
+	}
+	.item.bad {
+		border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+	}
+	.item.flash {
+		animation: flash 2.2s ease-out;
+	}
+	.item.bad .ico {
+		color: var(--danger);
+		background: color-mix(in srgb, var(--danger) 14%, transparent);
+	}
+	.ico {
+		display: grid;
+		place-items: center;
+		width: 40px;
+		height: 40px;
+		border-radius: 11px;
+		background: var(--surface-hover);
+		color: var(--text-dim);
+	}
+	.info {
+		min-width: 0;
+	}
+	/* Kolika zařízením ovladač slouží — drobné, ať nepřebije název. */
+	.serves {
+		font-family: var(--font-mono);
+		font-size: 0.66rem;
+		font-weight: 400;
+		letter-spacing: 0.02em;
+		color: var(--text-faint);
+		padding: 1px 7px;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		vertical-align: middle;
+	}
+	.vendor {
+		margin: 3px 0 0;
+		font-size: 0.82rem;
+		color: var(--text-dim);
+	}
+	.facts {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 6px;
-		margin-bottom: 14px;
+		gap: 7px 8px;
+		margin-top: 9px;
 	}
-	.chip {
+	.fact {
+		font-size: 0.79rem;
+		line-height: 1.4;
+		padding: 4px 11px;
+		border-radius: 7px;
+		background: var(--surface-hover);
+		color: var(--text);
+	}
+	.fact.muted {
+		background: none;
+		padding-left: 2px;
+		padding-right: 2px;
+		color: var(--text-dim);
+	}
+	.fact.mono {
+		font-family: var(--font-mono);
+		font-size: 0.73rem;
+	}
+	.side {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 7px;
+		text-align: right;
+	}
+	.pill {
 		display: inline-flex;
 		align-items: center;
 		gap: 5px;
-		padding: 4px 10px;
-		border: 1px solid var(--border);
+		font-size: 0.79rem;
+		padding: 4px 11px;
 		border-radius: 999px;
-		background: var(--surface);
+		border: 1px solid transparent;
+		white-space: nowrap;
+	}
+	.pill.ok {
+		color: var(--ok);
+		background: color-mix(in srgb, var(--ok) 12%, transparent);
+	}
+	.pill.warn {
+		color: var(--warn);
+		background: color-mix(in srgb, var(--warn) 14%, transparent);
+	}
+	.pill.bad {
+		color: var(--danger);
+		background: color-mix(in srgb, var(--danger) 14%, transparent);
+	}
+	.pill.dim {
 		color: var(--text-dim);
-		font-size: 0.74rem;
-		text-decoration: none;
-	}
-	.chip:hover {
-		color: var(--text);
-		border-color: var(--text-dim);
-	}
-	.chip i {
-		font-style: normal;
-		font-family: var(--font-mono);
-		font-size: 0.64rem;
-		color: var(--text-faint);
-	}
-	.page {
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-		height: 100%;
-		min-height: 0;
-	}
-	.head {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-	}
-	.head h1 {
-		font-size: 1.2rem;
-		font-weight: 600;
-		margin: 0;
-	}
-	.seg {
-		display: flex;
-		gap: 2px;
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		padding: 2px;
-		background: var(--surface);
-	}
-	.seg button {
-		background: none;
-		border: none;
-		color: var(--text-dim);
-		font: inherit;
-		font-size: 0.76rem;
-		padding: 4px 10px;
-		border-radius: 3px;
-		cursor: pointer;
-		display: flex;
-		align-items: center;
-		gap: 6px;
-	}
-	.seg button i {
-		font-style: normal;
-		font-family: var(--font-mono);
-		font-size: 0.64rem;
-		color: var(--text-faint);
-	}
-	.seg button.active {
 		background: var(--surface-hover);
-		color: var(--text);
-		box-shadow: inset 0 0 0 1px var(--border-strong);
+	}
+	.pill.quiet {
+		color: var(--text-dim);
+		background: var(--surface-hover);
+		border-color: var(--border);
+	}
+	.pill.quiet::before {
+		content: '';
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: var(--ok);
+	}
+	.pill.cool {
+		background: color-mix(in srgb, var(--ok) 12%, transparent);
+	}
+	.pill.warm {
+		background: color-mix(in srgb, var(--warn) 14%, transparent);
+	}
+	.pill.hot {
+		background: color-mix(in srgb, var(--danger) 14%, transparent);
+	}
+	.empty {
+		color: var(--text-dim);
+		font-size: 0.84rem;
+		padding: 20px 0;
 	}
 	.filter {
 		margin-left: auto;
@@ -310,74 +486,30 @@
 		gap: 6px;
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
-		padding: 4px 8px;
+		padding: 5px 9px;
 		color: var(--text-dim);
 		background: var(--surface);
+		width: 300px;
 	}
-	.filter input {
-		background: none;
-		border: none;
-		outline: none;
-		color: var(--text);
-		font: inherit;
-		font-size: 0.8rem;
-		width: 170px;
+	@keyframes flash {
+		0%,
+		55% {
+			border-color: var(--danger);
+			background: color-mix(in srgb, var(--danger) 14%, transparent);
+		}
+		100% {
+			border-color: var(--border);
+			background: var(--surface);
+		}
 	}
-	.body {
-		flex: 1;
-		min-height: 0;
-		overflow-y: auto;
-		padding-right: 6px;
-	}
-	.item {
-		display: flex;
-		align-items: flex-start;
-		gap: 12px;
-		padding: 11px 13px;
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		background: var(--surface);
-		margin-bottom: 7px;
-	}
-	.item.bad {
-		border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
-	}
-	.ico {
-		color: var(--text-dim);
-		display: flex;
-		padding-top: 2px;
+	/* Sekce kategorií — stejný jazyk jako Hardware a Security. */
+	.head h1 {
+		font-size: 1.2rem;
+		font-weight: 600;
+		margin: 0;
 	}
 	.item.bad .ico {
 		color: var(--danger);
-	}
-	.info {
-		flex: 1;
-		min-width: 0;
-	}
-	.info h3 {
-		margin: 0;
-		font-size: 1.02rem;
-		font-weight: 600;
-		line-height: 1.3;
-		word-break: break-word;
-	}
-	.vendor {
-		margin: 3px 0 0;
-		font-size: 0.8rem;
-		color: var(--text-dim);
-	}
-	.facts {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px 10px;
-		margin-top: 6px;
-	}
-	.fact {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		font-size: 0.74rem;
-		color: var(--text-dim);
 	}
 	.fact.muted {
 		color: var(--text-faint);
@@ -389,20 +521,6 @@
 	/* Stáří je informace, ne chyba — jantarová, ne červená. */
 	.fact.old {
 		color: var(--warn);
-	}
-	.side {
-		flex-shrink: 0;
-	}
-	.pill {
-		display: inline-flex;
-		align-items: center;
-		gap: 5px;
-		padding: 3px 10px;
-		border-radius: 999px;
-		border: 1px solid var(--border);
-		font-size: 0.74rem;
-		white-space: nowrap;
-		color: var(--text-dim);
 	}
 	.pill.quiet {
 		color: var(--text-faint);
@@ -420,9 +538,5 @@
 	.note code {
 		font-family: var(--font-mono);
 		font-size: 0.72rem;
-	}
-	.empty {
-		color: var(--text-faint);
-		font-size: 0.85rem;
 	}
 </style>

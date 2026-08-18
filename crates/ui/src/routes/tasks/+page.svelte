@@ -933,7 +933,8 @@
 				</div>
 			</div>
 		{:else if mode === 'cpu'}
-			<!-- Jádra ve dvou sloupcích s mini grafy -->
+			<!-- Jádra s mini grafy. Sloupců je tolik, kolik se jich vejde;
+			     výška roste s počtem jader, ať jsou vždycky vidět všechna. -->
 			<div class="cores">
 				{#each dCores as c, i (i)}
 					<div class="core">
@@ -1508,10 +1509,13 @@
 
 	.cores {
 		display: grid;
-		grid-template-columns: 1fr 1fr;
+		/* Sloupce se přizpůsobí počtu jader, výška roste s nimi.
+		   Dřív tu byl pevný strop s vlastním scrollem — na procesoru
+		   s víc jádry to znamenalo, že jich byla vidět jen část a na
+		   zbytek se muselo rolovat uvnitř malého okénka. Přehled o
+		   jádrech je přitom celý smysl té dlaždice. */
+		grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
 		gap: 0.25rem 1.6rem;
-		max-height: 190px;
-		overflow-y: auto;
 	}
 	.core {
 		display: flex;
