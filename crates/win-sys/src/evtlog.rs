@@ -31,6 +31,9 @@ pub struct Event {
     /// Význam pozic je daný poskytovatelem; popsaný je u volajícího,
     /// který ví, na co se ptal.
     pub data: Vec<String>,
+    /// Celé XML události tak, jak ho vrátil systém. Do exportu pro
+    /// odborníka nebo model — ten chce originál, ne náš výklad.
+    pub xml: String,
 }
 
 /// RAII pro handle událostí.
@@ -136,7 +139,10 @@ fn render(ev: EVT_HANDLE) -> Option<String> {
 /// generuje jediný producent — systém sám. Plnohodnotný parser by sem
 /// přitáhl závislost kvůli dvěma řetězcům.
 fn parse(xml: &str) -> Event {
-    let mut ev = Event::default();
+    let mut ev = Event {
+        xml: xml.to_string(),
+        ..Default::default()
+    };
     if let Some(p) = xml.find("SystemTime='") {
         let rest = &xml[p + 12..];
         if let Some(end) = rest.find('\'') {

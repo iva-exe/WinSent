@@ -1189,6 +1189,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                                     .unwrap_or(1),
                                 summary,
                                 detail,
+                                raw: c.raw.clone(),
                             }
                         })
                         .collect(),

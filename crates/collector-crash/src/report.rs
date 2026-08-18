@@ -29,6 +29,8 @@ pub struct AppCrash {
     pub code: String,
     /// Kde v modulu to spadlo — do detailu, laikovi neříká nic.
     pub offset: String,
+    /// Syrový záznam z protokolu událostí, jak ho vrátil systém.
+    pub raw: String,
 }
 
 /// Přečte pády aplikací z protokolu Windows.
@@ -65,6 +67,7 @@ pub fn app_crashes(limit: usize) -> Vec<AppCrash> {
                 code: g(6),
                 offset: g(7),
                 module_path: g(11),
+                raw: e.xml,
             })
         })
         .collect()

@@ -469,50 +469,58 @@
 	   pokaždé stejně stavěný, aby se očima dalo skákat po stavech. */
 	.tiles {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-		gap: 8px;
-		margin-bottom: 4px;
+		grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+		gap: 10px;
+		margin-bottom: 6px;
 	}
 	.tile {
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
-		padding: 12px 14px 13px;
+		gap: 6px;
+		padding: 18px 20px 20px;
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
 		background: var(--surface);
 	}
-	/* Barva jen tam, kde něco znamená. Zelený proužek nikdy u věci,
-	   která je jen „fakt" — nešifrovaný disk není poplach ani úspěch. */
-	.tile.ok {
-		border-left: 3px solid var(--ok);
-	}
-	.tile.warn {
-		border-left: 3px solid var(--warn);
-	}
-	.tile.dim {
-		border-left: 3px solid var(--border-strong);
-	}
+	/* Barvu nese ikona, ne rám. Barevný proužek u každé dlaždice dělal
+	   z přehledu pruhovanou tabulku; ikona nese stav a zbytek zůstává
+	   klidný. */
 	.t-top {
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		gap: 10px;
 		color: var(--text-dim);
 	}
+	.t-ico {
+		display: grid;
+		place-items: center;
+		width: 34px;
+		height: 34px;
+		border-radius: 10px;
+		background: var(--surface-hover);
+		color: var(--text-dim);
+		flex: none;
+	}
+	.tile.ok .t-ico {
+		color: var(--ok);
+		background: color-mix(in srgb, var(--ok) 14%, transparent);
+	}
+	.tile.warn .t-ico {
+		color: var(--warn);
+		background: color-mix(in srgb, var(--warn) 14%, transparent);
+	}
 	.t-name {
-		font-size: 0.78rem;
+		font-size: 0.86rem;
 		font-family: var(--font-mono);
 		letter-spacing: 0.03em;
 		text-transform: uppercase;
 	}
-	.t-ico {
-		display: flex;
-	}
 	.t-state {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		font-size: 1.06rem;
+		gap: 7px;
+		margin-top: 2px;
+		font-size: 1.28rem;
 		font-weight: 600;
 		line-height: 1.25;
 	}
@@ -524,13 +532,13 @@
 	}
 	.t-detail {
 		margin: 0;
-		font-size: 0.76rem;
+		font-size: 0.8rem;
 		color: var(--text-dim);
 		line-height: 1.45;
 	}
 	.t-explain {
-		margin: 2px 0 0;
-		font-size: 0.73rem;
+		margin: 3px 0 0;
+		font-size: 0.77rem;
 		color: var(--text-faint);
 		line-height: 1.5;
 	}

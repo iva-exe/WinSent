@@ -581,6 +581,8 @@ pub struct CrashReportRow {
     /// Kolikrát se totéž (aplikace + modul) stalo za posledních 30 dní.
     /// Opakování je silnější informace než jeden pád.
     pub repeats: u32,
+    /// Syrový záznam z protokolu Windows — do exportu pro odborníka.
+    pub raw: String,
 }
 
 /// Jak je na tom sběr vzorků (diagnostika).

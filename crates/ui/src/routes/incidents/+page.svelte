@@ -13,6 +13,7 @@
 		FileText,
 		EyeOff,
 		Download,
+		Check,
 		ChevronRight
 	} from 'lucide-svelte';
 	import Sparkline from '$lib/Sparkline.svelte';
@@ -212,6 +213,45 @@
 		}
 	}
 
+	// Podklady, které se dotahují až při exportu.
+	//
+	// Do souboru má jít všechno, na co umíme přijít — tabulka procesů
+	// v okamžiku pádu, hodnoty jednotlivých jader, disků a GPU, soupis
+	// hardwaru i ovladačů. V UI by to byla zeď, v souboru pro odborníka
+	// nebo model je to přesně to, oč jde. Načítá se proto až na kliknutí,
+	// ne dopředu.
+	async function gatherExtras(row) {
+		const out = { procs: [], detail: null, hw: null, drivers: null, sys: null };
+		try {
+			const r = await invoke('query_procs_at', { ts: row.ts });
+			out.procs = r?.rows ?? [];
+			out.procsTs = r?.ts;
+		} catch {
+			/* v historii už nic není */
+		}
+		try {
+			out.detail = await invoke('query_detail_at', { ts: row.ts });
+		} catch {
+			/* jádra/disky/GPU z té doby nemáme */
+		}
+		try {
+			out.hw = await invoke('query_hardware');
+		} catch {
+			/* hardware je aktuální stav, ne stav v čase pádu */
+		}
+		try {
+			out.drivers = await invoke('query_drivers');
+		} catch {
+			/* bez ovladačů to bude jen kratší */
+		}
+		try {
+			out.sys = await invoke('query_sys_info');
+		} catch {
+			/* nevadí */
+		}
+		return out;
+	}
+
 	// Export incidentu do textového souboru.
 	//
 	// Účel je konkrétní: poslat to někomu, kdo tomu rozumí — člověku
@@ -219,7 +259,7 @@
 	// máme, i to, co je v UI schované, a v podobě, která se dá přečíst
 	// bez téhle aplikace. Žádné odesílání nikam: soubor se uloží
 	// a co s ním bude dál, rozhoduje uživatel.
-	function reportText(row) {
+	function reportText(row, x) {
 		const i = row.incident;
 		const rep = row.report;
 		const d = i ? parseDetail(i) : {};
@@ -300,6 +340,127 @@
 			L.push('Z té doby nejsou naměřená data — hlídač tehdy neběžel,');
 			L.push('nebo jsou vzorky za hranicí retence.');
 		}
+		if (rep?.raw) {
+			L.push('');
+			L.push('SYROVÝ ZÁZNAM Z PROTOKOLU WINDOWS');
+			L.push('-'.repeat(60));
+			L.push(rep.raw);
+			L.push('');
+		}
+
+		if (x?.detail) {
+			L.push('');
+			L.push('KOMPONENTY V OKAMŽIKU INCIDENTU');
+			L.push('-'.repeat(60));
+			L.push(`(nejbližší uložený vzorek: ${fmtTs(x.detail.ts)})`);
+			if (x.detail.cores?.length) {
+				L.push('');
+				L.push('Zátěž jader:');
+				x.detail.cores.forEach((c, k) => L.push(`  jádro ${String(k).padStart(3)}  ${c.toFixed(1)} %`));
+			}
+			if (x.detail.disks?.length) {
+				L.push('');
+				L.push('Disky (B/s):');
+				L.push('  disk        čtení          zápis');
+				for (const d of x.detail.disks) {
+					L.push(
+						`  ${String(d.index).padStart(4)}  ${String(d.r_bps).padStart(12)}  ${String(d.w_bps).padStart(13)}`
+					);
+				}
+			}
+			if (x.detail.gpu) {
+				const g = x.detail.gpu;
+				L.push('');
+				L.push('GPU:');
+				L.push(`  teplota:     ${g.temp_c ?? '—'} °C`);
+				L.push(`  VRAM:        ${g.vram_used_mb ?? '—'} / ${g.vram_total_mb ?? '—'} MB`);
+				L.push(`  spotřeba:    ${g.power_w ?? '—'} W`);
+				L.push(`  takt:        ${g.clock_mhz ?? '—'} MHz`);
+			}
+		}
+
+		if (x?.procs?.length) {
+			L.push('');
+			L.push('VŠECHNY PROCESY V OKAMŽIKU INCIDENTU');
+			L.push('-'.repeat(60));
+			L.push(`(vzorek z ${fmtTs(x.procsTs ?? row.ts)}, ${x.procs.length} procesů)`);
+			L.push('   PID  název                          CPU%      RAM MB   čtení B/s  zápis B/s');
+			for (const p of x.procs) {
+				L.push(
+					[
+						String(p.pid).padStart(6),
+						'  ',
+						(p.name ?? '').padEnd(30).slice(0, 30),
+						String((p.cpu_pct ?? 0).toFixed(1)).padStart(5),
+						String(Math.round((p.ws_bytes ?? 0) / 1048576)).padStart(12),
+						String(p.disk_r_bps ?? 0).padStart(12),
+						String(p.disk_w_bps ?? 0).padStart(11)
+					].join('')
+				);
+			}
+		}
+
+		if (x?.sys) {
+			L.push('');
+			L.push('SESTAVA POČÍTAČE');
+			L.push('-'.repeat(60));
+			const s = x.sys;
+			L.push(`CPU:  ${s.cpu_name ?? '—'}  (${s.physical_cores ?? '?'} jader / ${s.logical_cores ?? '?'} vláken, ${s.cpu_base_mhz ?? '?'} MHz)`);
+			L.push(`GPU:  ${s.gpu_name ?? '—'}`);
+			for (const m of s.ram_modules ?? []) {
+				L.push(`RAM:  ${m.size_mb} MB @ ${m.speed_mts ?? '?'} MT/s  slot ${m.slot ?? '?'}  ${m.manufacturer ?? ''} ${m.part_number ?? ''}`);
+			}
+			for (const d of s.disks ?? []) L.push(`Disk: [${d.index}] ${d.model}`);
+		}
+
+		if (x?.hw) {
+			const h = x.hw;
+			L.push('');
+			L.push('HARDWARE — AKTUÁLNÍ STAV');
+			L.push('-'.repeat(60));
+			L.push('(soupis je z doby exportu, ne z okamžiku incidentu)');
+			if (h.board) {
+				L.push(`Deska: ${h.board.manufacturer ?? ''} ${h.board.product ?? ''}  BIOS ${h.board.bios_version ?? '?'} z ${h.board.bios_date ?? '?'}`);
+			}
+			if (h.cpu_thermal) {
+				L.push(
+					`Teplota CPU: ${h.cpu_thermal.celsius ?? '—'} °C (zdroj: ${h.cpu_thermal.temp_source}), takt ${h.cpu_thermal.clock_mhz ?? '?'}/${h.cpu_thermal.max_mhz ?? '?'} MHz, omezení: ${h.cpu_thermal.throttling ? 'ano' : 'ne'}`
+				);
+			}
+			for (const d of h.disks ?? []) {
+				L.push(
+					`Disk [${d.index}] ${d.model}: teplota ${d.temp_c ?? '—'} °C, opotřebení ${d.used_pct ?? '—'} %, rezerva ${d.spare_pct ?? '—'} %, kritických ${d.critical ?? '—'}`
+				);
+			}
+			for (const v of h.volumes ?? []) {
+				L.push(
+					`Svazek ${v.letter}: ${v.label || '(bez názvu)'} ${v.fs}  volno ${Math.round(v.free_bytes / 1e9)} / ${Math.round(v.total_bytes / 1e9)} GB`
+				);
+			}
+			if (h.battery) {
+				L.push(`Baterie: ${h.battery.percent ?? '—'} %, opotřebení ${h.battery.wear_pct ?? '—'} %`);
+			}
+			L.push('');
+			L.push(`Zařízení (${(h.devices ?? []).length}):`);
+			for (const d of h.devices ?? []) {
+				L.push(
+					`  ${(d.group_name || d.name || '').padEnd(42).slice(0, 42)} ${(d.manufacturer ?? '').padEnd(24).slice(0, 24)} ${d.driver_version ?? ''} ${d.driver_date ?? ''}${d.problem_code ? `  PROBLÉM ${d.problem_code}` : ''}`
+				);
+				L.push(`      ${d.class} · ${d.hardware_id}`);
+			}
+		}
+
+		if (x?.drivers?.drivers?.length) {
+			L.push('');
+			L.push(`OVLADAČE (${x.drivers.drivers.length})`);
+			L.push('-'.repeat(60));
+			for (const d of x.drivers.drivers) {
+				L.push(
+					`  ${(d.device ?? '').padEnd(40).slice(0, 40)} ${(d.provider ?? '').padEnd(26).slice(0, 26)} ${(d.version ?? '').padEnd(18)} ${d.date ?? ''}${d.third_party ? '  [od výrobce]' : ''}${d.problem_code ? `  PROBLÉM ${d.problem_code}` : ''}`
+				);
+			}
+		}
+
 		L.push('');
 		L.push('-'.repeat(60));
 		L.push('Vygeneroval Winsent. Údaje pocházejí z tohoto počítače;');
@@ -307,17 +468,41 @@
 		return L.join('\n');
 	}
 
-	function downloadReport(row) {
-		const stamp = new Date(row.ts * 1000)
-			.toISOString()
-			.slice(0, 19)
-			.replace(/[:T]/g, '-');
-		const blob = new Blob([reportText(row)], { type: 'text/plain;charset=utf-8' });
-		const a = document.createElement('a');
-		a.href = URL.createObjectURL(blob);
-		a.download = `winsent-incident-${stamp}.txt`;
-		a.click();
-		setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+	// Stav tlačítka: sbírám → hotovo. Bez odezvy uživatel neví, jestli
+	// se kliknutí vůbec chytlo — a sběr podkladů chvíli trvá.
+	let exportState = $state('idle');
+	let exportName = $state('');
+
+	async function downloadReport(row) {
+		if (exportState === 'busy') return;
+		exportState = 'busy';
+		try {
+			const extras = await gatherExtras(row);
+			const stamp = new Date(row.ts * 1000)
+				.toISOString()
+				.slice(0, 19)
+				.replace(/[:T]/g, '-');
+			const name = `winsent-incident-${stamp}.txt`;
+			const blob = new Blob([reportText(row, extras)], {
+				type: 'text/plain;charset=utf-8'
+			});
+			const a = document.createElement('a');
+			a.href = URL.createObjectURL(blob);
+			a.download = name;
+			a.click();
+			setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+			exportName = name;
+			exportState = 'done';
+			setTimeout(() => {
+				if (exportState === 'done') exportState = 'idle';
+			}, 6000);
+		} catch (e) {
+			exportName = String(e);
+			exportState = 'error';
+			setTimeout(() => {
+				if (exportState === 'error') exportState = 'idle';
+			}, 6000);
+		}
 	}
 
 	onMount(() => {
@@ -546,9 +731,26 @@
 					<!-- Celý incident do textového souboru. Účel je poslat to
 					     někomu, kdo tomu rozumí — člověku nebo modelu. Proto
 					     tam jde všechno, i to, co je v UI schované. -->
-					<button class="export" onclick={() => downloadReport(selRow)}>
-						<Download size={15} />
-						Stáhnout vše jako text
+					<button
+						class="export"
+						class:done={exportState === 'done'}
+						class:err={exportState === 'error'}
+						disabled={exportState === 'busy'}
+						onclick={() => downloadReport(selRow)}
+					>
+						{#if exportState === 'busy'}
+							<RefreshCw size={15} class="spin" />
+							Sbírám podklady…
+						{:else if exportState === 'done'}
+							<Check size={15} />
+							Uloženo: {exportName}
+						{:else if exportState === 'error'}
+							<TriangleAlert size={15} />
+							Nepovedlo se: {exportName}
+						{:else}
+							<Download size={15} />
+							Stáhnout vše jako text
+						{/if}
 					</button>
 					<p class="foot">
 						Záznam jde odstranit ikonou koše v seznamu — maže se jen tenhle zápis,
@@ -581,6 +783,28 @@
 		font: inherit;
 		font-size: 0.82rem;
 		cursor: pointer;
+	}
+	.export:disabled {
+		opacity: 0.75;
+		cursor: default;
+	}
+	/* Potvrzení, že se soubor opravdu uložil — a jak se jmenuje. */
+	.export.done {
+		color: var(--ok);
+		border-color: color-mix(in srgb, var(--ok) 55%, transparent);
+		background: color-mix(in srgb, var(--ok) 10%, transparent);
+	}
+	.export.err {
+		color: var(--danger);
+		border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+	}
+	:global(.export .spin) {
+		animation: spin 1s linear infinite;
+	}
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 	.export:hover {
 		color: var(--text);
