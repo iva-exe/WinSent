@@ -650,6 +650,9 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         // Stav ochrany na 30 s (v9) — SecurityCenter/Defender WMI je drahé.
         let sec_cache: std::sync::Mutex<Option<(Instant, core_types::proc::ProtectionReport)>> =
             std::sync::Mutex::new(None);
+        // Ovladače na 5 min (v10) — mění se leda novým hardwarem.
+        let drv_cache: std::sync::Mutex<Option<(Instant, core_types::proc::DriversReport)>> =
+            std::sync::Mutex::new(None);
         // Účty na 60 s (v9E) — čtení je levné, ale mění se zřídka.
         let users_cache: std::sync::Mutex<Option<(Instant, core_types::proc::UsersReport)>> =
             std::sync::Mutex::new(None);
@@ -1107,6 +1110,19 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         message: format!("databáze nedostupná: {e}"),
                     },
                 }
+            }
+            // Ovladače (v10): seskupené po zařízeních, s cache na 5 minut.
+            // SetupAPI je rychlé, ale seznam se mezi dvěma pohledy nezmění
+            // — leda by uživatel zrovna zapojil nový hardware.
+            Request::QueryDrivers => {
+                let mut cache = drv_cache.lock().expect("drv cache lock");
+                let fresh = cache
+                    .as_ref()
+                    .is_some_and(|(t, _): &(Instant, _)| t.elapsed() < Duration::from_secs(300));
+                if !fresh {
+                    *cache = Some((Instant::now(), collector_drv::report()));
+                }
+                Response::Drivers(cache.as_ref().map(|(_, r)| r.clone()).unwrap_or_default())
             }
             Request::QueryUsers => {
                 let mut cache = users_cache.lock().expect("users cache lock");

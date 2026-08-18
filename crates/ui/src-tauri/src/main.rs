@@ -195,6 +195,13 @@ fn query_perm_use(app: String, capability: String, days: u32) -> Result<PermUseD
         .map_err(|e| e.to_string())
 }
 
+
+/// Ovladače (v10) — co v počítači běží, od koho a jak staré.
+#[tauri::command(async)]
+fn query_drivers() -> Result<core_types::proc::DriversReport, String> {
+    ipc::client::query_drivers().map_err(|e| e.to_string())
+}
+
 /// Users (v9E) — účty a kdo z nich je správce.
 ///
 /// Přihlášeného uživatele doplňuje UI, ne služba: ta běží jako SYSTEM
@@ -601,6 +608,7 @@ fn main() {
             query_connection,
             query_security,
             query_users,
+            query_drivers,
             query_perm_use,
             build_file_index,
             search_files,

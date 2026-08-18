@@ -567,6 +567,19 @@ pub fn query_connection() -> Result<core_types::proc::ConnectionReport, Error> {
     }
 }
 
+
+/// Ovladače (v10): co běží, od koho a jak staré.
+pub fn query_drivers() -> Result<core_types::proc::DriversReport, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryDrivers)? {
+        Response::Drivers(r) => Ok(r),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Users (v9E): účty na tomhle počítači a kdo z nich je správce.
 pub fn query_users() -> Result<core_types::proc::UsersReport, Error> {
     let mut stream = connect()?;

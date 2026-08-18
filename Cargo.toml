@@ -84,6 +84,7 @@ collector-proc = { path = "crates/collector-proc" }
 collector-etw = { path = "crates/collector-etw" }
 collector-crash = { path = "crates/collector-crash" }
 collector-hw = { path = "crates/collector-hw" }
+collector-drv = { path = "crates/collector-drv" }
 collector-inv = { path = "crates/collector-inv" }
 collector-net = { path = "crates/collector-net" }
 collector-sec = { path = "crates/collector-sec" }

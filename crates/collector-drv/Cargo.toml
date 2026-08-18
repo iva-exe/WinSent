@@ -5,7 +5,12 @@ edition.workspace = true
 publish.workspace = true
 
 # Crate čtecí cesty. Nikdy nesmí nic měnit (SPEC kap. 2 — oddělené cesty).
+#
+# Závislost na collector-hw je schválná: klíč skupiny zařízení i jeho
+# jméno musí být v Hardwaru a Driverech STEJNÉ, jinak by dvě sekce
+# mluvily o témž kusu hardwaru jinak.
 [dependencies]
 core-types = { workspace = true }
 win-sys = { workspace = true }
+collector-hw = { workspace = true }
 thiserror = { workspace = true }

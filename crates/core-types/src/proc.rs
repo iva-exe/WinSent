@@ -565,6 +565,64 @@ pub struct PermUseRow {
     pub stop_ts: Option<i64>,
 }
 
+/// Jeden ovladač tak, jak ho vidí systém (v10, SPEC kap. 6).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriverRow {
+    /// Zařízení, kterému ovladač patří — stejné jméno jako v Hardwaru.
+    pub device: String,
+    /// Klíč skupiny zařízení, sdílený s Hardwarem.
+    pub group_key: String,
+    pub class: String,
+    pub class_desc: String,
+    /// Kdo ovladač napsal.
+    pub provider: String,
+    pub version: String,
+    /// Datum ovladače, jak ho hlásí systém (lokální formát).
+    pub date: String,
+    /// INF soubor, kterým se instaloval.
+    pub inf: String,
+    /// Doinstalovaný zvenčí (`oem*.inf`), ne z Windows.
+    pub third_party: bool,
+    /// 0 = běží v pořádku; jinak kód problému.
+    pub problem_code: u32,
+}
+
+impl DriverRow {
+    /// Datum ve tvaru, který jde řadit.
+    ///
+    /// Systém ho hlásí v místním formátu („6. 12. 2019", „12/6/2019"),
+    /// takže se řadit jako text nedá — „6. 12." by skončilo za „12. 1.".
+    /// Rok je přitom to jediné, co u stáří ovladače kohokoliv zajímá.
+    pub fn date_sortable(&self) -> (u32, u32, u32) {
+        let nums: Vec<u32> = self
+            .date
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        match nums.as_slice() {
+            // Rok je ten díl, který je větší než 31.
+            [a, b, c] => {
+                let (y, rest) = if *a > 31 { (*a, [*b, *c]) } else { (*c, [*a, *b]) };
+                // Pořadí dne a měsíce se z čísel spolehlivě poznat nedá;
+                // pro řazení podle stáří stačí rok a hrubý zbytek.
+                (y, rest[0].max(rest[1]), rest[0].min(rest[1]))
+            }
+            _ => (0, 0, 0),
+        }
+    }
+}
+
+/// Přehled ovladačů (v10).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriversReport {
+    pub drivers: Vec<DriverRow>,
+    /// Kolik jich doinstaloval někdo zvenčí.
+    pub third_party: u32,
+    /// Kolik jich systém hlásí jako problémové.
+    pub with_problem: u32,
+}
+
 /// Jeden účet na tomhle počítači (v9E, SPEC kap. 14).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserRow {

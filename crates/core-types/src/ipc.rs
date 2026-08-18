@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 34;
+pub const PROTOCOL_VERSION: u32 = 35;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -90,6 +90,9 @@ pub enum Request {
     /// Users: účty na tomhle počítači a kdo z nich je správce
     /// (v9E, SPEC kap. 14). Čistě čtecí — účty se odsud nespravují.
     QueryUsers,
+    /// Ovladače: co v počítači běží, od koho a jak staré (v10, SPEC 6).
+    /// Čistě čtecí — instalovat ovladače umí Windows Update, ne my.
+    QueryDrivers,
     /// Historie použití jedné schopnosti aplikací (v9D): sezení
     /// za posledních `days` dní. ConsentStore drží jen to poslední,
     /// tohle je to, co si služba zapsala sama.
@@ -202,6 +205,8 @@ pub enum Response {
     Security(crate::proc::SecurityReport),
     /// Účty a správci (v9E).
     Users(crate::proc::UsersReport),
+    /// Přehled ovladačů (v10).
+    Drivers(crate::proc::DriversReport),
     /// Sezení použití oprávnění + součet sekund za období (v9D).
     PermUse {
         sessions: Vec<crate::proc::PermUseRow>,

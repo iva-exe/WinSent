@@ -41,6 +41,11 @@ pub struct Device {
     /// Bývá výstižnější než popis od ovladače — „USB Receiver" místo
     /// „USB Input Device". Prázdné u zařízení, která nejsou na sběrnici.
     pub bus_desc: String,
+    /// Kdo ovladač napsal (NVIDIA, Realtek, Microsoft).
+    pub driver_provider: String,
+    /// INF soubor, kterým se ovladač nainstaloval (`nvlddmkm.inf`,
+    /// `oem42.inf`). Podle `oem` prefixu se pozná doinstalovaný ovladač.
+    pub driver_inf: String,
     /// Kód problému z CM_Get_DevNode_Status (0 = běží v pořádku).
     /// Přesně to, co Správce zařízení kreslí vykřičníkem.
     pub problem_code: u32,
@@ -73,6 +78,23 @@ const DEVPKEY_DRIVER_DATE: DEVPROPKEY = DEVPROPKEY {
 const DEVPKEY_BUS_REPORTED_DESC: DEVPROPKEY = DEVPROPKEY {
     fmtid: windows::core::GUID::from_u128(0x540b947e_8b40_45bc_a8a2_6a0b894cbda2),
     pid: 4,
+};
+/// DEVPKEY_Device_DriverProvider — tentýž fmtid jako verze, pid 9.
+/// Kdo ovladač napsal (NVIDIA, Realtek, Microsoft).
+const DEVPKEY_DRIVER_PROVIDER: DEVPROPKEY = DEVPROPKEY {
+    fmtid: windows::core::GUID::from_u128(0xa8b865dd_2e3d_4094_ad97_e593a70c75d6),
+    pid: 9,
+};
+/// DEVPKEY_Device_DriverInfPath — pid 5.
+///
+/// Jméno INF souboru, kterým se ovladač nainstaloval. Nese informaci,
+/// která jinde není: soubory pojmenované `oem<číslo>.inf` doinstaloval
+/// někdo zvenčí, všechno ostatní přišlo s Windows. Rozdíl mezi
+/// „tenhle ovladač je od výrobce" a „tenhle je od Microsoftu" se
+/// z verze ani z data poznat nedá.
+const DEVPKEY_DRIVER_INF: DEVPROPKEY = DEVPROPKEY {
+    fmtid: windows::core::GUID::from_u128(0xa8b865dd_2e3d_4094_ad97_e593a70c75d6),
+    pid: 5,
 };
 
 /// Vyjmenuje všechna PŘÍTOMNÁ zařízení. Odpojené se neukazují —
@@ -118,6 +140,8 @@ pub fn devices() -> Vec<Device> {
                 driver_version: dev_prop(set, &info, &DEVPKEY_DRIVER_VERSION),
                 driver_date: dev_prop(set, &info, &DEVPKEY_DRIVER_DATE),
                 bus_desc: dev_prop(set, &info, &DEVPKEY_BUS_REPORTED_DESC),
+                driver_provider: dev_prop(set, &info, &DEVPKEY_DRIVER_PROVIDER),
+                driver_inf: dev_prop(set, &info, &DEVPKEY_DRIVER_INF),
                 problem_code: 0,
             };
             let mut status = Default::default();
