@@ -72,6 +72,27 @@
 		}
 	}
 
+	// Vybraná položka časové osy (ne jen incident — může to být i samotné
+	// hlášení Windows, ke kterému žádný náš incident není).
+	let selRow = $state(null);
+
+	async function selectRow(row) {
+		selRow = row;
+		selected = row.incident;
+		windowPoints = [];
+		// Okno metrik: u našeho incidentu ho známe, u hlášení Windows
+		// se odvodí od času pádu. Když v tu dobu hlídač neběžel, prostě
+		// nic nepřijde a UI to řekne — nedomýšlí se.
+		const base = row.ts;
+		const from = row.incident?.window_from ?? base - 300;
+		const to = row.incident?.window_to ?? base + 30;
+		try {
+			windowPoints = await invoke('query_system_history', { from, to });
+		} catch {
+			windowPoints = [];
+		}
+	}
+
 	// Křivka systému v okně incidentu (CPU %) — z retenční kaskády,
 	// takže funguje i pro starší incidenty (řidší body).
 	async function select(i) {
@@ -86,12 +107,55 @@
 		}
 	}
 
+	// Jeden seznam ze dvou zdrojů.
+	//
+	// Naše incidenty (co hlídač viděl na vlastní oči) a hlášení, která
+	// si uložily Windows, jsou dva pohledy na tutéž věc. Náš pád
+	// aplikace a hlášení Windows o témže pádu je JEDNA událost —
+	// spáruje se podle času a jména, ať uživatel nevidí dva řádky
+	// o jednom pádu. V detailu je pak vidět, ze kterých zdrojů to je.
+	//
+	// Co se nespáruje, zůstane samostatně: Windows zaznamenají pád
+	// i tehdy, když hlídač neběžel, a hlídač vidí záseky, o kterých
+	// Windows nevědí.
+	const PAIR_WINDOW_S = 120;
+
+	let timeline = $derived.by(() => {
+		const used = new Set();
+		const rows = incidents.map((i) => {
+			const d = parseDetail(i);
+			// Jméno, pod kterým bychom pád našli v hlášení Windows.
+			const name = (i.culprit ?? d.name ?? '').toLowerCase();
+			let report = null;
+			if (i.kind === 'app_crash' && name) {
+				for (let k = 0; k < crashes.length; k++) {
+					if (used.has(k)) continue;
+					const c = crashes[k];
+					if (
+						Math.abs(c.ts - i.ts) <= PAIR_WINDOW_S &&
+						(c.app.toLowerCase() === name || name.includes(c.app.toLowerCase()))
+					) {
+						report = c;
+						used.add(k);
+						break;
+					}
+				}
+			}
+			return { key: `i${i.id}`, ts: i.ts, incident: i, report };
+		});
+		crashes.forEach((c, k) => {
+			if (used.has(k)) return;
+			rows.push({ key: `c${k}:${c.ts}`, ts: c.ts, incident: null, report: c });
+		});
+		return rows.sort((a, b) => b.ts - a.ts);
+	});
+
 	// Index bodu nejblíž okamžiku incidentu (marker ve sparkline).
 	let markerIdx = $derived.by(() => {
-		if (!selected || windowPoints.length === 0) return null;
+		if (!selRow || windowPoints.length === 0) return null;
 		let best = 0;
 		for (let k = 1; k < windowPoints.length; k++) {
-			if (Math.abs(windowPoints[k].ts - selected.ts) < Math.abs(windowPoints[best].ts - selected.ts))
+			if (Math.abs(windowPoints[k].ts - selRow.ts) < Math.abs(windowPoints[best].ts - selRow.ts))
 				best = k;
 		}
 		return best;
@@ -103,13 +167,6 @@
 	// když jsme zrovna neběželi, a vědí u něj to podstatné — ve kterém
 	// modulu to spadlo. Bez toho je „aplikace spadla" k ničemu.
 	let crashes = $state([]);
-	let openCrash = $state(new Set());
-	function toggleCrash(k) {
-		const s = new Set(openCrash);
-		if (s.has(k)) s.delete(k);
-		else s.add(k);
-		openCrash = s;
-	}
 
 	async function loadCrashes() {
 		try {
@@ -117,17 +174,6 @@
 		} catch {
 			crashes = [];
 		}
-	}
-
-	function whenCrash(ts) {
-		if (!ts) return '';
-		const d = new Date(ts * 1000);
-		const days = Math.floor((Date.now() - d.getTime()) / 86400e3);
-		const t = d.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
-		if (days <= 0) return `dnes ${t}`;
-		if (days === 1) return `včera ${t}`;
-		if (days < 30) return `před ${days} dny`;
-		return d.toLocaleDateString('cs-CZ');
 	}
 
 	onMount(() => {
@@ -147,7 +193,7 @@
 
 	{#if loadError}
 		<p class="empty">Nelze načíst incidenty: {loadError}</p>
-	{:else if incidents.length === 0}
+	{:else if timeline.length === 0}
 		<div class="empty explain">
 			<p><b>Zatím žádné incidenty — to je dobře.</b></p>
 			<p>
@@ -167,47 +213,77 @@
 	{:else}
 		<div class="cols">
 			<ul class="list">
-				{#each incidents as i (i.id)}
-					{@const k = kindOf(i.kind)}
+				{#each timeline as row (row.key)}
+					{@const i = row.incident}
+					{@const k = i ? kindOf(i.kind) : { label: 'Pád aplikace', icon: Zap, color: 'var(--danger)' }}
 					<li>
-						<button class="row" class:active={selected?.id === i.id} onclick={() => select(i)}>
+						<button class="row" class:active={selRow?.key === row.key} onclick={() => selectRow(row)}>
 							<span class="kind-ico" style:color={k.color}><k.icon size={16} /></span>
 							<span class="row-main">
-								<span class="row-title">{k.label}</span>
-								<span class="row-culprit">{i.culprit ?? '—'}</span>
+								<span class="row-title">
+									{k.label}
+									<!-- Odkud to víme. Řádek bez našeho incidentu je
+									     pád, který zaznamenaly jen Windows — typicky
+									     proto, že hlídač tehdy neběžel. -->
+									{#if !i}
+										<span class="src">jen ze záznamu Windows</span>
+									{:else if row.report}
+										<span class="src both">hlídač + Windows</span>
+									{/if}
+								</span>
+								<span class="row-culprit">
+									{row.report?.app ?? i?.culprit ?? '—'}
+								</span>
 							</span>
-							<span class="row-ts">{fmtTs(i.ts)}</span>
-							<span
-								class="row-del"
-								role="button"
-								tabindex="-1"
-								title="Odstranit záznam (v systému se nic nemění)"
-								onclick={(ev) => remove(i, ev)}
-								onkeydown={() => {}}><Trash2 size={15} /></span
-							>
+							<span class="row-ts">{fmtTs(row.ts)}</span>
+							{#if i}
+								<span
+									class="row-del"
+									role="button"
+									tabindex="-1"
+									title="Odstranit záznam (v systému se nic nemění)"
+									onclick={(ev) => remove(i, ev)}
+									onkeydown={() => {}}><Trash2 size={15} /></span
+								>
+							{/if}
 						</button>
 					</li>
 				{/each}
 			</ul>
 
 			<section class="detail">
-				{#if !selected}
-					<p class="empty">Vyber incident vlevo.</p>
+				{#if !selRow}
+					<p class="empty">Vyber položku vlevo.</p>
 				{:else}
-					{@const k = kindOf(selected.kind)}
-					{@const d = parseDetail(selected)}
+					{@const selected = selRow.incident}
+					{@const rep = selRow.report}
+					{@const k = selected
+						? kindOf(selected.kind)
+						: { label: "Pád aplikace", icon: Zap, color: "var(--danger)" }}
+					{@const d = selected ? parseDetail(selected) : {}}
 					<div class="d-head">
 						<span class="kind-ico big" style:color={k.color}><k.icon size={21} /></span>
 						<div>
 							<h2>{k.label}</h2>
-							<span class="d-ts">{fmtTs(selected.ts)}</span>
+							<span class="d-ts">{fmtTs(selRow.ts)}</span>
 						</div>
 					</div>
 
+					<!-- Co o tom píšou Windows. Nahoře, protože tohle je ta
+					     věta, kvůli které sem člověk přišel. -->
+					{#if rep}
+						<p class="story">{rep.summary}</p>
+						<pre class="story-detail">{rep.detail}</pre>
+						{#if rep.repeats > 1}
+							<p class="story-rep">Totéž se stalo {rep.repeats}× ve stejném místě.</p>
+						{/if}
+					{/if}
+
+					{#if selected}
 					<div class="d-grid">
 						<div class="d-item wide">
 							<span class="d-label">Viník</span>
-							<span class="d-value">{selected.culprit ?? 'nezjištěn'}</span>
+							<span class="d-value">{selected.culprit ?? "nezjištěn"}</span>
 						</div>
 						{#if selected.kind === 'stall'}
 							<div class="d-item">
@@ -267,8 +343,9 @@
 							{/each}
 						</ul>
 					{/if}
+					{/if}
 
-					<h3 class="sec">Co se dělo okolo (okno incidentu)</h3>
+					<h3 class="sec">Co dělal počítač v tu chvíli</h3>
 					{#if windowPoints.length > 1}
 						{@const maxMem = Math.max(...windowPoints.map((p) => p.mem_used_mb), 1)}
 						{@const maxNet = Math.max(
@@ -307,7 +384,12 @@
 							<span>{fmtTs(windowPoints[windowPoints.length - 1].ts)}</span>
 						</div>
 					{:else}
-						<p class="empty small">Pro toto okno už nejsou vzorky v historii.</p>
+						<!-- Poctivě: metriky máme jen po dobu retence a hlášení
+						     Windows bývají starší. Nedomýšlí se nic. -->
+						<p class="empty small">
+							Z té doby už nemáme naměřená data — hlídač tehdy neběžel,
+							nebo jsou vzorky za hranicí retence.
+						</p>
 					{/if}
 					<p class="foot">
 						Záznam jde odstranit ikonou koše v seznamu — maže se jen tenhle zápis,
@@ -317,137 +399,59 @@
 			</section>
 		</div>
 	{/if}
-	<!-- Co o pádech vědí samy Windows.
-	     Je to jiný zdroj než naše incidenty: Windows zaznamenají pád i
-	     tehdy, když jsme neběželi, a hlavně vědí, ve kterém modulu to
-	     spadlo — to je odpověď na „kdo za to může". -->
-	{#if crashes.length}
-		<h2 class="sect">
-			<FileText size={16} /> Co o pádech píšou Windows
-			<span class="sect-n">{crashes.length}</span>
-		</h2>
-		<ul class="crashes">
-			{#each crashes as c, ci (ci + ':' + c.ts + c.app)}
-				{@const open = openCrash.has(ci)}
-				<li class="crash">
-					<button class="crash-head" onclick={() => toggleCrash(ci)}>
-						<span class="crash-ico"><Zap size={15} /></span>
-						<span class="crash-main">
-							<span class="crash-sum">{c.summary}</span>
-							<span class="crash-meta">
-								{whenCrash(c.ts)}
-								{#if c.repeats > 1}
-									<!-- Opakování je silnější informace než jeden pád. -->
-									<b class="rep">· {c.repeats}× ve stejném místě</b>
-								{/if}
-							</span>
-						</span>
-						<ChevronRight class="crash-caret" size={14} strokeWidth={2.25} />
-					</button>
-					{#if open}
-						<pre class="crash-detail">{c.detail}</pre>
-					{/if}
-				</li>
-			{/each}
-		</ul>
-		<p class="note">
-			Tohle Winsent nevymýšlí — čte hlášení, které si Windows uložily samy. Modul, ve kterém
-			pád nastal, říká, kde se to stalo, ne proč. Když je to systémová knihovna, obvykle to
-			neznamená chybu Windows: ta knihovna jen dělá, o co ji program požádal.
-		</p>
-	{/if}
+	<p class="page-note">
+		Seznam spojuje dva zdroje: co viděl hlídač na vlastní oči a co si o pádu uložily samy
+		Windows. Pád, který zachytily oba, je jeden řádek — u ostatních je napsáno, odkud
+		informace je. Modul, ve kterém pád nastal, říká, KDE se to stalo, ne proč; když je to
+		systémová knihovna, obvykle to neznamená chybu Windows.
+	</p>
 </div>
 
 <style>
-	/* Hlášení od Windows — čte se to jako věty, ne jako tabulka. */
-	.sect {
-		display: flex;
-		align-items: center;
-		gap: 9px;
-		margin: 22px 0 9px;
+	/* Odkud informace je — drobné, ať nepřebije název incidentu. */
+	.src {
 		font-family: var(--font-mono);
-		font-size: 0.8rem;
-		font-weight: 500;
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-dim);
-	}
-	.sect::after {
-		content: '';
-		flex: 1;
-		height: 1px;
-		background: var(--border);
-	}
-	.sect-n {
-		font-weight: 400;
-		font-size: 0.72rem;
+		font-size: 0.62rem;
+		letter-spacing: 0.02em;
+		padding: 1px 6px;
+		border-radius: 999px;
+		border: 1px solid var(--border);
 		color: var(--text-faint);
-		font-variant-numeric: tabular-nums;
+		vertical-align: middle;
 	}
-	.crashes {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
+	.src.both {
+		border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+		color: var(--ok);
 	}
-	.crash {
+	/* Věta, kvůli které sem člověk přišel — nahoře a čitelně. */
+	.story {
+		margin: 14px 0 0;
+		font-size: 0.98rem;
+		line-height: 1.5;
+	}
+	.story-detail {
+		margin: 8px 0 0;
+		padding: 10px 12px;
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
 		background: var(--surface);
-		overflow: hidden;
-	}
-	.crash-head {
-		display: flex;
-		align-items: flex-start;
-		gap: 10px;
-		width: 100%;
-		padding: 10px 12px;
-		background: none;
-		border: none;
-		color: inherit;
-		font: inherit;
-		text-align: left;
-		cursor: pointer;
-	}
-	.crash-head:hover {
-		background: var(--surface-hover);
-	}
-	.crash-ico {
-		color: var(--warn);
-		display: flex;
-		padding-top: 2px;
-	}
-	.crash-main {
-		flex: 1;
-		min-width: 0;
-	}
-	.crash-sum {
-		display: block;
-		font-size: 0.92rem;
-		line-height: 1.4;
-	}
-	.crash-meta {
-		display: block;
-		margin-top: 3px;
-		font-size: 0.74rem;
-		color: var(--text-faint);
-	}
-	.rep {
-		color: var(--warn);
-		font-weight: 500;
-	}
-	.crash-detail {
-		margin: 0;
-		padding: 10px 12px 12px 37px;
-		border-top: 1px dashed var(--border);
 		font-family: var(--font-mono);
 		font-size: 0.72rem;
 		line-height: 1.6;
 		color: var(--text-dim);
 		white-space: pre-wrap;
 		word-break: break-word;
+	}
+	.story-rep {
+		margin: 8px 0 0;
+		font-size: 0.8rem;
+		color: var(--warn);
+	}
+	.page-note {
+		margin: 14px 0 0;
+		font-size: 0.78rem;
+		line-height: 1.55;
+		color: var(--text-faint);
 	}
 	.note {
 		margin: 12px 0 0;
