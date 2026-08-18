@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 36;
+pub const PROTOCOL_VERSION: u32 = 37;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -96,6 +96,9 @@ pub enum Request {
     /// Jak je na tom sběr. Odpovídá na otázku, kterou jinak nejde
     /// položit na dálku: služba běží, ale tabulka je prázdná — proč?
     QueryCollectorHealth,
+    /// Hlášení o pádech, která má uložená Windows (SPEC kap. 16),
+    /// přeložená do lidské řeči. Čistě čtecí.
+    QueryCrashReports { limit: u32 },
     /// Historie použití jedné schopnosti aplikací (v9D): sezení
     /// za posledních `days` dní. ConsentStore drží jen to poslední,
     /// tohle je to, co si služba zapsala sama.
@@ -212,6 +215,8 @@ pub enum Response {
     Drivers(crate::proc::DriversReport),
     /// Stav sběru (diagnostika prázdné tabulky).
     CollectorHealth(crate::proc::CollectorHealth),
+    /// Přeložená hlášení o pádech.
+    CrashReports(Vec<crate::proc::CrashReportRow>),
     /// Sezení použití oprávnění + součet sekund za období (v9D).
     PermUse {
         sessions: Vec<crate::proc::PermUseRow>,

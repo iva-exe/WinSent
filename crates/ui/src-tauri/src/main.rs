@@ -197,6 +197,13 @@ fn query_perm_use(app: String, capability: String, days: u32) -> Result<PermUseD
 
 
 
+
+/// Hlášení o pádech z Windows, přeložená do lidské řeči.
+#[tauri::command(async)]
+fn query_crash_reports(limit: u32) -> Result<Vec<core_types::proc::CrashReportRow>, String> {
+    ipc::client::query_crash_reports(limit).map_err(|e| e.to_string())
+}
+
 /// Stav sběru — proč je tabulka prázdná.
 #[tauri::command(async)]
 fn query_collector_health() -> Result<core_types::proc::CollectorHealth, String> {
@@ -617,6 +624,7 @@ fn main() {
             query_users,
             query_drivers,
             query_collector_health,
+            query_crash_reports,
             query_perm_use,
             build_file_index,
             search_files,

@@ -16,6 +16,8 @@ use core_types::config::Config;
 pub enum Error {}
 
 /// Stav kolektoru (v3: bez průběžného stavu — sken je jednorázový).
+pub mod report;
+
 pub struct State;
 
 /// Inicializace kolektoru při startu služby.

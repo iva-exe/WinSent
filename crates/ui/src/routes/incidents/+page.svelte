@@ -3,7 +3,16 @@
 	// jedním modelem. Seznam + detail s křivkou okna T-5min..T+30s.
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
-	import { TriangleAlert, Zap, MonitorX, Timer, RefreshCw, Trash2 } from 'lucide-svelte';
+	import {
+		TriangleAlert,
+		Zap,
+		MonitorX,
+		Timer,
+		RefreshCw,
+		Trash2,
+		FileText,
+		ChevronRight
+	} from 'lucide-svelte';
 	import Sparkline from '$lib/Sparkline.svelte';
 
 	let incidents = $state([]);
@@ -88,8 +97,42 @@
 		return best;
 	});
 
+	// Hlášení o pádech, která mají uložená Windows.
+	//
+	// Nezávislé na našich incidentech: Windows zaznamenávají pád i tehdy,
+	// když jsme zrovna neběželi, a vědí u něj to podstatné — ve kterém
+	// modulu to spadlo. Bez toho je „aplikace spadla" k ničemu.
+	let crashes = $state([]);
+	let openCrash = $state(new Set());
+	function toggleCrash(k) {
+		const s = new Set(openCrash);
+		if (s.has(k)) s.delete(k);
+		else s.add(k);
+		openCrash = s;
+	}
+
+	async function loadCrashes() {
+		try {
+			crashes = await invoke('query_crash_reports', { limit: 40 });
+		} catch {
+			crashes = [];
+		}
+	}
+
+	function whenCrash(ts) {
+		if (!ts) return '';
+		const d = new Date(ts * 1000);
+		const days = Math.floor((Date.now() - d.getTime()) / 86400e3);
+		const t = d.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
+		if (days <= 0) return `dnes ${t}`;
+		if (days === 1) return `včera ${t}`;
+		if (days < 30) return `před ${days} dny`;
+		return d.toLocaleDateString('cs-CZ');
+	}
+
 	onMount(() => {
 		load();
+		loadCrashes();
 		const t = setInterval(load, 15000);
 		return () => clearInterval(t);
 	});
@@ -120,6 +163,7 @@
 				a bugcheck se přeloží do lidské řeči.
 			</p>
 		</div>
+
 	{:else}
 		<div class="cols">
 			<ul class="list">
@@ -273,9 +317,144 @@
 			</section>
 		</div>
 	{/if}
+	<!-- Co o pádech vědí samy Windows.
+	     Je to jiný zdroj než naše incidenty: Windows zaznamenají pád i
+	     tehdy, když jsme neběželi, a hlavně vědí, ve kterém modulu to
+	     spadlo — to je odpověď na „kdo za to může". -->
+	{#if crashes.length}
+		<h2 class="sect">
+			<FileText size={16} /> Co o pádech píšou Windows
+			<span class="sect-n">{crashes.length}</span>
+		</h2>
+		<ul class="crashes">
+			{#each crashes as c, ci (ci + ':' + c.ts + c.app)}
+				{@const open = openCrash.has(ci)}
+				<li class="crash">
+					<button class="crash-head" onclick={() => toggleCrash(ci)}>
+						<span class="crash-ico"><Zap size={15} /></span>
+						<span class="crash-main">
+							<span class="crash-sum">{c.summary}</span>
+							<span class="crash-meta">
+								{whenCrash(c.ts)}
+								{#if c.repeats > 1}
+									<!-- Opakování je silnější informace než jeden pád. -->
+									<b class="rep">· {c.repeats}× ve stejném místě</b>
+								{/if}
+							</span>
+						</span>
+						<ChevronRight class="crash-caret" size={14} strokeWidth={2.25} />
+					</button>
+					{#if open}
+						<pre class="crash-detail">{c.detail}</pre>
+					{/if}
+				</li>
+			{/each}
+		</ul>
+		<p class="note">
+			Tohle Winsent nevymýšlí — čte hlášení, které si Windows uložily samy. Modul, ve kterém
+			pád nastal, říká, kde se to stalo, ne proč. Když je to systémová knihovna, obvykle to
+			neznamená chybu Windows: ta knihovna jen dělá, o co ji program požádal.
+		</p>
+	{/if}
 </div>
 
 <style>
+	/* Hlášení od Windows — čte se to jako věty, ne jako tabulka. */
+	.sect {
+		display: flex;
+		align-items: center;
+		gap: 9px;
+		margin: 22px 0 9px;
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-dim);
+	}
+	.sect::after {
+		content: '';
+		flex: 1;
+		height: 1px;
+		background: var(--border);
+	}
+	.sect-n {
+		font-weight: 400;
+		font-size: 0.72rem;
+		color: var(--text-faint);
+		font-variant-numeric: tabular-nums;
+	}
+	.crashes {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.crash {
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--surface);
+		overflow: hidden;
+	}
+	.crash-head {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		width: 100%;
+		padding: 10px 12px;
+		background: none;
+		border: none;
+		color: inherit;
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+	.crash-head:hover {
+		background: var(--surface-hover);
+	}
+	.crash-ico {
+		color: var(--warn);
+		display: flex;
+		padding-top: 2px;
+	}
+	.crash-main {
+		flex: 1;
+		min-width: 0;
+	}
+	.crash-sum {
+		display: block;
+		font-size: 0.92rem;
+		line-height: 1.4;
+	}
+	.crash-meta {
+		display: block;
+		margin-top: 3px;
+		font-size: 0.74rem;
+		color: var(--text-faint);
+	}
+	.rep {
+		color: var(--warn);
+		font-weight: 500;
+	}
+	.crash-detail {
+		margin: 0;
+		padding: 10px 12px 12px 37px;
+		border-top: 1px dashed var(--border);
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		line-height: 1.6;
+		color: var(--text-dim);
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+	.note {
+		margin: 12px 0 0;
+		font-size: 0.78rem;
+		line-height: 1.55;
+		color: var(--text-faint);
+	}
 	.page {
 		display: flex;
 		flex-direction: column;

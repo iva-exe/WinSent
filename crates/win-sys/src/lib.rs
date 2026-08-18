@@ -12,6 +12,7 @@ pub mod cpuinfo;
 pub mod devices;
 pub mod disk;
 pub mod etw;
+pub mod evtlog;
 pub mod gpu;
 pub mod gpubasic;
 pub mod gpuproc;

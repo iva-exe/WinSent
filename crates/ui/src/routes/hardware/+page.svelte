@@ -17,11 +17,11 @@
 	import { onMount, tick as nextTick } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
 	import { describeProblem } from '$lib/devproblem.js';
+	import { CATEGORIES, categoryOf, hasVidPid } from '$lib/devcategory.js';
 	import {
 		AudioLines,
 		BatteryCharging,
 		Bluetooth,
-		Boxes,
 		Cable,
 		ChevronRight,
 		CircuitBoard,
@@ -132,65 +132,10 @@
 		return s.length > 44 ? s.slice(0, 44) + '…' : s;
 	}
 
-	// ── Kategorie: hrubé dělení podle toho, co zařízení znamená pro
-	// uživatele — ne podle tříd Windows. Nikoho nezajímá, že klávesnice
-	// je „HIDClass".
-	const CATEGORIES = [
-		{ name: 'Komponenty', icon: Cpu },
-		{ name: 'Obrazovky', icon: Monitor },
-		{ name: 'Periferie', icon: Keyboard },
-		{ name: 'Zvuk', icon: AudioLines },
-		{ name: 'Síť', icon: Network },
-		{ name: 'Řadiče a porty', icon: Usb },
-		{ name: 'Tisk', icon: Printer },
-		{ name: 'Systémová zařízení', icon: Cog },
-		{ name: 'Ostatní', icon: Boxes }
-	];
-
-	const CLASS_CATEGORY = {
-		Monitor: 'Obrazovky',
-		Keyboard: 'Periferie',
-		Mouse: 'Periferie',
-		HIDClass: 'Periferie',
-		WPD: 'Periferie',
-		Image: 'Periferie',
-		Camera: 'Periferie',
-		Bluetooth: 'Periferie',
-		Biometric: 'Periferie',
-		MEDIA: 'Zvuk',
-		AudioEndpoint: 'Zvuk',
-		AudioProcessingObject: 'Zvuk',
-		Net: 'Síť',
-		USB: 'Řadiče a porty',
-		HDC: 'Řadiče a porty',
-		SCSIAdapter: 'Řadiče a porty',
-		Ports: 'Řadiče a porty',
-		Volume: 'Řadiče a porty',
-		FloppyDisk: 'Řadiče a porty',
-		PrintQueue: 'Tisk',
-		Printer: 'Tisk',
-		PrinterPort: 'Tisk',
-		System: 'Systémová zařízení',
-		Computer: 'Systémová zařízení',
-		Firmware: 'Systémová zařízení',
-		SoftwareDevice: 'Systémová zařízení',
-		SecurityDevices: 'Systémová zařízení'
-	};
-
-	function categoryOf(dev) {
-		const known = CLASS_CATEGORY[dev.class];
-		if (known) return known;
-		// Výrobci si zakládají vlastní třídy („Focusrite Audio",
-		// „Razer Device"), takže seznam tříd nestačí.
-		const cls = (dev.class + ' ' + dev.class_desc).toLowerCase();
-		if (cls.includes('audio') || cls.includes('zvuk')) return 'Zvuk';
-		if (cls.includes('net') || cls.includes('síť')) return 'Síť';
-		// Vlastní sběrnice (RAZER\, RZCONTROL\…) mají pořád VID/PID —
-		// je to zařízení pořízené přes USB, tedy periferie.
-		const bus = (dev.hardware_id || '').toUpperCase();
-		if (bus.includes('VID_') && bus.includes('PID_')) return 'Periferie';
-		return 'Ostatní';
-	}
+	// Kategorie jsou sdílené s Ovladači ($lib/devcategory.js) — ovladač
+	// nese tytéž třídy jako zařízení, kterému patří, takže „Periferie"
+	// znamená na obou obrazovkách totéž. Dvě kopie téhle tabulky by se
+	// při první přidané třídě rozešly.
 
 	const CLASS_ICON = {
 		Processor: Cpu,
@@ -223,7 +168,7 @@
 
 	function iconOf(dev) {
 		if (CLASS_ICON[dev.class]) return CLASS_ICON[dev.class];
-		const cat = categoryOf(dev);
+		const cat = categoryOf(dev, hasVidPid(dev.hardware_id));
 		if (cat === 'Zvuk') return AudioLines;
 		if (cat === 'Síť') return Network;
 		if (cat === 'Periferie') return Gamepad2;
@@ -316,7 +261,7 @@
 					driver_version: d.driver_version,
 					driver_date: d.driver_date,
 					problem_code: 0,
-					category: categoryOf(d),
+					category: categoryOf(d, hasVidPid(d.hardware_id)),
 					icon: d,
 					members: []
 				};
@@ -337,7 +282,7 @@
 			// Skupina sedí v té nejvýstižnější kategorii svých členů:
 			// bezdrátový přijímač klávesnice je periferie, ne řadič,
 			// i když jedno jeho rozhraní je třídy USB.
-			const cat = categoryOf(d);
+			const cat = categoryOf(d, hasVidPid(d.hardware_id));
 			if ((rank.get(cat) ?? 99) < (rank.get(g.category) ?? 99)) g.category = cat;
 		}
 

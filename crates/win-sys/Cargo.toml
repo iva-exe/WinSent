@@ -42,6 +42,8 @@ features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Performance",
     "Win32_System_Diagnostics_Etw",
+    # Protokol událostí (v3+): hlášení o pádech, která Windows už mají.
+    "Win32_System_EventLog",
     "Win32_System_Time",
     "Win32_Graphics_Imaging",
     "Win32_System_Com",

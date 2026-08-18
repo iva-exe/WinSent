@@ -9,6 +9,7 @@
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
 	import { Search, Package, PackageCheck, TriangleAlert, Calendar } from 'lucide-svelte';
+	import { byCategory } from '$lib/devcategory.js';
 
 	let report = $state(null);
 	let loadError = $state('');
@@ -71,6 +72,14 @@
 		});
 	});
 
+	// Rozdělení do kategorií — stejné jako v Hardwaru, ze sdíleného
+	// modulu. Ovladač nese tytéž třídy jako zařízení, kterému patří,
+	// takže „Periferie" znamená na obou obrazovkách totéž.
+	// Signál „je to USB periferie" nesou ovladače v prefixu klíče
+	// skupiny: prefix "dev:" vzniká v collector-hw právě z VID+PID,
+	// ostatní prefixy jsou "chip:" a "id:".
+	let sections = $derived(byCategory(shown, (d) => (d.group_key ?? '').startsWith('dev:')));
+
 	let counts = $derived({
 		all: report?.drivers?.length ?? 0,
 		oem: report?.third_party ?? 0,
@@ -106,12 +115,31 @@
 		<p class="empty">Nelze načíst ovladače: {loadError}</p>
 	{:else if report}
 		<div class="body">
+			<!-- Čipy kategorií: v seznamu o dvou stovkách ovladačů je
+			     skákání po sekcích rychlejší než rolování. -->
+			{#if sections.length > 1}
+				<nav class="chips">
+					{#each sections as s (s.key)}
+						<a class="chip" href="#drv-{s.key}">
+							<s.icon size={13} />
+							{s.name}
+							<i>{s.items.length}</i>
+						</a>
+					{/each}
+				</nav>
+			{/if}
 			{#if !shown.length}
 				<p class="empty">
 					{filter.trim() ? 'Nic neodpovídá hledání.' : 'V tomhle zobrazení nic není.'}
 				</p>
 			{/if}
-			{#each shown as d, i (i + ':' + d.group_key)}
+			{#each sections as s (s.key)}
+				<h2 class="sect" id="drv-{s.key}">
+					<s.icon size={16} />
+					{s.name}
+					<span class="sect-n">{s.items.length}</span>
+				</h2>
+				{#each s.items as d, i (i + ':' + d.group_key)}
 				{@const year = yearOf(d)}
 				<article class="item" class:bad={d.problem_code}>
 					<div class="ico">
@@ -152,6 +180,7 @@
 						{/if}
 					</div>
 				</article>
+				{/each}
 			{/each}
 
 			<p class="note">
@@ -168,6 +197,63 @@
 </div>
 
 <style>
+	/* Sekce kategorií — stejný jazyk jako Hardware a Security. */
+	.sect {
+		display: flex;
+		align-items: center;
+		gap: 9px;
+		margin: 20px 0 9px;
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-dim);
+		scroll-margin-top: 8px;
+	}
+	.sect:first-of-type {
+		margin-top: 0;
+	}
+	.sect::after {
+		content: '';
+		flex: 1;
+		height: 1px;
+		background: var(--border);
+	}
+	.sect-n {
+		font-weight: 400;
+		font-size: 0.72rem;
+		color: var(--text-faint);
+		font-variant-numeric: tabular-nums;
+	}
+	.chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin-bottom: 14px;
+	}
+	.chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		padding: 4px 10px;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		background: var(--surface);
+		color: var(--text-dim);
+		font-size: 0.74rem;
+		text-decoration: none;
+	}
+	.chip:hover {
+		color: var(--text);
+		border-color: var(--text-dim);
+	}
+	.chip i {
+		font-style: normal;
+		font-family: var(--font-mono);
+		font-size: 0.64rem;
+		color: var(--text-faint);
+	}
 	.page {
 		display: flex;
 		flex-direction: column;

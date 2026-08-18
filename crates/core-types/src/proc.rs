@@ -565,6 +565,24 @@ pub struct PermUseRow {
     pub stop_ts: Option<i64>,
 }
 
+/// Hlášení o pádu, které mají Windows uložené — přeložené do řeči,
+/// které rozumí člověk (SPEC kap. 16).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrashReportRow {
+    pub ts: i64,
+    /// Co spadlo.
+    pub app: String,
+    /// Modul, ve kterém to spadlo — viník. Může být táž aplikace.
+    pub module: String,
+    /// Jedna věta: co se stalo.
+    pub summary: String,
+    /// Kdo je viník a podrobnosti, na rozklik.
+    pub detail: String,
+    /// Kolikrát se totéž (aplikace + modul) stalo za posledních 30 dní.
+    /// Opakování je silnější informace než jeden pád.
+    pub repeats: u32,
+}
+
 /// Jak je na tom sběr vzorků (diagnostika).
 ///
 /// Vzniklo z konkrétního problému: u testera svítilo „služba běží",

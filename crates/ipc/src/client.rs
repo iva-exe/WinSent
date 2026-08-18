@@ -569,6 +569,19 @@ pub fn query_connection() -> Result<core_types::proc::ConnectionReport, Error> {
 
 
 
+
+/// Hlášení o pádech z protokolu Windows, přeložená do lidské řeči.
+pub fn query_crash_reports(limit: u32) -> Result<Vec<core_types::proc::CrashReportRow>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryCrashReports { limit })? {
+        Response::CrashReports(r) => Ok(r),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Stav sběru — diagnostika prázdné tabulky.
 pub fn query_collector_health() -> Result<core_types::proc::CollectorHealth, Error> {
     let mut stream = connect()?;

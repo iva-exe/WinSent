@@ -6,6 +6,7 @@ publish.workspace = true
 
 # Crate čtecí cesty. Nikdy nesmí nic měnit (SPEC kap. 2 — oddělené cesty).
 [dependencies]
+tracing = { workspace = true }
 core-types = { workspace = true }
 win-sys = { workspace = true }
 thiserror = { workspace = true }

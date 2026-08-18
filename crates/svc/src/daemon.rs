@@ -1138,6 +1138,62 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             // SetupAPI je rychlé, ale seznam se mezi dvěma pohledy nezmění
             // — leda by uživatel zrovna zapojil nový hardware.
             // Stav sběru — odpověď na „služba běží, ale nic tu není".
+            // Pády, které mají uložené Windows (SPEC kap. 16).
+            //
+            // Čte se z protokolu událostí na dotaz, ne v cyklu — je to
+            // historie, ne živá metrika. Soupis ovladačů se přidává
+            // proto, aby šlo místo „nvwgf2umx.dll" říct, ke kterému
+            // ovladači ten modul patří a jak je starý.
+            Request::QueryCrashReports { limit } => {
+                let drivers: Vec<(String, String)> = collector_drv::report()
+                    .drivers
+                    .into_iter()
+                    .map(|d| {
+                        let popis = format!(
+                            "{} od {}{}",
+                            d.device,
+                            if d.provider.is_empty() { "neznámého výrobce" } else { &d.provider },
+                            if d.version.is_empty() {
+                                String::new()
+                            } else {
+                                format!(", verze {}", d.version)
+                            }
+                        );
+                        (d.inf.clone(), popis)
+                    })
+                    .collect();
+
+                let crashes = collector_crash::report::app_crashes(limit.min(200) as usize);
+                // Opakování se počítá napříč celým načteným seznamem —
+                // „stalo se to pošesté" je silnější informace než jeden pád.
+                let mut counts: std::collections::HashMap<(String, String), u32> =
+                    std::collections::HashMap::new();
+                for c in &crashes {
+                    *counts
+                        .entry((c.app.clone(), c.module.clone()))
+                        .or_default() += 1;
+                }
+                Response::CrashReports(
+                    crashes
+                        .iter()
+                        .map(|c| {
+                            let (summary, detail) =
+                                collector_crash::report::describe(c, &drivers);
+                            core_types::proc::CrashReportRow {
+                                ts: c.ts,
+                                app: c.app.clone(),
+                                module: c.module.clone(),
+                                repeats: counts
+                                    .get(&(c.app.clone(), c.module.clone()))
+                                    .copied()
+                                    .unwrap_or(1),
+                                summary,
+                                detail,
+                            }
+                        })
+                        .collect(),
+                )
+            }
             Request::QueryCollectorHealth => {
                 let slot = live.read().expect("live lock poisoned");
                 Response::CollectorHealth(core_types::proc::CollectorHealth {
