@@ -257,6 +257,43 @@
 </div>
 
 <style>
+	/* Segmentový přepínač — stejný jazyk jako Programs a On start.
+	   Bez tohohle to byla holá tlačítka prohlížeče. */
+	.seg {
+		display: flex;
+		gap: 2px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		padding: 2px;
+		background: var(--surface);
+	}
+	.seg button {
+		background: none;
+		border: none;
+		color: var(--text-dim);
+		font: inherit;
+		font-size: 0.76rem;
+		padding: 4px 10px;
+		border-radius: 3px;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.seg button i {
+		font-style: normal;
+		font-family: var(--font-mono);
+		font-size: 0.64rem;
+		color: var(--text-faint);
+	}
+	.seg button.active {
+		background: var(--surface-hover);
+		color: var(--text);
+		box-shadow: inset 0 0 0 1px var(--border-strong);
+	}
+	.seg button:hover:not(.active) {
+		color: var(--text);
+	}
 	.page {
 		display: flex;
 		flex-direction: column;

@@ -152,6 +152,30 @@
 		return rows;
 	});
 
+	// Vysvětlivky k dlaždicím: co to je a proč na tom záleží.
+	//
+	// Bez nich je „TPM: zapnutý" údaj, kterému laik nerozumí — a přesně
+	// takový člověk je cílem téhle sekce. Klíčem je název dlaždice;
+	// antivirus se jmenuje podle výrobce, ten se dohledá zvlášť.
+	const explain = {
+		Firewall:
+			'Hlídá, co se z internetu smí dostat do počítače. Zapnutý má být na všech třech profilech.',
+		'Secure Boot':
+			'Při startu pouští jen podepsaný systém. Brání tomu, aby se něco zavrtalo pod Windows.',
+		TPM: 'Čip, ve kterém jsou uložené klíče k šifrování disku. Bez něj BitLocker chce heslo při každém startu.',
+		'Řízení uživatelských účtů (UAC)':
+			'Ptá se, než program změní systém. Vypnuté UAC znamená, že se ptát nikdo nebude.',
+		'Šifrování disku (BitLocker)':
+			'Bez šifrování si obsah disku přečte kdokoliv, kdo ho vyndá z počítače. Na stolním počítači doma to spousta lidí vědomě nemá.',
+		Antivirus: 'Žádný antivirus systém nehlásí — Windows Defender bývá vypnutý, když je nainstalovaný jiný.'
+	};
+
+	// Vysvětlivka k antiviru je společná bez ohledu na jeho jméno.
+	function explainFor(name) {
+		if (explain[name]) return explain[name];
+		return 'Sleduje soubory a procesy a zasahuje, když najde něco škodlivého. Důležité je hlavně to, že běží a má aktuální definice.';
+	}
+
 	// ── Oprávnění seskupená podle schopnosti ──
 	const CAPS = {
 		webcam: { label: 'Kamera', icon: Camera },
@@ -304,21 +328,30 @@
 		<div class="body">
 			<!-- ── 1. Jsem chráněný? ── -->
 			<h2 class="sect"><ShieldCheck size={16} /> Stav ochrany</h2>
-			{#each protectionRows as r (r.name)}
-				<article class="item">
-					<div class="ico"><r.icon size={19} /></div>
-					<div class="info">
-						<h3>{r.name}</h3>
-						{#if r.detail}<p class="vendor">{r.detail}</p>{/if}
-					</div>
-					<div class="side">
-						<span class="pill {r.tone === 'ok' ? 'quiet' : r.tone}">
-							{#if r.tone === 'warn'}<TriangleAlert size={14} />{/if}
+			<!-- Dlaždice, ne řádky: tohle je pár údajů, u kterých má být
+			     stav vidět na první pohled a hned u něj vysvětlení, co to
+			     pro uživatele znamená. Seznam řádků je až pro oprávnění,
+			     kterých jsou desítky. -->
+			<div class="tiles">
+				{#each protectionRows as r, ri (ri + ':' + r.name)}
+					<article class="tile {r.tone}">
+						<div class="t-top">
+							<span class="t-ico"><r.icon size={18} /></span>
+							<span class="t-name">{r.name}</span>
+						</div>
+						<span class="t-state">
+							{#if r.tone === 'warn'}<TriangleAlert size={15} />{/if}
 							{r.state}
 						</span>
-					</div>
-				</article>
-			{/each}
+						{#if r.detail}<p class="t-detail">{r.detail}</p>{/if}
+						{#if explainFor(r.name)}
+							<!-- Vysvětlivka: co to je a proč na tom záleží. Bez ní
+							     je „TPM: zapnutý" údaj, kterému laik nerozumí. -->
+							<p class="t-explain">{explainFor(r.name)}</p>
+						{/if}
+					</article>
+				{/each}
+			</div>
 
 			<!-- ── 2. Oprávnění aplikací ── -->
 			{#each permGroups as g (g.cap)}
@@ -432,6 +465,75 @@
 </div>
 
 <style>
+	/* Dlaždice stavu ochrany. Šířka se přizpůsobí oknu; obsah je
+	   pokaždé stejně stavěný, aby se očima dalo skákat po stavech. */
+	.tiles {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+		gap: 8px;
+		margin-bottom: 4px;
+	}
+	.tile {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 12px 14px 13px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	/* Barva jen tam, kde něco znamená. Zelený proužek nikdy u věci,
+	   která je jen „fakt" — nešifrovaný disk není poplach ani úspěch. */
+	.tile.ok {
+		border-left: 3px solid var(--ok);
+	}
+	.tile.warn {
+		border-left: 3px solid var(--warn);
+	}
+	.tile.dim {
+		border-left: 3px solid var(--border-strong);
+	}
+	.t-top {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		color: var(--text-dim);
+	}
+	.t-name {
+		font-size: 0.78rem;
+		font-family: var(--font-mono);
+		letter-spacing: 0.03em;
+		text-transform: uppercase;
+	}
+	.t-ico {
+		display: flex;
+	}
+	.t-state {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 1.06rem;
+		font-weight: 600;
+		line-height: 1.25;
+	}
+	.tile.warn .t-state {
+		color: var(--warn);
+	}
+	.tile.ok .t-state {
+		color: var(--ok);
+	}
+	.t-detail {
+		margin: 0;
+		font-size: 0.76rem;
+		color: var(--text-dim);
+		line-height: 1.45;
+	}
+	.t-explain {
+		margin: 2px 0 0;
+		font-size: 0.73rem;
+		color: var(--text-faint);
+		line-height: 1.5;
+	}
 	.page {
 		display: flex;
 		flex-direction: column;

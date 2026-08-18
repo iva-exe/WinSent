@@ -11,6 +11,8 @@
 		RefreshCw,
 		Trash2,
 		FileText,
+		EyeOff,
+		Download,
 		ChevronRight
 	} from 'lucide-svelte';
 	import Sparkline from '$lib/Sparkline.svelte';
@@ -23,7 +25,9 @@
 	// Druh incidentu → vizuál.
 	const kinds = {
 		stall: { label: 'Zásek systému', icon: Timer, color: 'var(--warn)' },
-		app_crash: { label: 'Pád aplikace', icon: Zap, color: 'var(--danger)' },
+		// Pád aplikace je nepříjemnost, BSOD je porucha celého stroje —
+		// barvy to musí odlišit, jinak vypadá všechno stejně vážně.
+		app_crash: { label: 'Pád aplikace', icon: Zap, color: 'var(--warn)' },
 		bsod: { label: 'BSOD / tvrdý pád', icon: MonitorX, color: 'var(--danger)' }
 	};
 	const kindOf = (k) => kinds[k] ?? { label: k, icon: TriangleAlert, color: 'var(--warn)' };
@@ -147,7 +151,7 @@
 			if (used.has(k)) return;
 			rows.push({ key: `c${k}:${c.ts}`, ts: c.ts, incident: null, report: c });
 		});
-		return rows.sort((a, b) => b.ts - a.ts);
+		return rows.filter((r) => !hidden.has(r.key)).sort((a, b) => b.ts - a.ts);
 	});
 
 	// Index bodu nejblíž okamžiku incidentu (marker ve sparkline).
@@ -160,6 +164,38 @@
 		}
 		return best;
 	});
+
+	// Skrytí řádku, který pochází JEN z protokolu Windows.
+	//
+	// Smazat se nedá — je to jejich záznam, ne náš, a sahat do protokolu
+	// událostí by bylo přesně to, co tenhle nástroj nedělá. Schová se
+	// tedy jen z našeho seznamu a pamatuje se to mezi spuštěními.
+	const HIDDEN_KEY = 'winsent.hiddenCrashes';
+	let hidden = $state(new Set());
+
+	function loadHidden() {
+		try {
+			hidden = new Set(JSON.parse(localStorage.getItem(HIDDEN_KEY) ?? '[]'));
+		} catch {
+			hidden = new Set();
+		}
+	}
+
+	function hideReport(row, ev) {
+		ev?.stopPropagation();
+		const s = new Set(hidden);
+		s.add(row.key);
+		hidden = s;
+		try {
+			localStorage.setItem(HIDDEN_KEY, JSON.stringify([...s]));
+		} catch {
+			/* bez úložiště to platí aspoň do zavření okna */
+		}
+		if (selRow?.key === row.key) {
+			selRow = null;
+			selected = null;
+		}
+	}
 
 	// Hlášení o pádech, která mají uložená Windows.
 	//
@@ -176,7 +212,116 @@
 		}
 	}
 
+	// Export incidentu do textového souboru.
+	//
+	// Účel je konkrétní: poslat to někomu, kdo tomu rozumí — člověku
+	// nebo modelu. Proto se do souboru dává VŠECHNO, co k incidentu
+	// máme, i to, co je v UI schované, a v podobě, která se dá přečíst
+	// bez téhle aplikace. Žádné odesílání nikam: soubor se uloží
+	// a co s ním bude dál, rozhoduje uživatel.
+	function reportText(row) {
+		const i = row.incident;
+		const rep = row.report;
+		const d = i ? parseDetail(i) : {};
+		const L = [];
+		L.push('WINSENT — ZÁZNAM O INCIDENTU');
+		L.push('='.repeat(60));
+		L.push(`Kdy:      ${fmtTs(row.ts)}  (unix ${row.ts})`);
+		L.push(`Druh:     ${i ? kindOf(i.kind).label : 'Pád aplikace'}`);
+		L.push(
+			`Zdroje:   ${[i ? 'hlídač Winsent' : null, rep ? 'protokol Windows' : null]
+				.filter(Boolean)
+				.join(' + ')}`
+		);
+		L.push('');
+
+		if (rep) {
+			L.push('CO O TOM PÍŠOU WINDOWS');
+			L.push('-'.repeat(60));
+			L.push(rep.summary);
+			L.push('');
+			L.push(rep.detail);
+			if (rep.repeats > 1) L.push(`Opakování: ${rep.repeats}x ve stejném místě`);
+			L.push('');
+		}
+
+		if (i) {
+			L.push('CO VIDĚL HLÍDAČ');
+			L.push('-'.repeat(60));
+			L.push(`Viník:      ${i.culprit ?? 'nezjištěn'}`);
+			if (i.identity_key) L.push(`Identita:   ${i.identity_key}`);
+			if (i.kind === 'stall') {
+				L.push(`Výpadek:    ${d.lag_ms ?? '—'} ms`);
+				L.push(`Příčina:    ${causes[d.cause] ?? d.cause ?? '—'}`);
+			}
+			if (i.kind === 'app_crash' && d.exit_code != null) {
+				L.push(
+					`Exit kód:   0x${d.exit_code.toString(16).toUpperCase().padStart(8, '0')} (${d.exit_code})`
+				);
+				L.push(`Proces:     ${d.name || '—'}`);
+			}
+			if (i.kind === 'bsod') {
+				L.push(
+					`Bugcheck:   ${d.bugcheck != null ? '0x' + d.bugcheck.toString(16).toUpperCase().padStart(8, '0') : '—'}`
+				);
+				if (d.human) L.push(`Význam:     ${d.human}`);
+				if (d.params) L.push(`Parametry:  ${JSON.stringify(d.params)}`);
+				if (d.dump) L.push(`Minidump:   ${d.dump}`);
+			}
+			if (i.etl_path) L.push(`Černá skříňka: ${i.etl_path}`);
+			L.push(`Okno:       ${fmtTs(i.window_from ?? row.ts - 300)} .. ${fmtTs(i.window_to ?? row.ts + 30)}`);
+			if (d.top?.length) {
+				L.push('');
+				L.push('Nejnáročnější procesy v okně:');
+				for (const t of d.top) L.push(`  ${String(t.pid).padStart(6)}  ${t.name || '(bez jména)'}  ${t.value}`);
+			}
+			L.push('');
+			L.push('Surový detail (JSON):');
+			L.push(i.detail ?? '{}');
+			L.push('');
+		}
+
+		L.push('CO DĚLAL POČÍTAČ V TU CHVÍLI');
+		L.push('-'.repeat(60));
+		if (windowPoints.length > 1) {
+			L.push('čas                     CPU%   RAM MB   síť dolů B/s   síť nahoru B/s');
+			for (const p of windowPoints) {
+				L.push(
+					[
+						fmtTs(p.ts).padEnd(22),
+						String(Math.round(p.cpu_pct)).padStart(5),
+						String(p.mem_used_mb).padStart(8),
+						String(p.net_rx_bps).padStart(14),
+						String(p.net_tx_bps).padStart(15)
+					].join(' ')
+				);
+			}
+		} else {
+			L.push('Z té doby nejsou naměřená data — hlídač tehdy neběžel,');
+			L.push('nebo jsou vzorky za hranicí retence.');
+		}
+		L.push('');
+		L.push('-'.repeat(60));
+		L.push('Vygeneroval Winsent. Údaje pocházejí z tohoto počítače;');
+		L.push('nic se nikam neodesílá — co se souborem bude dál, je na tobě.');
+		return L.join('\n');
+	}
+
+	function downloadReport(row) {
+		const stamp = new Date(row.ts * 1000)
+			.toISOString()
+			.slice(0, 19)
+			.replace(/[:T]/g, '-');
+		const blob = new Blob([reportText(row)], { type: 'text/plain;charset=utf-8' });
+		const a = document.createElement('a');
+		a.href = URL.createObjectURL(blob);
+		a.download = `winsent-incident-${stamp}.txt`;
+		a.click();
+		setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+	}
+
 	onMount(() => {
+		loadHidden();
 		load();
 		loadCrashes();
 		const t = setInterval(load, 15000);
@@ -215,7 +360,7 @@
 			<ul class="list">
 				{#each timeline as row (row.key)}
 					{@const i = row.incident}
-					{@const k = i ? kindOf(i.kind) : { label: 'Pád aplikace', icon: Zap, color: 'var(--danger)' }}
+					{@const k = i ? kindOf(i.kind) : kinds.app_crash}
 					<li>
 						<button class="row" class:active={selRow?.key === row.key} onclick={() => selectRow(row)}>
 							<span class="kind-ico" style:color={k.color}><k.icon size={16} /></span>
@@ -245,6 +390,15 @@
 									onclick={(ev) => remove(i, ev)}
 									onkeydown={() => {}}><Trash2 size={15} /></span
 								>
+							{:else}
+								<span
+									class="row-del"
+									role="button"
+									tabindex="-1"
+									title="Skrýt ze seznamu (protokol Windows zůstane nedotčený)"
+									onclick={(ev) => hideReport(row, ev)}
+									onkeydown={() => {}}><EyeOff size={15} /></span
+								>
 							{/if}
 						</button>
 					</li>
@@ -257,9 +411,7 @@
 				{:else}
 					{@const selected = selRow.incident}
 					{@const rep = selRow.report}
-					{@const k = selected
-						? kindOf(selected.kind)
-						: { label: "Pád aplikace", icon: Zap, color: "var(--danger)" }}
+					{@const k = selected ? kindOf(selected.kind) : kinds.app_crash}
 					{@const d = selected ? parseDetail(selected) : {}}
 					<div class="d-head">
 						<span class="kind-ico big" style:color={k.color}><k.icon size={21} /></span>
@@ -391,6 +543,13 @@
 							nebo jsou vzorky za hranicí retence.
 						</p>
 					{/if}
+					<!-- Celý incident do textového souboru. Účel je poslat to
+					     někomu, kdo tomu rozumí — člověku nebo modelu. Proto
+					     tam jde všechno, i to, co je v UI schované. -->
+					<button class="export" onclick={() => downloadReport(selRow)}>
+						<Download size={15} />
+						Stáhnout vše jako text
+					</button>
 					<p class="foot">
 						Záznam jde odstranit ikonou koše v seznamu — maže se jen tenhle zápis,
 						v systému se nic nemění.
@@ -408,6 +567,26 @@
 </div>
 
 <style>
+	/* Export — akce, ne dekorace, takže výrazněji než poznámka pod ní. */
+	.export {
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
+		margin-top: 16px;
+		padding: 7px 13px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--surface);
+		color: var(--text-dim);
+		font: inherit;
+		font-size: 0.82rem;
+		cursor: pointer;
+	}
+	.export:hover {
+		color: var(--text);
+		background: var(--surface-hover);
+		box-shadow: inset 0 0 0 1px var(--border-strong);
+	}
 	/* Odkud informace je — drobné, ať nepřebije název incidentu. */
 	.src {
 		font-family: var(--font-mono);

@@ -372,8 +372,12 @@
 		}
 		for (const s of sections) {
 			if (s.name === 'Komponenty' || s.name === 'Obrazovky') continue;
-			(deviceSections.get(s.name) ?? []).forEach((d, i) => {
-				if (d.problem_code) out.push({ id: `dev-${s.name}-${i}`, label: d.name });
+			// Po sloučení duplicit sedí data v `head`, ne na obalu —
+			// bez toho zůstal seznam problémů prázdný a tlačítko nahoře
+			// se vůbec neukázalo.
+			(deviceSections.get(s.name) ?? []).forEach((mg, i) => {
+				const bad = mg.members.find((m) => m.problem_code) ?? mg.head;
+				if (bad.problem_code) out.push({ id: `dev-${s.name}-${i}`, label: bad.name });
 			});
 		}
 		return out;
@@ -667,13 +671,14 @@
 				{@const d = mg.head}
 				{@const Ico = iconOf(d.icon)}
 				{@const rid = `dev-${s.name}-${i}`}
-				{@const trouble = describeProblem(d.problem_code)}
+				{@const bad = mg.members.find((m) => m.problem_code)}
+				{@const trouble = describeProblem(bad?.problem_code)}
 				{@const open = openDevices.has(mg.key)}
 				<!-- `mg.count > 1` = víc kusů se shodným jménem (sedm PCI
 				     mostů). Řádek to nikdy nevydává za jeden kus — nese
 				     počet a pod rozklikem je každý zvlášť. -->
 				{@const parts = mg.count > 1 ? mg.members : d.members}
-				<article class="item" id={rid} class:flash={flashId === rid} class:bad={d.problem_code}>
+				<article class="item" id={rid} class:flash={flashId === rid} class:bad={mg.members.some((m) => m.problem_code)}>
 					<div class="ico"><Ico size={20} /></div>
 					<div class="info">
 						<h3>
@@ -722,8 +727,8 @@
 						{/if}
 					</div>
 					<div class="side">
-						{#if d.problem_code}
-							<span class="pill bad"><TriangleAlert size={14} /> problém {d.problem_code}</span>
+						{#if bad}
+							<span class="pill bad"><TriangleAlert size={14} /> problém {bad.problem_code}</span>
 						{:else}
 							<span class="pill quiet">v pořádku</span>
 						{/if}
