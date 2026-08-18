@@ -228,12 +228,12 @@
 					</div>
 					<div class="side">
 						{#if d.problem_code}
-							<span class="pill bad">problém {d.problem_code}</span>
+							<span class="pill bad"><TriangleAlert size={14} /> problém {d.problem_code}</span>
 						{:else if d.third_party}
 							<!-- Doinstalovaný ovladač není nic špatného — je to
 							     obvykle ten správný od výrobce. Jen se hodí vědět,
 							     že nepřišel s Windows. -->
-							<span class="pill">od výrobce</span>
+							<span class="pill dim">od výrobce</span>
 						{:else}
 							<span class="pill quiet">z Windows</span>
 						{/if}
@@ -402,7 +402,13 @@
 		gap: 7px 8px;
 		margin-top: 9px;
 	}
+	/* Uvnitř faktu bývá ikona (datum ovladače) — bez inline-flex by
+	   spadla na účaří a zmizela mezera. Hardware ikony ve faktech nemá,
+	   takže tohle je jediný rozdíl proti němu. */
 	.fact {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
 		font-size: 0.79rem;
 		line-height: 1.4;
 		padding: 4px 11px;
@@ -511,19 +517,9 @@
 	.item.bad .ico {
 		color: var(--danger);
 	}
-	.fact.muted {
-		color: var(--text-faint);
-	}
-	.fact.mono {
-		font-family: var(--font-mono);
-		font-size: 0.66rem;
-	}
 	/* Stáří je informace, ne chyba — jantarová, ne červená. */
 	.fact.old {
 		color: var(--warn);
-	}
-	.pill.quiet {
-		color: var(--text-faint);
 	}
 	.pill.bad {
 		color: var(--danger);

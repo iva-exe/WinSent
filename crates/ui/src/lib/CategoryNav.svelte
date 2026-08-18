@@ -13,6 +13,11 @@
 	let { sections = [], bodyEl = null, idPrefix = 'sect' } = $props();
 
 	let activeCat = $state('');
+	// Než uživatel scrollne nebo klikne, svítí první kategorie —
+	// prázdný pruh bez zvýraznění vypadá jako rozbitý přepínač.
+	// Řešeno odvozením, ne efektem: efekt zapisující do activeCat by
+	// při změně filtru (a tím i sekcí) přepsal uživatelovu volbu.
+	let current = $derived(activeCat || sections[0]?.name || '');
 
 	function anchorId(name) {
 		return `${idPrefix}-${name}`;
@@ -41,19 +46,19 @@
 		requestAnimationFrame(() => {
 			rafPending = false;
 			const y = bodyEl.scrollTop + 16;
-			let current = sections[0]?.name ?? '';
+			let seen = sections[0]?.name ?? "";
 			for (const s of sections) {
-				if (offsetIn(document.getElementById(anchorId(s.name))) <= y) current = s.name;
+				if (offsetIn(document.getElementById(anchorId(s.name))) <= y) seen = s.name;
 			}
-			activeCat = current;
+			activeCat = seen;
 		});
 	}
 </script>
 
 <nav class="cats">
 	{#each sections as s (s.key ?? s.name)}
-		<button class="cat" class:on={activeCat === s.name} onclick={() => gotoSection(s.name)}>
-			<s.icon size={16} />
+		<button class="cat" class:on={current === s.name} onclick={() => gotoSection(s.name)}>
+			<s.icon size={17} />
 			{s.name}
 			<i>{s.items?.length ?? s.count ?? 0}</i>
 		</button>
