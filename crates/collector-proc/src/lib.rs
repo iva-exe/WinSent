@@ -21,6 +21,42 @@ pub enum Error {
     WinSys(#[from] win_sys::Error),
 }
 
+
+/// Co ze sběru na tomhle stroji nefunguje.
+///
+/// Existuje kvůli jedinému příznaku, který se hrozně blbě hledá na
+/// dálku: aplikace hlásí „služba běží", ale sekce Tasks je prázdná.
+/// Dřív to znamenalo, že tick padal celý a nikdo se nedozvěděl proč —
+/// teď doplňky degradují a tady je záznam, který se dá poslat dál.
+#[derive(Default)]
+pub struct Degraded {
+    /// Co selhalo → jak to systém popsal. Jedna položka na volání.
+    failed: std::collections::BTreeMap<&'static str, String>,
+}
+
+impl Degraded {
+    /// Zaznamená selhání a zaloguje ho POPRVÉ. Opakovat to každou
+    /// sekundu by log utopilo a stejně by nic nepřidalo.
+    pub fn warn_once(&mut self, what: &'static str, err: &impl std::fmt::Display) {
+        let msg = err.to_string();
+        if self.failed.insert(what, msg.clone()).is_none() {
+            tracing::warn!(
+                zdroj = what,
+                error = %msg,
+                "část sběru nefunguje — zbytek jede dál"
+            );
+        }
+    }
+
+    /// Seznam nefunkčních zdrojů pro UI („co tomuhle stroji nejde").
+    pub fn list(&self) -> Vec<(String, String)> {
+        self.failed
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+}
+
 /// Kumulativní čítače procesu z minulého ticku (pro delty).
 #[derive(Clone, Copy)]
 struct PrevProc {
@@ -56,6 +92,8 @@ pub struct State {
     statics: StaticInfo,
     /// Engine identity aplikací (v2, SPEC kap. 4) — cache + background.
     identity: identity::Engine,
+    /// Co na tomhle stroji ze sběru nefunguje (viz Degraded).
+    degraded: Degraded,
     /// Počet logických jader — normalizace na % celkové kapacity.
     n_cpus: f64,
 }
@@ -140,6 +178,7 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
         mem_faults: win_sys::pdhq::MemFaults::init(),
         statics,
         identity: identity::Engine::new(identity::load_tables()),
+        degraded: Degraded::default(),
         n_cpus,
     })
 }
@@ -229,7 +268,20 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
     state.identity.retain_pids(&live);
 
     // Systém: busy = (kernel - idle) + user z delty GetSystemTimes.
-    let sys = win_sys::sysinfo::system_times()?;
+    //
+    // Od téhle chvíle se NIC nesmí propsat do `?`.
+    //
+    // Seznam procesů je v tuhle chvíli hotový a je to to jediné, na čem
+    // sekci Tasks záleží. Když selže některý z doplňků — síťové součty,
+    // zátěž jednotlivých jader — nesmí to smazat celý vzorek. Přesně to
+    // se ale dělo: jediné selhání `net_totals()` na cizím stroji
+    // znamenalo, že `tick` vrátil Err, sampler nepřepsal poslední vzorek
+    // a Tasks zůstaly navždy prázdné. Ukazatel „služba běží" přitom
+    // svítil zeleně, protože na ping odpovídá jiné vlákno.
+    //
+    // Každý doplněk proto degraduje sám za sebe a jednou to řekne do
+    // logu (opakovat to každou sekundu by log utopilo).
+    let sys = win_sys::sysinfo::system_times().unwrap_or(state.prev_sys);
     let idle_d = sys.idle.saturating_sub(state.prev_sys.idle) as f64;
     let kernel_d = sys.kernel.saturating_sub(state.prev_sys.kernel) as f64;
     let user_d = sys.user.saturating_sub(state.prev_sys.user) as f64;
@@ -241,16 +293,36 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
     };
     state.prev_sys = sys;
 
-    let (mem_used_mb, mem_total_mb) = win_sys::sysinfo::memory_status_mb()?;
+    let (mem_used_mb, mem_total_mb) = match win_sys::sysinfo::memory_status_mb() {
+        Ok(v) => v,
+        Err(e) => {
+            state.degraded.warn_once("memory_status_mb", &e);
+            (0, 0)
+        }
+    };
 
     // Síť: delta kumulativních bajtů / delta stěny → B/s.
-    let net = win_sys::net::net_totals()?;
-    let net_rx_bps = (net.rx_bytes.saturating_sub(state.prev_net.rx_bytes) as f64 / wall_s) as u64;
-    let net_tx_bps = (net.tx_bytes.saturating_sub(state.prev_net.tx_bytes) as f64 / wall_s) as u64;
-    state.prev_net = net;
+    let (net_rx_bps, net_tx_bps) = match win_sys::net::net_totals() {
+        Ok(net) => {
+            let rx = (net.rx_bytes.saturating_sub(state.prev_net.rx_bytes) as f64 / wall_s) as u64;
+            let tx = (net.tx_bytes.saturating_sub(state.prev_net.tx_bytes) as f64 / wall_s) as u64;
+            state.prev_net = net;
+            (rx, tx)
+        }
+        Err(e) => {
+            state.degraded.warn_once("net_totals", &e);
+            (0, 0)
+        }
+    };
 
     // Per-core zátěž: busy = 1 − idle_d / (kernel_d + user_d).
-    let cores_now = win_sys::sysinfo::core_times(state.n_cpus as usize)?;
+    let cores_now = match win_sys::sysinfo::core_times(state.n_cpus as usize) {
+        Ok(c) => c,
+        Err(e) => {
+            state.degraded.warn_once("core_times", &e);
+            Vec::new()
+        }
+    };
     let cores = cores_now
         .iter()
         .zip(state.prev_cores.iter())
@@ -378,3 +450,8 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
 
 /// Korektní ukončení sampleru.
 pub fn shutdown(_state: State) {}
+
+/// Co ze sběru na tomhle stroji nefunguje — pro diagnostiku v UI.
+pub fn degraded(state: &State) -> Vec<(String, String)> {
+    state.degraded.list()
+}

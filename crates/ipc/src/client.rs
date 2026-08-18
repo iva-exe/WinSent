@@ -568,6 +568,19 @@ pub fn query_connection() -> Result<core_types::proc::ConnectionReport, Error> {
 }
 
 
+
+/// Stav sběru — diagnostika prázdné tabulky.
+pub fn query_collector_health() -> Result<core_types::proc::CollectorHealth, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryCollectorHealth)? {
+        Response::CollectorHealth(h) => Ok(h),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Ovladače (v10): co běží, od koho a jak staré.
 pub fn query_drivers() -> Result<core_types::proc::DriversReport, Error> {
     let mut stream = connect()?;

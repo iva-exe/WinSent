@@ -86,6 +86,34 @@
 	// Zátěž systému: průměr komponent tažený k maximu podle výše maxima
 	// (CPU 100 + RAM 20 ⇒ 100; CPU 20 + RAM 60 ⇒ ~52). GPU se počítá,
 	// jen když je dostupné.
+	// Proč je prázdno. Prázdná tabulka je nejhorší možná odpověď: služba
+	// hlásí, že běží (na ping odpovídá jiné vlákno než sampler), a přitom
+	// není co ukázat. Tohle se zeptá napřímo a řekne, co tomu stroji nejde.
+	let health = $state(null);
+	async function checkHealth() {
+		try {
+			health = await invoke('query_collector_health');
+		} catch {
+			health = null;
+		}
+	}
+
+	// Věta pod prázdnou tabulkou.
+	let emptyWhy = $derived.by(() => {
+		if (!daemon.alive) return 'služba neběží';
+		if (!health) return 'čekám na první vzorek…';
+		// Sampler ještě nestihl první vzorek — po startu služby je to
+		// otázka vteřiny, takže hlásit poruchu by bylo předčasné.
+		if (health.last_sample_ts === 0 && health.uptime_s < 10) return 'čekám na první vzorek…';
+		if (health.last_sample_ts === 0) {
+			const co = health.degraded?.length
+				? health.degraded.map(([k]) => k).join(', ')
+				: 'zatím nevíme co';
+			return `sběr procesů na tomhle počítači nefunguje (${co}) — běží ${health.uptime_s} s a nedal ani jeden vzorek`;
+		}
+		return 'čekám na další vzorek…';
+	});
+
 	function sysLoad(components) {
 		const vals = components.filter((v) => v != null && !Number.isNaN(v));
 		if (!vals.length) return 0;
@@ -576,6 +604,8 @@
 			procs = [];
 		}
 		if (!histProcs) refreshTable();
+		// Diagnostiku jen když je prázdno — jinak je to zbytečný dotaz.
+		if (!procs.length) checkHealth();
 		refreshIcons();
 	}
 
@@ -1247,7 +1277,7 @@
 						{:else}
 							<tr>
 								<td colspan="10" class="empty label-tech">
-									{daemon.alive ? 'čekám na první vzorek…' : 'služba neběží'}
+									{emptyWhy}
 								</td>
 							</tr>
 						{/each}
@@ -1289,7 +1319,7 @@
 						{:else}
 							<tr>
 								<td colspan="10" class="empty label-tech">
-									{daemon.alive ? 'čekám na první vzorek…' : 'služba neběží'}
+									{emptyWhy}
 								</td>
 							</tr>
 						{/each}

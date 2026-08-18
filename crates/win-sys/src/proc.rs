@@ -103,28 +103,58 @@ pub struct RawProc {
 }
 
 /// Naplní snapshot všech procesů. `buf` se znovupoužívá mezi voláními.
+///
+/// Velikost bufferu se drží v `len`, ne v `capacity`, a to schválně.
+///
+/// `Vec::reserve` bere KOLIK MÍSTA PŘIDAT nad rámec `len` — jenže tenhle
+/// buffer plní jádro syrovým ukazatelem, takže `len` tu zůstávalo trvale
+/// nulové a rezervovalo se proti němu. Když si jádro řeklo o víc, než
+/// kolik má buffer, spočítal se přírůstek jako „potřeba mínus kapacita";
+/// pro kapacitu 512 KiB a potřebu 600 KiB z toho vyšlo 216 KiB, což je
+/// při už alokovaných 512 KiB no-op. Kapacita nevzrostla, dotaz vrátil
+/// tutéž chybu a smyčka se zatočila DONEKONEČNA.
+///
+/// Navenek to vypadalo takhle: služba běží a na ping odpovídá (to dělá
+/// jiné vlákno), ale sekce Tasks je navždy prázdná, jedno jádro jede na
+/// 100 % a služba se nedá zastavit, protože se čeká na zaseklý sampler.
+/// Chytalo to jen stroje, kde se snapshot nevejde do počáteční půlmegové
+/// rezervy — tedy víc procesů a vláken než na vývojovém stroji.
 pub fn snapshot_processes(buf: &mut Vec<u8>) -> Result<Vec<RawProc>, Error> {
-    if buf.capacity() == 0 {
-        buf.reserve(512 * 1024);
+    /// Nad tímhle už to nejsou procesy, ale porucha. Pojistka, aby se
+    /// smyčka nikdy nemohla zatočit podruhé.
+    const MAX_BUF: usize = 64 * 1024 * 1024;
+
+    if buf.len() < 512 * 1024 {
+        buf.resize(512 * 1024, 0);
     }
 
     // Realokační smyčka: při MISMATCH zvětšit dle ret_len + rezerva
     // (počet procesů se mezi voláními mění).
     let filled = loop {
         let mut ret_len: u32 = 0;
-        // SAFETY: předáváme vlastní buffer a jeho skutečnou kapacitu.
+        // SAFETY: předáváme vlastní buffer a jeho skutečnou délku.
         let status = unsafe {
             NtQuerySystemInformation(
                 SYSTEM_PROCESS_INFORMATION_CLASS,
                 buf.as_mut_ptr() as *mut c_void,
-                buf.capacity() as u32,
+                buf.len() as u32,
                 &mut ret_len,
             )
         };
         match status {
             0 => break ret_len as usize,
             STATUS_INFO_LENGTH_MISMATCH => {
-                buf.reserve((ret_len as usize + 128 * 1024).saturating_sub(buf.capacity()));
+                // Vždy aspoň dvojnásobek. Kdyby se rostlo jen na
+                // ohlášenou potřebu, stačilo by, aby mezi dvěma pokusy
+                // přibyl proces, a rostlo by se po krůčcích donekonečna.
+                let want = (ret_len as usize + 128 * 1024).max(buf.len().saturating_mul(2));
+                if want > MAX_BUF {
+                    return Err(Error::Win32 {
+                        call: "NtQuerySystemInformation(SystemProcessInformation) — buffer přes 64 MB",
+                        code: STATUS_INFO_LENGTH_MISMATCH,
+                    });
+                }
+                buf.resize(want, 0);
             }
             s => {
                 return Err(Error::Win32 {
@@ -194,4 +224,70 @@ pub fn snapshot_processes(buf: &mut Vec<u8>) -> Result<Vec<RawProc>, Error> {
     }
 
     Ok(procs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regrese na nekonečnou smyčku: buffer musí po každém „málo místa"
+    // opravdu vyrůst, ať si jádro řekne o cokoliv.
+    //
+    // Původní kód počítal přírůstek jako „potřeba mínus kapacita" a dával
+    // ho do `Vec::reserve`, které ho ale bere jako místo NAD RÁMEC `len`.
+    // Protože se `len` nikdy nenastavovalo, byl přírůstek menší než už
+    // alokovaná kapacita a reserve neudělalo nic. Test proto kontroluje
+    // jediné, na čem záleží: že buffer roste. Bez syscallu, aby chytil
+    // i stroj, kde se to jinak neprojeví.
+    #[test]
+    fn buffer_always_grows_when_kernel_asks_for_more() {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.resize(512 * 1024, 0);
+
+        // Zrádné pásmo je „víc než teď, ale míň než dvojnásobek" —
+        // právě tam se stará verze zacyklila.
+        for need in [520 * 1024usize, 600 * 1024, 896 * 1024, 2_000 * 1024] {
+            let before = buf.len();
+            let want = (need + 128 * 1024).max(before.saturating_mul(2));
+            buf.resize(want, 0);
+            assert!(
+                buf.len() > before,
+                "buffer nevyrostl: {before} → {} při potřebě {need}",
+                buf.len()
+            );
+            assert!(
+                buf.len() >= need,
+                "buffer {} nestačí na potřebu {need}",
+                buf.len()
+            );
+        }
+    }
+
+    // Snapshot musí projít na tomhle stroji a vrátit rozumná data.
+    #[test]
+    fn snapshot_returns_processes() {
+        let mut buf = Vec::new();
+        let procs = snapshot_processes(&mut buf).expect("snapshot");
+        assert!(procs.len() > 10, "jen {} procesů", procs.len());
+        // Buffer se drží v len — kdyby se někdo vrátil ke capacity,
+        // padne tohle a ne až tester.
+        assert!(buf.len() >= 512 * 1024);
+        assert!(procs.iter().any(|p| p.name.eq_ignore_ascii_case("explorer.exe")
+            || p.name.eq_ignore_ascii_case("svchost.exe")));
+    }
+
+    // Opakované volání se stejným bufferem nesmí nic pokazit ani
+    // zacyklit — přesně takhle ho používá sampler každou sekundu.
+    #[test]
+    fn repeated_snapshots_reuse_the_buffer() {
+        let mut buf = Vec::new();
+        let first = snapshot_processes(&mut buf).expect("první").len();
+        let cap = buf.len();
+        for _ in 0..5 {
+            let n = snapshot_processes(&mut buf).expect("další").len();
+            assert!(n > 10, "vzorek se scvrkl na {n}");
+        }
+        assert_eq!(buf.len(), cap, "buffer se zbytečně nafukuje");
+        assert!(first > 10);
+    }
 }

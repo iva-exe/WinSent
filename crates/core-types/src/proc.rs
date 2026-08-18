@@ -565,6 +565,27 @@ pub struct PermUseRow {
     pub stop_ts: Option<i64>,
 }
 
+/// Jak je na tom sběr vzorků (diagnostika).
+///
+/// Vzniklo z konkrétního problému: u testera svítilo „služba běží",
+/// ale Tasks byly prázdné. Ping totiž odpovídá IPC vlákno, kdežto
+/// procesy dodává sampler — a když sampler nic nevyrobí, nemá to kdo
+/// říct. Tohle je ta chybějící odpověď.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CollectorHealth {
+    /// Kolik procesů je v posledním vzorku (0 = sampler zatím nic nedal).
+    pub proc_count: u32,
+    /// Kdy byl poslední povedený vzorek (unix; 0 = ani jeden).
+    pub last_sample_ts: i64,
+    /// Kolik vteřin běží služba.
+    pub uptime_s: u64,
+    /// Co ze sběru na tomhle stroji nefunguje: (zdroj, jak to popsal systém).
+    /// Prázdné = všechno jede.
+    pub degraded: Vec<(String, String)>,
+    /// Kde leží log, kdyby to nestačilo.
+    pub log_path: String,
+}
+
 /// Jeden ovladač tak, jak ho vidí systém (v10, SPEC kap. 6).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DriverRow {

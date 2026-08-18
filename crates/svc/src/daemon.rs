@@ -39,6 +39,12 @@ pub enum Error {
 struct LiveSample {
     procs: Vec<ProcRow>,
     system: SystemSnapshot,
+    /// Kdy dorazil poslední povedený vzorek (unix; 0 = ani jeden).
+    /// Bez tohohle nejde na dálku odlišit „sampler zatím nestihl
+    /// první vzorek" od „sampler nefunguje a nikdy nic nedá".
+    last_ts: i64,
+    /// Co ze sběru na tomhle stroji nefunguje.
+    degraded: Vec<(String, String)>,
 }
 
 /// Stav auto-indexace a úklidové analýzy (v4E) sdílený s IPC.
@@ -317,6 +323,8 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                                 }
                             }
                             let mut slot = live.write().expect("live lock poisoned");
+                            slot.last_ts = ts;
+                            slot.degraded = collector_proc::degraded(&state);
                             slot.procs = procs;
                             slot.system = system;
                         }
@@ -471,11 +479,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     // vzniknout a krátká použití mezi dvěma pohledy by se ztratila úplně.
     // Vlákno proto spí na `RegNotifyChangeKeyValue` a probouzí se, jen
     // když se v registru něco hne (SPEC 13.4 to přímo předepisuje).
-    // Handle se schválně NEDRŽÍ: vlákno spí až minutu na registru
-    // a čekat na něj při vypínání by službu zdrželo přesně tak, jak to
-    // dělal dlouhý rozbor disku. Nic nemutuje — jen čte a posílá do
-    // kanálu, takže s koncem procesu může zmizet.
-    let _permwatch = {
+    let permwatch_handle = {
         let stop = Arc::clone(&stop);
         let tx = perm_tx;
         std::thread::Builder::new()
@@ -485,46 +489,65 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 const STORE_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore";
                 // Sleduje se hive prvního skutečného uživatele. Číst se
                 // pak čtou hive všechny — na stroji s víc účty se změny
-                // těch ostatních zachytí do minuty přes timeout.
+                // těch ostatních zachytí při nejbližší události.
                 let watched = win_sys::consent::user_hives()
                     .into_iter()
                     .next()
                     .map(|sid| format!(r"{sid}\{STORE_KEY}"));
 
+                // Poprvé se čte hned: první průchod po startu zachytí
+                // i to, co běželo, než jsme se začali dívat.
+                let mut due = true;
                 while !stop.load(Ordering::SeqCst) {
-                    // Zapisuje se po KAŽDÉM probuzení i hned napoprvé:
-                    // první čtení po startu služby zachytí i to, co
-                    // běželo, než jsme se začali dívat.
-                    let batch: Vec<crate::incidents::PermUseEntry> = collector_sec::permissions()
-                        .into_iter()
-                        .filter_map(|c| {
-                            Some(crate::incidents::PermUseEntry {
-                                start_ts: c.last_start?,
-                                // Běžící sezení nemá konec — doplní se,
-                                // až aplikace schopnost pustí.
-                                stop_ts: if c.in_use { None } else { c.last_used },
-                                app: c.app,
-                                capability: c.capability,
-                            })
-                        })
-                        .collect();
-                    if !batch.is_empty() {
-                        let _ = tx.try_send(crate::incidents::StoreMsg::PermUse(batch));
+                    if due {
+                        let batch: Vec<crate::incidents::PermUseEntry> =
+                            collector_sec::permissions()
+                                .into_iter()
+                                .filter_map(|c| {
+                                    Some(crate::incidents::PermUseEntry {
+                                        start_ts: c.last_start?,
+                                        // Běžící sezení nemá konec —
+                                        // doplní se, až aplikace pustí.
+                                        stop_ts: if c.in_use { None } else { c.last_used },
+                                        app: c.app,
+                                        capability: c.capability,
+                                    })
+                                })
+                                .collect();
+                        if !batch.is_empty() {
+                            let _ = tx.try_send(crate::incidents::StoreMsg::PermUse(batch));
+                        }
                     }
                     match watched.as_deref() {
-                        // Timeout je pojistka: kdyby se sledování nedalo
-                        // navázat, sekce se obnoví aspoň jednou za minutu,
-                        // ne nikdy.
+                        // Krátké čekání v cyklu, ne jedno dlouhé.
+                        //
+                        // RegNotifyChangeKeyValue je jednorázové — po každé
+                        // události se stejně musí navázat znovu, takže se
+                        // krácením o žádnou změnu nepřijde. Zato vlákno
+                        // vyjde ven do dvou sekund od signálu k vypnutí,
+                        // a to je tady zásadní: drží kopii kanálu do
+                        // zapisovacího vlákna, které bez jejího zahození
+                        // nepozná konec. S šedesátivteřinovým čekáním se
+                        // služba zastavovala přes tři minuty a padala na
+                        // tom instalace.
+                        //
+                        // `due` hlídá, aby se ConsentStore četl jen když
+                        // se opravdu něco změnilo. Číst ho po vypršení
+                        // čekání by z událostního sledování udělalo
+                        // dotazování dvakrát za sekundu.
                         Some(key) => {
-                            win_sys::registry::wait_for_change(
+                            due = win_sys::registry::wait_for_change(
                                 win_sys::registry::HKEY_USERS,
                                 key,
                                 true,
-                                60_000,
+                                2_000,
                             );
                         }
                         // Ještě se nikdo nepřihlásil — není co sledovat.
-                        None => std::thread::sleep(Duration::from_secs(60)),
+                        None => {
+                            due = false;
+                            wait_or_stop(&stop, Duration::from_secs(2));
+                        }
                     }
                 }
                 tracing::info!("sledování oprávnění ukončeno");
@@ -1114,6 +1137,17 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             // Ovladače (v10): seskupené po zařízeních, s cache na 5 minut.
             // SetupAPI je rychlé, ale seznam se mezi dvěma pohledy nezmění
             // — leda by uživatel zrovna zapojil nový hardware.
+            // Stav sběru — odpověď na „služba běží, ale nic tu není".
+            Request::QueryCollectorHealth => {
+                let slot = live.read().expect("live lock poisoned");
+                Response::CollectorHealth(core_types::proc::CollectorHealth {
+                    proc_count: slot.procs.len() as u32,
+                    last_sample_ts: slot.last_ts,
+                    uptime_s: started.elapsed().as_secs(),
+                    degraded: slot.degraded.clone(),
+                    log_path: log_dir_for_health(),
+                })
+            }
             Request::QueryDrivers => {
                 let mut cache = drv_cache.lock().expect("drv cache lock");
                 let fresh = cache
@@ -1385,6 +1419,9 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     let _ = ipc_handle.join();
     let _ = sampler_handle.join();
     let _ = inv_handle.join();
+    // Hlídač oprávnění drží kopii kanálu do zapisovacího vlákna —
+    // bez jeho dojetí by store_handle.join() níž čekal marně.
+    let _ = permwatch_handle.join();
     // Úklidová analýza se ZÁMĚRNĚ nejoinuje: běží minuty (hashování
     // duplicit, průchod stromem) a čekání na ni by protahovalo vypnutí
     // služby o celou tu dobu — SCM by hlásil Stopped, ale proces by
@@ -2027,4 +2064,10 @@ fn wait_or_stop(stop: &AtomicBool, total: Duration) {
         }
         std::thread::sleep(SLICE.min(deadline.saturating_duration_since(Instant::now())));
     }
+}
+
+/// Kde leží log služby — do diagnostiky, ať ho tester nemusí hledat.
+fn log_dir_for_health() -> String {
+    let data = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into());
+    format!(r"{data}\syswatch\logs\svc.log")
 }

@@ -196,6 +196,13 @@ fn query_perm_use(app: String, capability: String, days: u32) -> Result<PermUseD
 }
 
 
+
+/// Stav sběru — proč je tabulka prázdná.
+#[tauri::command(async)]
+fn query_collector_health() -> Result<core_types::proc::CollectorHealth, String> {
+    ipc::client::query_collector_health().map_err(|e| e.to_string())
+}
+
 /// Ovladače (v10) — co v počítači běží, od koho a jak staré.
 #[tauri::command(async)]
 fn query_drivers() -> Result<core_types::proc::DriversReport, String> {
@@ -609,6 +616,7 @@ fn main() {
             query_security,
             query_users,
             query_drivers,
+            query_collector_health,
             query_perm_use,
             build_file_index,
             search_files,

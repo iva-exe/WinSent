@@ -107,29 +107,51 @@ pub struct CoreTimes {
     pub user: u64,
 }
 
-/// Přečte kumulativní časy všech logických jader.
+/// Časy jednotlivých logických jader.
+///
+/// `n_cpus` je jen odhad, kolik jich čekat. Buffer se v případě potřeby
+/// zvětší a dotaz zopakuje — a to není opatrnost do zásoby:
+/// `available_parallelism()` vrací počet procesorů dostupných PROCESU,
+/// což na strojích s víc než 64 logickými jádry znamená jednu skupinu
+/// procesorů, kdežto tenhle dotaz chce buffer na jádra VŠECHNA. Menší
+/// buffer skončí na STATUS_INFO_LENGTH_MISMATCH, dotaz selže při každém
+/// pokusu a s ním padal celý vzorek — na takovém stroji zůstala sekce
+/// Tasks navždy prázdná, přestože služba jela.
 pub fn core_times(n_cpus: usize) -> Result<Vec<CoreTimes>, Error> {
-    let mut buf = vec![
-        ProcessorPerf {
-            idle: 0,
-            kernel: 0,
-            user: 0,
-            dpc: 0,
-            interrupt: 0,
-            interrupt_count: 0,
-        };
-        n_cpus
-    ];
+    const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xC000_0004_u32 as i32;
+    let mut want = n_cpus.max(1);
+    let mut status = 0;
     let mut ret_len = 0u32;
-    // SAFETY: buffer má přesnou velikost pole struktur; délku validujeme.
-    let status = unsafe {
-        NtQuerySystemInformation(
-            SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION_CLASS,
-            buf.as_mut_ptr() as *mut _,
-            (buf.len() * std::mem::size_of::<ProcessorPerf>()) as u32,
-            &mut ret_len,
-        )
-    };
+    let mut buf = Vec::new();
+
+    // Nanejvýš pár pokusů: 2048 jader nemá ani ten největší server.
+    for _ in 0..6 {
+        buf = vec![
+            ProcessorPerf {
+                idle: 0,
+                kernel: 0,
+                user: 0,
+                dpc: 0,
+                interrupt: 0,
+                interrupt_count: 0,
+            };
+            want
+        ];
+        ret_len = 0;
+        // SAFETY: buffer má přesnou velikost pole struktur; délku validujeme.
+        status = unsafe {
+            NtQuerySystemInformation(
+                SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION_CLASS,
+                buf.as_mut_ptr() as *mut _,
+                (buf.len() * std::mem::size_of::<ProcessorPerf>()) as u32,
+                &mut ret_len,
+            )
+        };
+        if status != STATUS_INFO_LENGTH_MISMATCH {
+            break;
+        }
+        want = (want * 2).min(2048);
+    }
     if status != 0 {
         return Err(Error::Win32 {
             call: "NtQuerySystemInformation(SystemProcessorPerformanceInformation)",
