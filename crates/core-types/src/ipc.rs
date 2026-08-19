@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 37;
+pub const PROTOCOL_VERSION: u32 = 38;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -99,6 +99,14 @@ pub enum Request {
     /// Hlášení o pádech, která má uložená Windows (SPEC kap. 16),
     /// přeložená do lidské řeči. Čistě čtecí.
     QueryCrashReports { limit: u32 },
+    /// Výpisy paměti a hlášení, která patří k jednomu incidentu,
+    /// složené do textu pro záznam. Čte je služba — do složek jako
+    /// C:\Windows\Minidump a do cizích profilů běžný uživatel nevidí.
+    QueryIncidentDumps {
+        app: String,
+        ts: i64,
+        dump_path: String,
+    },
     /// Historie použití jedné schopnosti aplikací (v9D): sezení
     /// za posledních `days` dní. ConsentStore drží jen to poslední,
     /// tohle je to, co si služba zapsala sama.
@@ -217,6 +225,8 @@ pub enum Response {
     CollectorHealth(crate::proc::CollectorHealth),
     /// Přeložená hlášení o pádech.
     CrashReports(Vec<crate::proc::CrashReportRow>),
+    /// Text výpisů k incidentu.
+    IncidentDumps(String),
     /// Sezení použití oprávnění + součet sekund za období (v9D).
     PermUse {
         sessions: Vec<crate::proc::PermUseRow>,

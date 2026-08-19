@@ -245,9 +245,21 @@
 			/* bez ovladačů to bude jen kratší */
 		}
 		try {
-			out.sys = await invoke('query_sys_info');
+			out.sys = await invoke("query_sys_info");
 		} catch {
 			/* nevadí */
+		}
+		// Výpisy paměti čte služba — do C:\Windows\Minidump a do cizích
+		// profilů běžný uživatel nevidí.
+		try {
+			const d = row.incident ? parseDetail(row.incident) : {};
+			out.dumps = await invoke("query_incident_dumps", {
+				app: row.report?.app ?? row.incident?.culprit ?? "",
+				ts: row.ts,
+				dumpPath: d.dump ?? ""
+			});
+		} catch (e) {
+			out.dumps = `Výpisy se nepodařilo přečíst: `;
 		}
 		return out;
 	}
@@ -461,6 +473,19 @@
 			}
 		}
 
+		// Výpisy paměti až úplně nakonec — je to nejobjemnější část
+		// a čtenář (člověk i model) chce nejdřív příběh, pak důkazy.
+		if (x?.dumps) {
+			L.push('');
+			L.push('='.repeat(60));
+			L.push('VÝPISY PAMĚTI A HLÁŠENÍ WINDOWS (surová data)');
+			L.push('='.repeat(60));
+			L.push('U výpisu padlé aplikace je klíčový řádek VINÍK: adresa výjimky');
+			L.push('porovnaná se seznamem načtených modulů. Jména funkcí bez ladicích');
+			L.push('symbolů určit nejde — na to je potřeba debugger a symboly Microsoftu.');
+			L.push(x.dumps);
+		}
+
 		L.push('');
 		L.push('-'.repeat(60));
 		L.push('Vygeneroval Winsent. Údaje pocházejí z tohoto počítače;');
@@ -468,10 +493,11 @@
 		return L.join('\n');
 	}
 
-	// Stav tlačítka: sbírám → hotovo. Bez odezvy uživatel neví, jestli
+	// Stav tlačítka: sbírám → uloženo. Bez odezvy uživatel neví, jestli
 	// se kliknutí vůbec chytlo — a sběr podkladů chvíli trvá.
 	let exportState = $state('idle');
 	let exportName = $state('');
+	let exportPath = $state('');
 
 	async function downloadReport(row) {
 		if (exportState === 'busy') return;
@@ -483,25 +509,30 @@
 				.slice(0, 19)
 				.replace(/[:T]/g, '-');
 			const name = `winsent-incident-${stamp}.txt`;
-			const blob = new Blob([reportText(row, extras)], {
-				type: 'text/plain;charset=utf-8'
+			// Ukládá se přes službu, ne stažením přes prohlížeč: jen tak
+			// víme, kam soubor spadl, a můžeme rovnou otevřít složku.
+			exportPath = await invoke('save_incident_report', {
+				name,
+				text: reportText(row, extras)
 			});
-			const a = document.createElement('a');
-			a.href = URL.createObjectURL(blob);
-			a.download = name;
-			a.click();
-			setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 			exportName = name;
 			exportState = 'done';
+			// Otevřít složku a soubor v ní rovnou označit — uživatel ho
+			// nemusí hledat.
+			try {
+				await invoke('open_path', { path: exportPath });
+			} catch {
+				/* Průzkumník se neotevřel; cesta je pořád vidět v tlačítku */
+			}
 			setTimeout(() => {
 				if (exportState === 'done') exportState = 'idle';
-			}, 6000);
+			}, 8000);
 		} catch (e) {
 			exportName = String(e);
 			exportState = 'error';
 			setTimeout(() => {
 				if (exportState === 'error') exportState = 'idle';
-			}, 6000);
+			}, 8000);
 		}
 	}
 
@@ -743,13 +774,13 @@
 							Sbírám podklady…
 						{:else if exportState === 'done'}
 							<Check size={15} />
-							Uloženo: {exportName}
+							Uloženo — otevírám složku
 						{:else if exportState === 'error'}
 							<TriangleAlert size={15} />
 							Nepovedlo se: {exportName}
 						{:else}
 							<Download size={15} />
-							Stáhnout vše jako text
+							Stáhnout záznam
 						{/if}
 					</button>
 					<p class="foot">

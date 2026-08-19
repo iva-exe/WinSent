@@ -582,6 +582,26 @@ pub fn query_crash_reports(limit: u32) -> Result<Vec<core_types::proc::CrashRepo
     }
 }
 
+
+/// Výpisy paměti a hlášení k jednomu incidentu, složené do textu.
+pub fn query_incident_dumps(app: String, ts: i64, dump_path: String) -> Result<String, Error> {
+    let mut stream = connect()?;
+    match request(
+        &mut stream,
+        &Request::QueryIncidentDumps {
+            app,
+            ts,
+            dump_path,
+        },
+    )? {
+        Response::IncidentDumps(t) => Ok(t),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Stav sběru — diagnostika prázdné tabulky.
 pub fn query_collector_health() -> Result<core_types::proc::CollectorHealth, Error> {
     let mut stream = connect()?;

@@ -1195,6 +1195,19 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         .collect(),
                 )
             }
+            // Výpisy paměti k jednomu incidentu (SPEC kap. 16).
+            //
+            // Čte to služba, ne UI: do C:\Windows\Minidump a do profilů
+            // ostatních uživatelů běžný účet nevidí. Čtení je jednorázové
+            // na kliknutí, ne v cyklu — soubory mají desítky MB.
+            Request::QueryIncidentDumps {
+                app,
+                ts,
+                dump_path,
+            } => {
+                let explicit = (!dump_path.is_empty()).then_some(dump_path.as_str());
+                Response::IncidentDumps(collector_crash::dump::dumps_for(&app, ts, explicit, 600))
+            }
             Request::QueryCollectorHealth => {
                 let slot = live.read().expect("live lock poisoned");
                 Response::CollectorHealth(core_types::proc::CollectorHealth {

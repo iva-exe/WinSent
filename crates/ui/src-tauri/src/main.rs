@@ -198,10 +198,42 @@ fn query_perm_use(app: String, capability: String, days: u32) -> Result<PermUseD
 
 
 
+/// Uloží textový záznam incidentu a vrátí celou cestu.
+///
+/// Píše se tudy, ne stažením přes prohlížeč: jen tak víme, KAM to
+/// spadlo, a můžeme pak otevřít složku. Blob download v Tauri cestu
+/// nevrací, takže by se uživateli řeklo „uloženo" a on by pak soubor
+/// hledal.
+#[tauri::command(async)]
+fn save_incident_report(name: String, text: String) -> Result<String, String> {
+    // Jméno souboru skládá UI, ale ověřuje se tady: cesta v něm nemá
+    // co dělat a přepsat něco mimo Stažené soubory už vůbec ne.
+    if name.contains([char::from(92u8), '/', ':']) || name.contains("..") {
+        return Err("neplatné jméno souboru".into());
+    }
+    let base = std::env::var("USERPROFILE")
+        .map(|p| std::path::PathBuf::from(p).join("Downloads"))
+        .unwrap_or_else(|_| std::env::temp_dir());
+    // Když složka Stažené soubory neexistuje (přesunutá knihovna),
+    // spadne se do dočasné složky, ať se záznam neztratí.
+    let dir = if base.is_dir() { base } else { std::env::temp_dir() };
+    let path = dir.join(&name);
+    std::fs::write(&path, text).map_err(|e| format!("nelze zapsat {}: {e}", path.display()))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// Hlášení o pádech z Windows, přeložená do lidské řeči.
 #[tauri::command(async)]
 fn query_crash_reports(limit: u32) -> Result<Vec<core_types::proc::CrashReportRow>, String> {
     ipc::client::query_crash_reports(limit).map_err(|e| e.to_string())
+}
+
+
+/// Výpisy paměti k incidentu — čte je služba, protože do
+/// C:\Windows\Minidump a do cizích profilů uživatel nevidí.
+#[tauri::command(async)]
+fn query_incident_dumps(app: String, ts: i64, dumpPath: String) -> Result<String, String> {
+    ipc::client::query_incident_dumps(app, ts, dumpPath).map_err(|e| e.to_string())
 }
 
 /// Stav sběru — proč je tabulka prázdná.
@@ -625,6 +657,8 @@ fn main() {
             query_drivers,
             query_collector_health,
             query_crash_reports,
+            save_incident_report,
+            query_incident_dumps,
             query_perm_use,
             build_file_index,
             search_files,
