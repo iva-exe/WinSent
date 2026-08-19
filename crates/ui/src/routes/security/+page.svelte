@@ -414,6 +414,10 @@
 					{/if}
 				</button>
 				{#if capIsOpen}
+					<!-- Seznam je vizuálně vnořený do kategorie nad ním: odsazený
+					     z obou stran a s linkou vlevo. Bez toho karty splývaly
+					     s hlavičkou a nebylo poznat, kde kategorie končí. -->
+					<div class="cap-body">
 				{#each g.items as p (g.cap + p.key)}
 					{@const okey = g.cap + p.key}
 					{@const open = openVersions.has(okey)}
@@ -444,25 +448,25 @@
 							<p class="vendor mono">{p.app}</p>
 						</div>
 						<div class="side">
-							<!-- Mřížka popisek → hodnota. Dřív to byla řada
-							     odznaků bez popisků a čas byl navíc schovaný
-							     za tlačítkem; teď je u každé hodnoty napsané,
-							     co to je, a vidí se rovnou. -->
+							<!-- Stav je řádek textu s barvou, ne velký barevný
+							     chip. Chip se u dlouhého popisu ("odepřeno —
+							     nevynuceno") netrhal a tlačil se do jména
+							     aplikace vlevo. -->
 							{#if p.in_use && p.allow}
-								<span class="pill bad-live">používá právě teď</span>
+								<span class="p-state live"><span class="live-dot"></span>používá právě teď</span>
 							{:else if p.allow}
-								<span class="pill dim">povoleno</span>
+								<span class="p-state">povoleno</span>
 							{:else if p.enforced}
 								<!-- Balená aplikace: Windows Deny VYNUTÍ — jediné
-								     místo, kde smí být zelený zámek. -->
-								<span class="pill ok-block"><Shield size={13} /> zablokováno</span>
+								     místo, kde smí být zelená. -->
+								<span class="p-state ok"><Shield size={12} /> zablokováno</span>
 							{:else}
 								<!-- Win32: deklarace bez vynucení. Nikdy zelená. -->
 								<span
-									class="pill warn"
+									class="p-state warn"
 									title="Klasická aplikace se ke kameře či mikrofonu může dostat i mimo tohle nastavení (přes ovladač). Windows to na rozdíl od balených aplikací tvrdě nevynucují."
 								>
-									<TriangleAlert size={13} /> odepřeno — nevynuceno
+									<TriangleAlert size={12} /> odepřeno · nevynuceno
 								</span>
 							{/if}
 							<dl class="meta">
@@ -493,8 +497,8 @@
 									<p class="vendor mono">{v.app}</p>
 								</div>
 								<div class="side">
-									<span class="pill dim">
-										{v.allow ? 'povoleno' : 'odepřeno'}{#if v.last_used}&nbsp;· naposledy
+									<span class="p-state">
+										{v.allow ? "povoleno" : "odepřeno"}{#if v.last_used}&nbsp;· naposledy
 											{fmtWhen(v.last_used)}{/if}
 									</span>
 								</div>
@@ -502,6 +506,7 @@
 						{/each}
 					{/if}
 				{/each}
+					</div>
 				{/if}
 			{/each}
 
@@ -537,6 +542,14 @@
 		line-height: 1.5;
 	}
 	/* Hlavička kategorie = rozbalovací pruh. */
+	/* Tělo kategorie. Odsazení z obou stran a linka vlevo říkají, že
+	   karty patří pod hlavičku nad nimi — bez toho to byl jeden
+	   nekonečný sloupec, ve kterém kategorie nešly rozeznat. */
+	.cap-body {
+		margin: 0 12px 18px 14px;
+		padding-left: 16px;
+		border-left: 2px solid var(--border);
+	}
 	.cap-head {
 		display: flex;
 		align-items: center;
@@ -585,7 +598,8 @@
 		display: grid;
 		grid-template-columns: repeat(2, minmax(96px, auto));
 		gap: 2px 18px;
-		margin: 8px 0 0;
+		margin: 0;
+		text-align: right;
 	}
 	.meta dt {
 		font-family: var(--font-mono);
@@ -820,18 +834,6 @@
 		color: var(--text-dim);
 		word-break: break-all;
 	}
-	/* Rozklik starších verzí — drobný, ať nepřebije jméno aplikace. */
-	/* Odznak, na který jde kliknout — historie se dotahuje na vyžádání,
-	   ať se u každého řádku nechodí do databáze zbytečně. */
-	.pill.link {
-		cursor: pointer;
-		font: inherit;
-		font-size: 0.74rem;
-	}
-	.pill.link:hover {
-		color: var(--text);
-		border-color: var(--text-dim);
-	}
 	.vers {
 		display: inline-flex;
 		align-items: center;
@@ -866,50 +868,43 @@
 		font-family: var(--font-mono);
 		font-size: 0.72rem;
 	}
+	/* Stav a hodnoty jdou pod sebe, ne vedle sebe. Ve flexu v řádku
+	   se dlouhá pilulka („odepřeno — nevynuceno") tlačila do jména
+	   aplikace vlevo. */
 	.side {
 		display: flex;
-		justify-content: flex-end;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 7px;
+		min-width: 0;
 	}
-
-	.pill {
+	/* Stav oprávnění: řádek textu s barvou, ne velký barevný chip.
+	   Chip u každého řádku dělal ze seznamu pruhovanou tabulku a
+	   dlouhý popis se do něj nevešel. Mono verzálky ho drží ve
+	   stejném jazyce jako popisky hodnot pod ním. */
+	.p-state {
 		display: inline-flex;
 		align-items: center;
-		gap: 5px;
-		font-size: 0.79rem;
-		padding: 4px 11px;
-		border-radius: 999px;
-		border: 1px solid transparent;
+		gap: 6px;
+		font-family: var(--font-mono);
+		font-size: 0.68rem;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--text-faint);
 		white-space: nowrap;
+		text-align: right;
 	}
-	.pill.quiet {
-		color: var(--text-dim);
-		background: var(--surface-hover);
-		border-color: var(--border);
-	}
-	.pill.quiet::before {
-		content: '';
-		width: 7px;
-		height: 7px;
-		border-radius: 50%;
-		background: var(--ok);
-	}
-	.pill.dim {
-		color: var(--text-dim);
-		background: var(--surface-hover);
-	}
-	.pill.warn {
-		color: var(--warn);
-		background: color-mix(in srgb, var(--warn) 13%, transparent);
-	}
-	/* Zelený zámek JEN u vynuceného blokování (balené aplikace). */
-	.pill.ok-block {
+	/* Zelená JEN u vynuceného blokování (balené aplikace). */
+	.p-state.ok {
 		color: var(--ok);
-		background: color-mix(in srgb, var(--ok) 12%, transparent);
 	}
-	.pill.bad-live {
+	.p-state.warn {
+		color: var(--warn);
+	}
+	.p-state.live {
 		color: var(--danger);
-		background: color-mix(in srgb, var(--danger) 13%, transparent);
 	}
+
 
 	.note {
 		margin: 18px 0 12px;

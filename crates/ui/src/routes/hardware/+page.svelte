@@ -1,4 +1,4 @@
-						<h3>{d.monitor || "Obrazovka"}</h3><script>
+<script>
 	// Hardware (v9, SPEC kap. 15) — soupis všeho, co v počítači je.
 	//
 	// Rozvržení:
@@ -727,7 +727,6 @@
 					<div class="ico"><Monitor size={20} /></div>
 					<div class="info">
 						<h3>{d.monitor || 'Obrazovka'}</h3>
-						<p class="vendor">{d.adapter}</p>
 						<dl class="facts">
 							<div><dt>Rozlišení</dt><dd>{d.width} × {d.height}</dd></div>
 							<div><dt>Obnovování</dt><dd>{d.refresh_hz} Hz</dd></div>
@@ -868,9 +867,9 @@
 	   po sloupci celým seznamem. */
 	.facts {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(130px, max-content));
-		gap: 7px 22px;
-		margin: 9px 0 0;
+		grid-template-columns: repeat(auto-fit, minmax(150px, max-content));
+		gap: 14px 34px;
+		margin: 12px 0 0;
 	}
 	.facts dt {
 		font-family: var(--font-mono);

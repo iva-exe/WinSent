@@ -274,9 +274,9 @@
 	   skákat po sloupci napříč celým seznamem. */
 	.facts {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(130px, max-content));
-		gap: 7px 22px;
-		margin: 9px 0 0;
+		grid-template-columns: repeat(auto-fit, minmax(150px, max-content));
+		gap: 14px 34px;
+		margin: 12px 0 0;
 	}
 	.facts dt {
 		font-family: var(--font-mono);
@@ -506,15 +506,6 @@
 		font-size: 0.82rem;
 		color: var(--text-dim);
 	}
-	.facts {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 7px 8px;
-		margin-top: 9px;
-	}
-	/* Uvnitř faktu bývá ikona (datum ovladače) — bez inline-flex by
-	   spadla na účaří a zmizela mezera. Hardware ikony ve faktech nemá,
-	   takže tohle je jediný rozdíl proti němu. */
 	.side {
 		display: flex;
 		flex-direction: column;
