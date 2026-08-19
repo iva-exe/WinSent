@@ -1480,9 +1480,6 @@
 	}
 
 	/* ── detail sekce ── */
-	.detail-card {
-		flex-shrink: 0;
-	}
 	.tiles {
 		display: flex;
 		gap: 0.7rem;
@@ -1509,12 +1506,11 @@
 
 	.cores {
 		display: grid;
-		/* Sloupce se přizpůsobí počtu jader, výška roste s nimi.
-		   Dřív tu byl pevný strop s vlastním scrollem — na procesoru
-		   s víc jádry to znamenalo, že jich byla vidět jen část a na
-		   zbytek se muselo rolovat uvnitř malého okénka. Přehled o
-		   jádrech je přitom celý smysl té dlaždice. */
-		grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+		/* Dva sloupce jako vždycky — grafy se nesahaly.
+		   Změnil se jen obal: dřív měl pevný strop 190 px a vlastní
+		   scroll, takže na procesoru s víc jádry jich byla vidět jen
+		   část. Teď roste do výšky a jsou vidět všechna. */
+		grid-template-columns: 1fr 1fr;
 		gap: 0.25rem 1.6rem;
 	}
 	.core {
