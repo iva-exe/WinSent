@@ -35,6 +35,7 @@ pub mod shortcut;
 pub mod smart;
 pub mod smbios;
 pub mod sysinfo;
+pub mod sysowner;
 pub mod tasksched;
 pub mod thermal;
 pub mod threading;

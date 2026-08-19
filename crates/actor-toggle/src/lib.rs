@@ -87,11 +87,6 @@ fn apply_startup(id: &str, on: bool) -> Result<String, String> {
             } else {
                 r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder"
             };
-            let root = if machine {
-                win_sys::registry::HKEY_LOCAL_MACHINE
-            } else {
-                win_sys::registry::HKEY_CURRENT_USER
-            };
             // 12 bajtů: [0] = 0x02 povoleno / 0x03 zakázáno,
             // [4..12] = FILETIME okamžiku zákazu (0 u povolení).
             let mut data = [0u8; 12];
@@ -100,7 +95,12 @@ fn apply_startup(id: &str, on: bool) -> Result<String, String> {
                 let ft = filetime_now();
                 data[4..12].copy_from_slice(&ft.to_le_bytes());
             }
-            win_sys::registry::write_binary(root, sub, name, &data).map_err(|e| e.to_string())?;
+            // Uživatelský zápis MUSÍ do hive uživatele. Služba běží jako
+            // SYSTEM, takže HKEY_CURRENT_USER je hive SYSTEMU — zápis by
+            // se povedl, ověření by ho přečetlo zpátky a nikdo by
+            // nepoznal, že se ve skutečnosti nic nezměnilo.
+            let (root, sub) = user_scope(machine, sub)?;
+            win_sys::registry::write_binary(root, &sub, name, &data).map_err(|e| e.to_string())?;
             Ok(format!(
                 "StartupApproved {name} = {}",
                 if on { "on" } else { "off" }
@@ -132,14 +132,10 @@ fn read_startup_state(id: &str) -> Option<bool> {
             } else {
                 r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder"
             };
-            let root = if machine {
-                win_sys::registry::HKEY_LOCAL_MACHINE
-            } else {
-                win_sys::registry::HKEY_CURRENT_USER
-            };
+            let (root, sub) = user_scope(machine, sub).ok()?;
             // Chybí-li hodnota, položka je povolená.
             Some(
-                win_sys::registry::read_binary(root, sub, name)
+                win_sys::registry::read_binary(root, &sub, name)
                     .and_then(|d| d.first().map(|b| b & 0x01 == 0))
                     .unwrap_or(true),
             )
@@ -315,4 +311,21 @@ mod tests {
         assert!(!out.ok);
         assert!(!out.rolled_back);
     }
+}
+
+/// Kam zapsat/odkud číst StartupApproved. Uživatelské položky patří do
+/// hive přihlášeného uživatele — služba běží jako SYSTEM, takže její
+/// `HKEY_CURRENT_USER` je hive SYSTEMU. Zápis do ní by se „povedl",
+/// ověření by si ho přečetlo zpátky a nikdo by nepoznal, že se ve
+/// skutečnosti nic nezměnilo.
+fn user_scope(
+    machine: bool,
+    sub: &str,
+) -> Result<(win_sys::registry::RegKey, String), String> {
+    if machine {
+        return Ok((win_sys::registry::HKEY_LOCAL_MACHINE, sub.to_string()));
+    }
+    let sid = collector_boot::user_hive()
+        .ok_or_else(|| "hive přihlášeného uživatele se nepodařilo najít".to_string())?;
+    Ok((win_sys::registry::HKEY_USERS, format!(r"{sid}\{sub}")))
 }

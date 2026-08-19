@@ -9,8 +9,17 @@
 	// paketů se nečte. A signály, ne verdikty: naslouchající port je
 	// informace („otevřená brána dovnitř"), ne poplach.
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { invoke } from '@tauri-apps/api/core';
-	import { Search, ArrowDown, ArrowUp, ArrowUpRight, Ear, Network as NetIcon } from 'lucide-svelte';
+	import {
+		Search,
+		ArrowDown,
+		ArrowUp,
+		ArrowUpRight,
+		Ear,
+		ExternalLink,
+		Network as NetIcon
+	} from 'lucide-svelte';
 	import AppIcon from '$lib/AppIcon.svelte';
 
 	let rows = $state([]);
@@ -80,6 +89,23 @@
 	});
 
 	let selected = $derived(rows.find((r) => r.identity_key === selectedKey) ?? null);
+
+	// „N procesů" → Tasks se zaskrolováním a trvalým zvýrazněním řádku.
+	// Stejný kontrakt jako v Programs: identity_key sem chodí z téhož
+	// sampleru, který ho počítá kaskádou (SPEC 4.1), takže je to přesně
+	// klíč skupiny v Tasks.
+	function gotoRunning(key) {
+		goto('/tasks?hl=' + encodeURIComponent(key));
+	}
+
+	// Spojení, jejichž PID sampler nezná, dostávají v collector-net
+	// náhradní klíč `pid:<pid>`. Pod tím v Tasks žádná aplikace není,
+	// takže tam odkaz neslibujeme a necháme prostý text.
+	let hasIdentity = $derived(!!selected && !selected.identity_key.startsWith('pid:'));
+
+	// Skloňování na jednom místě — text se používá v odkazu i v jeho
+	// neklikatelné variantě a nesmí se lišit ani o písmeno.
+	const procLabel = (n) => `${n} ${n === 1 ? 'proces' : n < 5 ? 'procesy' : 'procesů'}`;
 
 	let totals = $derived.by(() => {
 		let est = 0;
@@ -220,12 +246,19 @@
 						<div>
 							<h2>{selected.app_name}</h2>
 							<p class="d-sub">
-								{selected.publisher ?? '—'} · {selected.proc_count}
-								{selected.proc_count === 1
-									? 'proces'
-									: selected.proc_count < 5
-										? 'procesy'
-										: 'procesů'}
+								{selected.publisher ?? '—'} ·
+								{#if hasIdentity}
+									<button
+										class="run-link"
+										onclick={() => gotoRunning(selected.identity_key)}
+										title="Ukázat v Tasks"
+									>
+										{procLabel(selected.proc_count)}
+										<ExternalLink size={12} />
+									</button>
+								{:else}
+									{procLabel(selected.proc_count)}
+								{/if}
 								· {selected.conns.length}
 								{selected.conns.length === 1
 									? 'záznam'
@@ -330,11 +363,11 @@
 		outline: none;
 		color: var(--text);
 		font: inherit;
-		font-size: 0.85rem;
+		font-size: var(--fs-lg);
 	}
 	.note {
 		margin: 0;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		color: var(--text-dim);
 	}
 	.note strong {
@@ -387,13 +420,13 @@
 		gap: 1px;
 	}
 	.row-title {
-		font-size: 0.9rem;
+		font-size: var(--fs-xl);
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
 	.row-pub {
-		font-size: 0.74rem;
+		font-size: var(--fs-xs);
 		color: var(--text-dim);
 		white-space: nowrap;
 		overflow: hidden;
@@ -408,7 +441,7 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 3px;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		font-variant-numeric: tabular-nums;
 	}
 	.stat.dim {
@@ -423,7 +456,7 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 3px;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		font-variant-numeric: tabular-nums;
 	}
 	.down {
@@ -449,7 +482,7 @@
 		justify-content: center;
 		gap: 10px;
 		color: var(--text-faint);
-		font-size: 0.85rem;
+		font-size: var(--fs-lg);
 		text-align: center;
 	}
 	.d-head {
@@ -465,8 +498,26 @@
 	}
 	.d-sub {
 		margin: 2px 0 0;
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		color: var(--text-dim);
+	}
+	/* Odkaz „N procesů" → Tasks. Vzhled 1:1 s Programs (.run-link),
+	   ať je to napříč sekcemi tentýž prvek, ne dvě podobné věci. */
+	.run-link {
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		font-size: var(--fs-md);
+		color: var(--ok);
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		text-shadow: var(--glow-ok);
+	}
+	.run-link:hover {
+		text-decoration: underline;
 	}
 	h3.label-tech {
 		margin: 16px 0 6px;
@@ -474,23 +525,23 @@
 	}
 	.d-note {
 		margin: 0 0 8px;
-		font-size: 0.76rem;
+		font-size: var(--fs-sm);
 		line-height: 1.4;
 		color: var(--text-dim);
 	}
 	.d-empty {
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 	}
 
 	table {
 		width: 100%;
 		border-collapse: collapse;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 	}
 	th {
 		text-align: left;
 		font-family: var(--font-mono);
-		font-size: 0.66rem;
+		font-size: var(--fs-2xs);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		font-weight: 500;
@@ -508,7 +559,7 @@
 	}
 	.mono {
 		font-family: var(--font-mono);
-		font-size: 0.76rem;
+		font-size: var(--fs-sm);
 	}
 	.num {
 		font-variant-numeric: tabular-nums;
@@ -518,7 +569,7 @@
 	}
 	.empty {
 		color: var(--text-dim);
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 		padding: 14px;
 	}
 </style>

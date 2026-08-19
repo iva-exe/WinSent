@@ -218,7 +218,7 @@
 		gap: 9px;
 		margin: 20px 0 9px;
 		font-family: var(--font-mono);
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		font-weight: 500;
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
@@ -235,7 +235,7 @@
 	}
 	.sect-n {
 		font-weight: 400;
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		font-variant-numeric: tabular-nums;
 	}
@@ -273,13 +273,13 @@
 		gap: 8px;
 	}
 	.full {
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		font-weight: 400;
 		color: var(--text-dim);
 	}
 	.tag {
 		font-family: var(--font-mono);
-		font-size: 0.62rem;
+		font-size: var(--fs-3xs);
 		letter-spacing: 0.04em;
 		padding: 1px 6px;
 		border-radius: 999px;
@@ -292,7 +292,7 @@
 	}
 	.vendor {
 		margin: 3px 0 0;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		color: var(--text-dim);
 	}
 	.facts {
@@ -305,7 +305,7 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
-		font-size: 0.74rem;
+		font-size: var(--fs-xs);
 		color: var(--text-dim);
 	}
 	.fact.muted {
@@ -313,7 +313,7 @@
 	}
 	.fact.mono {
 		font-family: var(--font-mono);
-		font-size: 0.66rem;
+		font-size: var(--fs-2xs);
 		word-break: break-all;
 	}
 	.side {
@@ -330,7 +330,7 @@
 		padding: 3px 10px;
 		border-radius: 999px;
 		border: 1px solid var(--border);
-		font-size: 0.74rem;
+		font-size: var(--fs-xs);
 		white-space: nowrap;
 	}
 	.pill.quiet {
@@ -347,12 +347,12 @@
 	}
 	.note {
 		margin: 14px 0 0;
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		line-height: 1.55;
 		color: var(--text-faint);
 	}
 	.empty {
 		color: var(--text-faint);
-		font-size: 0.85rem;
+		font-size: var(--fs-lg);
 	}
 </style>

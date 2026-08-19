@@ -850,7 +850,7 @@
 	.note-v {
 		display: block;
 		margin-top: 1px;
-		font-size: 0.7rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		line-height: 1.35;
 	}
@@ -873,21 +873,21 @@
 	}
 	.facts dt {
 		font-family: var(--font-mono);
-		font-size: 0.6rem;
+		font-size: var(--fs-3xs);
 		letter-spacing: 0.05em;
 		text-transform: uppercase;
 		color: var(--text-faint);
 	}
 	.facts dd {
 		margin: 2px 0 0;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		color: var(--text);
 		line-height: 1.35;
 		word-break: break-word;
 	}
 	.facts dd.mono {
 		font-family: var(--font-mono);
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		color: var(--text-dim);
 	}
 	.page {
@@ -937,7 +937,7 @@
 		outline: none;
 		color: var(--text);
 		font: inherit;
-		font-size: 0.85rem;
+		font-size: var(--fs-lg);
 	}
 	.clear {
 		background: none;
@@ -966,7 +966,7 @@
 		border-radius: 999px;
 		color: var(--danger);
 		font: inherit;
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 		padding: 8px 10px 8px 15px;
 		cursor: pointer;
 	}
@@ -1016,7 +1016,7 @@
 		margin: 0 0 11px;
 		padding: 9px 2px 10px;
 		font-family: var(--font-mono);
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		font-weight: 500;
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
@@ -1031,7 +1031,7 @@
 	}
 	.sect-n {
 		font-weight: 400;
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		font-variant-numeric: tabular-nums;
 	}
@@ -1100,7 +1100,7 @@
 	}
 	.vendor {
 		margin: 3px 0 0;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		color: var(--text-dim);
 	}
 	/* Rozklik na jednotlivá rozhraní — drobný, ať nepřebije název. */
@@ -1115,7 +1115,7 @@
 		background: transparent;
 		color: var(--text-faint);
 		font-family: var(--font-mono);
-		font-size: 0.64rem;
+		font-size: var(--fs-2xs);
 		letter-spacing: 0.02em;
 		cursor: pointer;
 		vertical-align: middle;
@@ -1144,23 +1144,23 @@
 		flex-wrap: wrap;
 		align-items: baseline;
 		gap: 4px 10px;
-		font-size: 0.76rem;
+		font-size: var(--fs-sm);
 		color: var(--text-dim);
 	}
 	.parts-list li.bad .p-name {
 		color: var(--danger);
 	}
 	.p-id {
-		font-size: 0.68rem;
+		font-size: var(--fs-2xs);
 		color: var(--text-faint);
 		word-break: break-all;
 	}
 	.p-bad {
-		font-size: 0.68rem;
+		font-size: var(--fs-2xs);
 		color: var(--danger);
 	}
 	.fact {
-		font-size: 0.79rem;
+		font-size: var(--fs-sm);
 		line-height: 1.4;
 		padding: 4px 11px;
 		border-radius: 7px;
@@ -1175,13 +1175,13 @@
 	}
 	.fact.mono {
 		font-family: var(--font-mono);
-		font-size: 0.73rem;
+		font-size: var(--fs-xs);
 	}
 
 	/* Vysvětlení poruchy — co se děje a co to znamená. */
 	.trouble {
 		margin: 9px 0 0;
-		font-size: 0.79rem;
+		font-size: var(--fs-sm);
 		line-height: 1.45;
 		color: var(--text-dim);
 		border-left: 2px solid var(--danger);
@@ -1211,7 +1211,7 @@
 		font-size: 1.25rem;
 	}
 	.metric small {
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		font-weight: 400;
 		color: var(--text-dim);
 		margin-left: 3px;
@@ -1220,7 +1220,7 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 5px;
-		font-size: 0.79rem;
+		font-size: var(--fs-sm);
 		padding: 4px 11px;
 		border-radius: 999px;
 		border: 1px solid transparent;
@@ -1279,7 +1279,7 @@
 
 	.empty {
 		color: var(--text-dim);
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 		padding: 20px 0;
 	}
 </style>

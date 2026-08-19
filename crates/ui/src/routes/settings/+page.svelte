@@ -5,6 +5,7 @@
 	import { onMount } from 'svelte';
 	import { daemon } from '$lib/daemon.svelte.js';
 	import Num from '$lib/Num.svelte';
+	import { prefs, setPref } from '$lib/prefs.svelte.js';
 
 	let usage = $state(null);
 	let error = $state('');
@@ -65,6 +66,51 @@
 	</section>
 
 
+
+	<section class="card">
+		<header class="card-head">
+			<span class="label-tech">// settings / zobrazení</span>
+		</header>
+		<p class="note">
+			Co se má v aplikaci ukazovat. Na systém to nesahá — Winsent nic nepřepíná
+			ani neskrývá před Windows, je to jen volba zobrazení.
+		</p>
+		<!-- Přepínač je popiskem i tlačítkem zároveň: klik kamkoli na řádek
+		     přepne, aby se nemuselo mířit na malý obdélníček. -->
+		<button
+			class="opt"
+			role="switch"
+			aria-checked={prefs.showZeroByte}
+			onclick={() => setPref('showZeroByte', !prefs.showZeroByte)}
+		>
+			<span class="sw" class:on={prefs.showZeroByte}><span class="knob"></span></span>
+			<span class="opt-text">
+				<span class="opt-name">Ukazovat prázdné soubory ve Files</span>
+				<span class="opt-why">
+					Soubory o velikosti 0 B nejsou samy o sobě smetí — bývají to dočasné
+					soubory aplikací, zámky nebo rozdělaná stahování. Ve výchozím stavu
+					se proto neukazují.
+				</span>
+			</span>
+		</button>
+		<button
+			class="opt"
+			role="switch"
+			aria-checked={prefs.showSystemStartup}
+			onclick={() => setPref('showSystemStartup', !prefs.showSystemStartup)}
+		>
+			<span class="sw" class:on={prefs.showSystemStartup}><span class="knob"></span></span>
+			<span class="opt-text">
+				<span class="opt-name">Ukazovat startovací položky Windows</span>
+				<span class="opt-why">
+					V Po spuštění jsou vidět jen programy třetích stran — to, co s Windows
+					startuje ze systému samotného, se nezobrazuje. Přepnout to stejně nejde
+					(služba to odmítne) a dlouhý seznam nepřepínatelných řádků jen zakryje
+					to, co ovlivnit můžeš. Zapnuté je uvidíš k náhledu, bez přepínače.
+				</span>
+			</span>
+		</button>
+	</section>
 	<section class="card">
 		<header class="card-head">
 			<span class="label-tech">// settings / konfigurace</span>
@@ -94,7 +140,75 @@
 	.note {
 		margin: 0 0 0.8rem;
 		color: var(--text-dim);
-		font-size: 0.85rem;
+		font-size: var(--fs-lg);
+	}
+	/* Řádek s přepínačem. Celý řádek je tlačítko — mířit na malý
+	   obdélníček je zbytečná práce navíc. */
+	.opt {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.8rem;
+		width: 100%;
+		padding: 0.7rem 0.8rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--surface);
+		color: var(--text);
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+	.opt:hover {
+		background: var(--surface-hover);
+	}
+	/* Přepínač — geometrie 1:1 s tím v Po spuštění, ať je to napříč
+	   aplikací tentýž prvek, ne dva podobné. */
+	.sw {
+		position: relative;
+		flex: none;
+		width: 38px;
+		height: 21px;
+		margin-top: 1px;
+		border-radius: 999px;
+		border: 1px solid var(--border-strong);
+		background: var(--panel);
+		transition:
+			background 0.18s ease,
+			border-color 0.18s ease;
+	}
+	.sw .knob {
+		position: absolute;
+		top: 2px;
+		left: 2px;
+		width: 15px;
+		height: 15px;
+		border-radius: 50%;
+		background: var(--text-faint);
+		transition:
+			transform 0.18s ease,
+			background 0.18s ease;
+	}
+	.sw.on {
+		background: color-mix(in srgb, var(--ok) 26%, transparent);
+		border-color: color-mix(in srgb, var(--ok) 55%, transparent);
+	}
+	.sw.on .knob {
+		transform: translateX(17px);
+		background: var(--ok);
+		box-shadow: var(--glow-ok);
+	}
+	.opt-text {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+	.opt-name {
+		font-size: var(--fs-xl);
+	}
+	.opt-why {
+		font-size: var(--fs-md);
+		color: var(--text-dim);
+		line-height: 1.5;
 	}
 	.tiles {
 		display: flex;

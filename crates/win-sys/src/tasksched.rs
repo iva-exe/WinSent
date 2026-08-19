@@ -189,3 +189,28 @@ pub fn task_enabled(path: &str) -> Option<bool> {
         task.Enabled().ok().map(|v| v.as_bool())
     }
 }
+
+/// Co úloha doopravdy spouští — cesta z první `IExecAction`.
+/// U úloh s `IComHandlerAction` (jen CLSID, žádná cesta) vrací `None`;
+/// volající si takovou úlohu má vyložit jako „nevíme", ne jako „nic".
+pub fn task_payload(path: &str) -> Option<String> {
+    let svc = connect().ok()?;
+    // SAFETY: jen čtení; COM objekty uvolní Drop.
+    unsafe {
+        let (folder_path, name) = match path.rfind(char::from(92u8)) {
+            Some(0) => ("\\".to_string(), path[1..].to_string()),
+            Some(i) => (path[..i].to_string(), path[i + 1..].to_string()),
+            None => ("\\".to_string(), path.to_string()),
+        };
+        let folder = svc.GetFolder(&BSTR::from(folder_path)).ok()?;
+        let task = folder.GetTask(&BSTR::from(name)).ok()?;
+        let def = task.Definition().ok()?;
+        let acts = def.Actions().ok()?;
+        let a = acts.get_Item(1).ok()?;
+        let exec: IExecAction = a.cast().ok()?;
+        let mut p = BSTR::default();
+        exec.Path(&mut p).ok()?;
+        let s = p.to_string();
+        (!s.trim().is_empty()).then_some(s)
+    }
+}

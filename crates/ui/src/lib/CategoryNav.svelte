@@ -85,7 +85,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-dim);
 		font: inherit;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		padding: 5px 11px;
 		cursor: pointer;
 		transition:
@@ -104,7 +104,7 @@
 	.cat i {
 		font-style: normal;
 		font-family: var(--font-mono);
-		font-size: 0.7rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		font-variant-numeric: tabular-nums;
 	}

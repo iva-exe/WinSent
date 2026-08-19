@@ -11,3 +11,4 @@ win-sys = { workspace = true }
 validate = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+collector-boot = { workspace = true }

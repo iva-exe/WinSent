@@ -812,7 +812,7 @@
 		background: var(--surface);
 		color: var(--text-dim);
 		font: inherit;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		cursor: pointer;
 	}
 	.export:disabled {
@@ -845,7 +845,7 @@
 	/* Odkud informace je — drobné, ať nepřebije název incidentu. */
 	.src {
 		font-family: var(--font-mono);
-		font-size: 0.62rem;
+		font-size: var(--fs-3xs);
 		letter-spacing: 0.02em;
 		padding: 1px 6px;
 		border-radius: 999px;
@@ -860,7 +860,7 @@
 	/* Věta, kvůli které sem člověk přišel — nahoře a čitelně. */
 	.story {
 		margin: 14px 0 0;
-		font-size: 0.98rem;
+		font-size: var(--fs-2xl);
 		line-height: 1.5;
 	}
 	.story-detail {
@@ -870,7 +870,7 @@
 		border-radius: var(--radius);
 		background: var(--surface);
 		font-family: var(--font-mono);
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		line-height: 1.6;
 		color: var(--text-dim);
 		white-space: pre-wrap;
@@ -878,18 +878,18 @@
 	}
 	.story-rep {
 		margin: 8px 0 0;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		color: var(--warn);
 	}
 	.page-note {
 		margin: 14px 0 0;
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		line-height: 1.55;
 		color: var(--text-faint);
 	}
 	.note {
 		margin: 12px 0 0;
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		line-height: 1.55;
 		color: var(--text-faint);
 	}
@@ -912,7 +912,7 @@
 	}
 	.sub {
 		color: var(--text-faint);
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 	}
 	.refresh {
 		margin-left: auto;
@@ -932,7 +932,9 @@
 
 	.cols {
 		display: grid;
-		grid-template-columns: minmax(360px, 480px) 1fr;
+		/* Levý sloupec je širší, aby se značka zdroje („jen ze záznamu
+		   Windows") vešla na jeden řádek vedle názvu incidentu. */
+		grid-template-columns: minmax(430px, 560px) 1fr;
 		gap: 14px;
 		min-height: 0;
 		flex: 1;
@@ -982,11 +984,19 @@
 		flex: 1;
 	}
 	.row-title {
-		font-size: 0.85rem;
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		font-size: var(--fs-lg);
 		font-weight: 500;
 	}
+	/* Značka se nesmí zlomit uprostřed — buď se vejde, nebo se ořízne. */
+	.row-title .src {
+		flex: none;
+		white-space: nowrap;
+	}
 	.row-culprit {
-		font-size: 0.75rem;
+		font-size: var(--fs-sm);
 		color: var(--text-dim);
 		white-space: nowrap;
 		overflow: hidden;
@@ -994,7 +1004,7 @@
 	}
 	.row-ts {
 		font-family: var(--font-mono);
-		font-size: 0.68rem;
+		font-size: var(--fs-2xs);
 		color: var(--text-faint);
 		white-space: nowrap;
 	}
@@ -1019,7 +1029,7 @@
 	}
 	.d-ts {
 		font-family: var(--font-mono);
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		color: var(--text-dim);
 	}
 	.d-grid {
@@ -1041,16 +1051,16 @@
 		grid-column: 1 / -1;
 	}
 	.d-label {
-		font-size: 0.66rem;
+		font-size: var(--fs-2xs);
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
 		color: var(--text-faint);
 	}
 	.d-value {
-		font-size: 0.86rem;
+		font-size: var(--fs-lg);
 	}
 	.d-value.small {
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		word-break: break-all;
 	}
 	.mono {
@@ -1061,7 +1071,7 @@
 	}
 	.sec {
 		margin: 16px 0 8px;
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
 		color: var(--text-dim);
@@ -1079,7 +1089,7 @@
 		display: grid;
 		grid-template-columns: 64px 1fr auto;
 		gap: 10px;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		padding: 5px 10px;
 		background: var(--panel);
 		border: 1px solid var(--border);
@@ -1097,7 +1107,7 @@
 		position: absolute;
 		top: 5px;
 		left: 9px;
-		font-size: 0.64rem;
+		font-size: var(--fs-2xs);
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
 		color: var(--text-faint);
@@ -1107,7 +1117,7 @@
 		display: flex;
 		justify-content: space-between;
 		font-family: var(--font-mono);
-		font-size: 0.68rem;
+		font-size: var(--fs-2xs);
 		color: var(--text-faint);
 		margin-top: 4px;
 	}
@@ -1131,12 +1141,12 @@
 	}
 	.foot {
 		margin-top: 14px;
-		font-size: 0.76rem;
+		font-size: var(--fs-sm);
 		color: var(--text-faint);
 	}
 	.empty {
 		color: var(--text-faint);
-		font-size: 0.85rem;
+		font-size: var(--fs-lg);
 		padding: 18px;
 	}
 	.empty.small {

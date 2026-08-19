@@ -83,6 +83,18 @@ pub fn validate(action: &Action, ctx: &mut LiveContext) -> Verdict {
             if name.trim().is_empty() {
                 return Verdict::deny("prázdný název položky");
             }
+            // Co patří Windows, se nepřepíná. NIKDY. Klasifikace běží
+            // ZNOVU a nezávisle na tom, co ukázalo UI (SPEC 17.3):
+            // `command: None` znamená „přečti si příkaz sám čerstvě".
+            // UI ty položky ve výchozím stavu vůbec nezobrazí, ale
+            // spolehnout se na to nesmíme — do pipe může poslat příkaz
+            // kterýkoli přihlášený uživatel, takže vrstva je poslední
+            // slovo, ne zdvořilost vůči UI.
+            if let Some(why) = system_startup_reason(id, None, None) {
+                return Verdict::deny(format!(
+                    "„{name}“ patří Windows ({why}) — startovací položky systému Winsent nepřepíná"
+                ));
+            }
             match source {
                 // Winlogon hooky se nikdy nepřepínají — jen varují.
                 "shell" => Verdict::deny(
@@ -289,23 +301,10 @@ fn is_critical_name(name: &str) -> bool {
 }
 
 /// Existuje hodnota v Run klíči? (čerstvě, obě architektury)
+/// Uživatelské položky se hledají v HKU\<SID>, ne v HKEY_CURRENT_USER —
+/// démon běží jako LocalSystem, takže by to byla hive SYSTEMu.
 fn startup_run_exists(name: &str, machine: bool) -> bool {
-    use win_sys::registry::{enum_values, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
-    let root = if machine {
-        HKEY_LOCAL_MACHINE
-    } else {
-        HKEY_CURRENT_USER
-    };
-    const SUBS: &[&str] = &[
-        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
-        r"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
-        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
-    ];
-    SUBS.iter().any(|sub| {
-        enum_values(root, sub)
-            .iter()
-            .any(|(n, _)| n.eq_ignore_ascii_case(name))
-    })
+    run_value(name, machine).is_some()
 }
 
 /// Existuje soubor ve Startup složce?
@@ -335,6 +334,422 @@ fn service_start_type(name: &str) -> Option<u64> {
         &format!(r"SYSTEM\CurrentControlSet\Services\{name}"),
         "Start",
     )
+}
+
+// ── JEDNA definice „položka po spuštění patří Windows" ─────────────
+//
+// Rozhoduje se tady, ve vrstvě, a to ze dvou důvodů. Za prvé UI vlastníka
+// souboru z WebView nepřečte, takže by muselo hádat podle cesty — a cesta
+// lže v obou směrech (ovladač HP v System32, NVIDIA v DriverStore, hry
+// ve WindowsApps, OneDrive v profilu uživatele). Za druhé by dvě pravidla
+// znamenala přepínač, který skončí odmítnutím. Verdikt se proto počítá
+// jednou a do UI CESTUJE jako pole `system` na StartupRow.
+//
+// `pub` ze stejného důvodu jako `uninstall_command`: obě strany musí
+// vidět TOTÉŽ rozhodnutí, žádná cesta okolo vrstvy.
+
+/// Memo vlastníků na dobu JEDNOHO skenu: stovky služeb sdílejí tentýž
+/// svchost.exe, unikátních cest je zlomek.
+pub type OwnerMemo = std::collections::HashMap<String, Option<bool>>;
+
+/// Rodiny MSIX balíčků, které jsou součástí systému. Drží se shodné se
+/// `SYS_FAMILIES` v `crates/ui/src/lib/mandatory.js`.
+const SYSTEM_PACKAGE_PREFIXES: &[&str] = &[
+    "microsoftwindows.",
+    "microsoft.windows.",
+    "windows.",
+    "microsoft.aad.",
+    "microsoft.accountscontrol",
+    "microsoft.lockapp",
+    "microsoft.sechealthui",
+    "microsoft.win32webviewhost",
+];
+
+/// Proměnné, které ukazují do profilu uživatele. Démon běží jako
+/// LocalSystem, takže by se mu rozbalily na `…\config\systemprofile\…`,
+/// tedy dovnitř Windows. Bez téhle zkratky by zmizel OneDrive.
+const USER_VARS: &[&str] = &[
+    "%localappdata%",
+    "%appdata%",
+    "%userprofile%",
+    "%homepath%",
+    "%onedrive%",
+];
+
+/// Součásti Windows, které se aktualizují MIMO servisní stack, takže je
+/// nevlastní TrustedInstaller a neleží ve %SystemRoot%. Bez tohohle
+/// seznamu by Microsoft Defender vyšel jako aplikace třetí strany
+/// a nabídli bychom u antiviru přepínač, který Windows stejně odmítnou.
+const COMPONENT_ZONES: &[&str] = &[
+    r"\program files\windows defender\",
+    r"\program files (x86)\windows defender\",
+    r"\programdata\microsoft\windows defender\",
+    r"\program files\windows defender advanced threat protection\",
+];
+
+/// Patří položka po spuštění Windows? Vrací DŮVOD (česky, jde rovnou do
+/// UI), nebo `None` u položky třetí strany.
+///
+/// `command` — už přečtený příkaz, když ho volající má (sken v démonu);
+/// `None` znamená „přečti si ho sám ČERSTVĚ" a používá ho validační
+/// vrstva, která snapshotu z UI věřit nesmí (SPEC 17.3).
+/// `memo` — cache vlastníků na dobu jednoho skenu; validace jedné
+/// položky ji nepotřebuje (`None`).
+pub fn system_startup_reason(
+    id: &str,
+    command: Option<&str>,
+    mut memo: Option<&mut OwnerMemo>,
+) -> Option<String> {
+    let (source, name) = id.split_once('|')?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    match source {
+        // Winlogon se zobrazuje JEN v nestandardním stavu — tedy právě
+        // když systému nepatří. Skrýt alarm by bylo horší než řádek
+        // navíc; přepnutí zakazuje vlastní větev ve `validate`.
+        "shell" => None,
+
+        // Do složek po spuštění si Windows nic nedává (desktop.ini
+        // kolektor přeskakuje). Cokoliv tam je, je cizí.
+        "folder_user" | "folder_common" => None,
+
+        // Run klíče. Windows tu svoje věci prakticky nemá, takže riziko
+        // je opačné — schovat něco cizího.
+        "run_user" | "run_machine" => {
+            let cmd = match command {
+                Some(c) => c.to_string(),
+                None => run_value(name, source == "run_machine")?,
+            };
+            if per_user_command(&cmd) {
+                return None;
+            }
+            let payload = payload_of_command(&cmd)?;
+            payload_verdict(&payload, &mut memo, "spouští ji součást Windows")
+        }
+
+        "task" => {
+            // Cesta úlohy musí být kotvená v kořeni. Plánovač bere
+            // i „Microsoft\Windows\…" bez úvodního lomítka a
+            // `IRegisteredTask::Path` takový tvar vrátí nezměněný —
+            // prefixové pravidlo by šlo obejít jedním smazaným znakem.
+            if !name.starts_with(char::from(92u8)) {
+                return Some("cesta úlohy není kotvená — bere se jako systémová".into());
+            }
+            // \Microsoft\Windows\ je vyhrazený jmenný prostor OS.
+            // Samotné \Microsoft\ ne — Office ani EdgeUpdate nejsou
+            // Windows a přepínat je jde.
+            if name.to_ascii_lowercase().starts_with(r"\microsoft\windows\") {
+                return Some("naplánovaná úloha Windows".into());
+            }
+            let cmd = match command {
+                Some(c) => Some(c.to_string()),
+                None => win_sys::tasksched::task_payload(name),
+            };
+            match cmd.as_deref().and_then(payload_of_command) {
+                Some(p) => payload_verdict(&p, &mut memo, "naplánovaná úloha Windows"),
+                // COM handler, kterému se nedohledala knihovna. Vypnutí
+                // MsCtfMonitor rozbije psaní a IME — když nevíme, zamykáme.
+                None => Some("úloha bez čitelné binárky — bere se jako systémová".into()),
+            }
+        }
+
+        "service" => {
+            // Jméno služby nesmí obsahovat cestu — jinak by šlo číst cizí klíče.
+            if name.contains(char::from(92u8)) || name.contains('/') {
+                return Some("neplatné jméno služby".into());
+            }
+            if service_start_type(name).is_some_and(|t| t < 2) {
+                return Some("ovladač zaváděný při startu systému".into());
+            }
+            if service_display_is_mui(name) {
+                return Some("služba Windows".into());
+            }
+            match service_payload(name) {
+                Some(p) => payload_verdict(&p, &mut memo, "služba Windows"),
+                // Parameters nejde přečíst → nevíme → systém.
+                None => Some("službu nejde přečíst — bere se jako systémová".into()),
+            }
+        }
+
+        "msix" => {
+            let fam = name.to_ascii_lowercase();
+            SYSTEM_PACKAGE_PREFIXES
+                .iter()
+                .any(|f| fam.starts_with(f))
+                .then(|| "součást Windows z Microsoft Storu".to_string())
+        }
+
+        _ => Some("neznámý zdroj — bere se jako systémový".into()),
+    }
+}
+
+/// Společný závěr žebříku: zóna vendora → cizí, součást mimo servisní
+/// stack → systém, TrustedInstaller → systém, nečitelný vlastník →
+/// rozhoduje umístění.
+fn payload_verdict(payload: &str, memo: &mut Option<&mut OwnerMemo>, why: &str) -> Option<String> {
+    if vendor_zone(payload) {
+        return None;
+    }
+    if component_zone(payload) {
+        return Some(why.to_string());
+    }
+    match owner_is_trusted_installer(payload, memo) {
+        Some(true) => Some(why.to_string()),
+        Some(false) => None,
+        // Soubor na disku není (duch po odinstalaci) nebo je nečitelný.
+        // Uvnitř Windows to bereme jako systém, mimo jako cizí — jinak
+        // by zmizeli právě ti duchové, které chce uživatel vyhodit.
+        None if under_system_root(payload) => {
+            Some(format!("{why} — soubor nečitelný, ale leží ve Windows"))
+        }
+        None => None,
+    }
+}
+
+/// Vlastník payloadu, s memem na dobu skenu.
+fn owner_is_trusted_installer(path: &str, memo: &mut Option<&mut OwnerMemo>) -> Option<bool> {
+    let key = path.to_ascii_lowercase();
+    if let Some(m) = memo.as_deref_mut() {
+        if let Some(v) = m.get(&key) {
+            return *v;
+        }
+    }
+    let v = win_sys::sysowner::owned_by_trusted_installer(path);
+    if let Some(m) = memo.as_deref_mut() {
+        m.insert(key, v);
+    }
+    v
+}
+
+/// Zóny, kde vlastnictví TrustedInstaller NEZNAMENÁ NIC: soubory tam
+/// pokládá servisní stack Windows, ale patří vendorovi.
+fn vendor_zone(path: &str) -> bool {
+    let p = path.replace('/', "\\").to_ascii_lowercase();
+    if p.contains(r"\driverstore\filerepository\") {
+        return true;
+    }
+    if let Some(i) = p.find(r"\windowsapps\") {
+        let pkg = &p[i + r"\windowsapps\".len()..];
+        let fam = pkg.split('\\').next().unwrap_or("");
+        return !SYSTEM_PACKAGE_PREFIXES.iter().any(|f| fam.starts_with(f));
+    }
+    false
+}
+
+/// Součást Windows, která bydlí mimo %SystemRoot% a aktualizuje se
+/// vlastním kanálem (Defender). Vlastník ani umístění ji neprozradí.
+fn component_zone(path: &str) -> bool {
+    let p = path.replace('/', "\\").to_ascii_lowercase();
+    COMPONENT_ZONES.iter().any(|z| p.contains(z))
+}
+
+/// Kořen Windows (bez lomítka na konci).
+fn system_root() -> String {
+    std::env::var("SystemRoot")
+        .unwrap_or_else(|_| r"C:\Windows".into())
+        .trim_end_matches(char::from(92u8))
+        .to_string()
+}
+
+/// Leží cesta pod %SystemRoot%?
+fn under_system_root(path: &str) -> bool {
+    let p = path.replace('/', "\\").to_ascii_lowercase();
+    p.starts_with(&format!("{}\\", system_root().to_ascii_lowercase()))
+}
+
+/// Míří příkaz do profilu uživatele?
+fn per_user_command(cmd: &str) -> bool {
+    let lc = cmd.to_ascii_lowercase();
+    USER_VARS.iter().any(|v| lc.contains(v))
+        || lc.contains(r"\users\")
+        || lc.contains(r"\config\systemprofile\")
+}
+
+/// Rozbalí `%VAR%`. Neznámou proměnnou nechá být — volající pak pozná,
+/// že se cesta nerozřešila (zbylo v ní `%`).
+fn expand_vars(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut rest = path;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('%') {
+            Some(end) => {
+                let key = &after[..end];
+                match std::env::var(key) {
+                    Ok(v) => out.push_str(&v),
+                    Err(_) => {
+                        out.push('%');
+                        out.push_str(key);
+                        out.push('%');
+                    }
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Soubor, který příkazová řádka doopravdy spouští: uvozovky, NT prefix
+/// `\??\`, `%VAR%`, a u generických hostitelů (`rundll32`, `regsvr32`)
+/// modul z argumentů — sám rundll32.exe vlastní TrustedInstaller vždycky,
+/// takže by prohlásil za Windows cokoliv, co ho zneužije.
+/// `None` = příkazu nerozumíme.
+fn payload_of_command(cmd: &str) -> Option<String> {
+    let cmd = cmd.trim();
+    if cmd.is_empty() {
+        return None;
+    }
+    let (first, rest) = if let Some(tail) = cmd.strip_prefix('"') {
+        let end = tail.find('"')?;
+        (&tail[..end], &tail[end + 1..])
+    } else {
+        let lc = cmd.to_ascii_lowercase();
+        let end = [".exe", ".dll", ".sys"]
+            .iter()
+            .filter_map(|e| lc.find(e).map(|i| i + e.len()))
+            .min()?;
+        (&cmd[..end], &cmd[end..])
+    };
+    let first = first.trim();
+    let first = expand_vars(first.strip_prefix(r"\??\").unwrap_or(first));
+    let lc = first.to_ascii_lowercase();
+    let host = lc.ends_with(r"\rundll32.exe")
+        || lc.ends_with(r"\regsvr32.exe")
+        || lc == "rundll32.exe"
+        || lc == "regsvr32.exe";
+    if host {
+        let dll = rest
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .map(|t| t.trim_matches('"'))
+            .find(|t| t.to_ascii_lowercase().ends_with(".dll"))?;
+        let dll = expand_vars(dll);
+        if dll.contains('%') {
+            return None;
+        }
+        // Holé jméno bez cesty hledá Windows v System32.
+        return Some(if dll.contains(char::from(92u8)) {
+            dll
+        } else {
+            format!(r"{}\System32\{dll}", system_root())
+        });
+    }
+    (!first.contains('%') && !first.trim().is_empty()).then_some(first)
+}
+
+/// Hodnota z Run/RunOnce klíče, ČERSTVĚ. HKCU se záměrně neptáme:
+/// démon běží jako LocalSystem, takže by to byla hive SYSTEMu, ne
+/// přihlášeného uživatele — uživatelské položky se hledají v HKU\<SID>,
+/// stejně jako v `uninstall_command`.
+fn run_value(name: &str, machine: bool) -> Option<String> {
+    use win_sys::registry::{enum_values, RegKey, HKEY_LOCAL_MACHINE, HKEY_USERS};
+    const SUBS: &[&str] = &[
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce",
+    ];
+    let mut roots: Vec<(RegKey, String)> = Vec::new();
+    if machine {
+        for s in SUBS {
+            roots.push((HKEY_LOCAL_MACHINE, (*s).to_string()));
+        }
+    } else {
+        for sid in win_sys::consent::user_hives() {
+            for s in SUBS {
+                roots.push((HKEY_USERS, format!(r"{sid}\{s}")));
+            }
+        }
+    }
+    for (root, sub) in roots {
+        if let Some((_, v)) = enum_values(root, &sub)
+            .into_iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Soubor, který služba doopravdy spouští. U svchostu je to
+/// `Parameters\ServiceDll`, ne hostitel: stovky služeb sdílejí tentýž
+/// svchost.exe, takže testovat hostitele znamená prohlásit tiskový
+/// démon HP za součást Windows.
+fn service_payload(name: &str) -> Option<String> {
+    use win_sys::registry::{read_string, HKEY_LOCAL_MACHINE as HKLM};
+    let base = format!(r"SYSTEM\CurrentControlSet\Services\{name}");
+    let host = payload_of_command(&service_image_path(name)?)?;
+    if !host.to_ascii_lowercase().ends_with(r"\svchost.exe") {
+        return Some(host);
+    }
+    // Instance na uživatele (`CDPUserSvc_8427c`) mají Parameters jen na
+    // šablonovém klíči bez suffixu `_<hex>`; ten se liší stroj od stroje.
+    let mut keys = vec![base];
+    if let Some((tpl, _)) = name.rsplit_once('_') {
+        keys.push(format!(r"SYSTEM\CurrentControlSet\Services\{tpl}"));
+    }
+    for k in keys {
+        for (sub, value) in [(format!(r"{k}\Parameters"), "ServiceDll"), (k, "ServiceDll")] {
+            let Some(dll) = read_string(HKLM, &sub, value) else {
+                continue;
+            };
+            let dll = expand_vars(dll.trim());
+            if !dll.trim().is_empty() && !dll.contains('%') {
+                return Some(dll);
+            }
+        }
+    }
+    None
+}
+
+/// ImagePath služby, čerstvě z registru.
+fn service_image_path(name: &str) -> Option<String> {
+    win_sys::registry::read_string(
+        win_sys::registry::HKEY_LOCAL_MACHINE,
+        &format!(r"SYSTEM\CurrentControlSet\Services\{name}"),
+        "ImagePath",
+    )
+}
+
+/// Má služba MUI-nepřímý název nebo popis? Takhle se registruje
+/// komponenta Windows (`@%SystemRoot%\system32\schedsvc.dll,-100`);
+/// třetí strany tam mají prostý text („ESET Service"). Cesta musí mířit
+/// do Windows NEBO do zóny součásti mimo servisní stack — právě tak se
+/// hlásí Microsoft Defender (`@%ProgramFiles%\Windows Defender\…`).
+fn service_display_is_mui(name: &str) -> bool {
+    use win_sys::registry::{read_string, HKEY_LOCAL_MACHINE as HKLM};
+    let mut keys = vec![format!(r"SYSTEM\CurrentControlSet\Services\{name}")];
+    if let Some((tpl, _)) = name.rsplit_once('_') {
+        keys.push(format!(r"SYSTEM\CurrentControlSet\Services\{tpl}"));
+    }
+    for k in &keys {
+        for v in ["DisplayName", "Description"] {
+            let Some(s) = read_string(HKLM, k, v) else {
+                continue;
+            };
+            let Some(rest) = s.trim().strip_prefix('@') else {
+                continue;
+            };
+            let path = rest.rsplit_once(',').map(|(p, _)| p).unwrap_or(rest);
+            let path = expand_vars(path.trim());
+            if vendor_zone(&path) {
+                continue;
+            }
+            if under_system_root(&path) || component_zone(&path) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Odinstalační příkaz aplikace z registru (čerstvě, dle DisplayName).

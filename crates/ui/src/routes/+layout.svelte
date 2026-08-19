@@ -286,13 +286,13 @@
 	}
 	.daemon-label {
 		font-family: var(--font-mono);
-		font-size: 11px;
+		font-size: var(--fs-2xs);
 		letter-spacing: 0.04em;
 		color: var(--text-dim);
 	}
 	.fix {
 		font-family: var(--font-mono);
-		font-size: 10px;
+		font-size: var(--fs-3xs);
 		letter-spacing: 0.04em;
 		padding: 0.1rem 0.4rem;
 		border-radius: 4px;
@@ -383,7 +383,7 @@
 		color: var(--text-dim);
 		text-decoration: none;
 		font-weight: 500;
-		font-size: 0.92rem;
+		font-size: var(--fs-xl);
 		transition: background 130ms ease-out, color 130ms ease-out;
 	}
 	.sidebar a:hover {

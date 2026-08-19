@@ -44,6 +44,20 @@
 	/* typografie */
 	--font-ui: 'Space Grotesk', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
 	--font-mono: 'Fira Mono', 'Cascadia Mono', 'Consolas', monospace;
+
+	/* Velikosti tělového textu. Jedna stupnice pro celou aplikaci —
+	   dřív tu bylo přes čtyřicet různých hodnot mezi 0,58rem a 12px
+	   a nešlo sáhnout na čitelnost, aniž by se přepisovalo dvě stě
+	   míst. Nadpisy (h1/h2/h3, .metric, velká čísla v dlaždicích)
+	   tokeny schválně nepoužívají: nesmí se hnout, když se ladí tělo. */
+	--fs-3xs: 0.66rem; /* 10,6 px — mikropopisky dt, značky zdroje */
+	--fs-2xs: 0.72rem; /* 11,5 px — mono verzálky, label-tech, th */
+	--fs-xs: 0.78rem; /* 12,5 px — mono hodnoty v mřížkách, časy, počty */
+	--fs-sm: 0.84rem; /* 13,4 px — druhotný text, poznámky, přepínače */
+	--fs-md: 0.88rem; /* 14,1 px — základní text seznamů a karet */
+	--fs-lg: 0.92rem; /* 14,7 px — buňky tabulek, tlačítka, zvýrazněné */
+	--fs-xl: 0.98rem; /* 15,7 px — názvy položek, odstavce dialogů */
+	--fs-2xl: 1.05rem; /* 16,8 px — vyhledávací pole, úvodní odstavec */
 }
 
 * {
@@ -72,7 +86,7 @@ body {
 /* technický popisek: mono, uppercase, prostrkané */
 .label-tech {
 	font-family: var(--font-mono);
-	font-size: 10.5px;
+	font-size: var(--fs-2xs);
 	text-transform: uppercase;
 	letter-spacing: 0.08em;
 	color: var(--text-faint);

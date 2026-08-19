@@ -20,6 +20,7 @@
 	} from 'lucide-svelte';
 	import SystemBadge from '$lib/SystemBadge.svelte';
 	import { isSystemApp, isSystemPath } from '$lib/mandatory.js';
+	import { prefs } from '$lib/prefs.svelte.js';
 	import AppIcon from '$lib/AppIcon.svelte';
 
 	/// Kolik položek se v kartě ukáže před rozkliknutím (karty tak mají
@@ -93,9 +94,17 @@
 	};
 	const srcOf = (s) => sources[s] ?? { label: s, icon: Cog };
 
+	// Systémové položky jsou ve výchozím stavu pryč. Verdikt počítá
+	// služba (validate::system_startup_reason) a přijde jako pole
+	// `system` — UI si ho nedopočítává, aby se dvě pravidla nemohla
+	// rozejít. Přepnout je nejde tak jako tak; dlouhý seznam zamčených
+	// řádků by jen zakryl to, co uživatel ovlivnit může.
+	let visibleItems = $derived(prefs.showSystemStartup ? items : items.filter((i) => !i.system));
+	let hiddenCount = $derived(items.filter((i) => i.system).length);
+
 	let shown = $derived.by(() => {
 		const f = filter.trim().toLowerCase();
-		return items.filter((i) => {
+		return visibleItems.filter((i) => {
 			if (segment === 'on' && !i.enabled) return false;
 			if (segment === 'off' && i.enabled) return false;
 			if (
@@ -127,8 +136,8 @@
 	});
 
 	let counts = $derived.by(() => ({
-		on: items.filter((i) => i.enabled).length,
-		off: items.filter((i) => !i.enabled).length
+		on: visibleItems.filter((i) => i.enabled).length,
+		off: visibleItems.filter((i) => !i.enabled).length
 	}));
 
 	// Podpis seznamu — poll nesmí překreslit 360 řádků, když se nic
@@ -193,7 +202,7 @@
 		<h1>Po spuštění</h1>
 		<div class="seg">
 			<button class:active={segment === 'all'} onclick={() => (segment = 'all')}>
-				Vše <i>{items.length}</i>
+				Vše <i>{visibleItems.length}</i>
 			</button>
 			<button class:active={segment === 'on'} onclick={() => (segment = 'on')}>
 				Zapnuté <i>{counts.on}</i>
@@ -210,6 +219,22 @@
 			<History size={16} />
 		</a>
 	</header>
+
+	<!-- Kolik toho neukazujeme a proč. Tiše ubrat stovku řádků z toho,
+	     co startuje s Windows, by byla lež o stavu systému — a uživatel
+	     by nevěděl, že se má kde podívat. -->
+	{#if hiddenCount && !prefs.showSystemStartup}
+		<p class="sysnote">
+			<ShieldCheck size={15} />
+			<span>
+				Skryto {hiddenCount}
+				{hiddenCount === 1 ? 'položka' : hiddenCount < 5 ? 'položky' : 'položek'}, které
+				patří Windows — služby, naplánované úlohy a zápisy systému. Přepínat je Winsent
+				nedovolí, takže by ze seznamu udělaly jen šum. Zobrazit je jde v
+				<a href="/settings">Settings → zobrazení</a>.
+			</span>
+		</p>
+	{/if}
 
 	{#if toast}
 		<div class="toast {toast.kind}">{toast.text}</div>
@@ -252,6 +277,17 @@
 									>
 										<span class="knob"></span>
 									</button>
+								{:else if i.system}
+									<!-- Položka Windows. Přepínač tu není schválně:
+									     službě by ho validační vrstva stejně odmítla
+									     a nabízet nefunkční ovladač je horší než ho
+									     nenabízet. Důvod chodí ze služby. -->
+									<span
+										class="locked sysitem"
+										title="Patří Windows{i.system_reason ? ` — ${i.system_reason}` : ''}. Winsent startovací položky systému nepřepíná."
+									>
+										<ShieldCheck size={16} />
+									</span>
 								{:else}
 									<span class="locked" title="Systémová položka — jen k náhledu">
 										<TriangleAlert size={16} />
@@ -310,7 +346,7 @@
 		border: none;
 		color: var(--text-dim);
 		font: inherit;
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		padding: 4px 10px;
 		border-radius: 3px;
 		cursor: pointer;
@@ -321,7 +357,7 @@
 	.seg button i {
 		font-style: normal;
 		font-family: var(--font-mono);
-		font-size: 0.66rem;
+		font-size: var(--fs-2xs);
 		color: var(--text-faint);
 	}
 	.seg button.active {
@@ -346,7 +382,7 @@
 		outline: none;
 		color: var(--text);
 		font: inherit;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		width: 170px;
 	}
 	.audit-btn {
@@ -368,7 +404,7 @@
 	.toast {
 		padding: 9px 14px;
 		border-radius: var(--radius-sm);
-		font-size: 0.86rem;
+		font-size: var(--fs-lg);
 		border: 1px solid var(--border-strong);
 		background: var(--surface);
 	}
@@ -391,7 +427,7 @@
 		display: flex;
 		align-items: center;
 		gap: 7px;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		color: var(--text-dim);
@@ -410,16 +446,16 @@
 		grid-template-columns: 150px 110px 1fr auto;
 		gap: 10px;
 		align-items: baseline;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		padding: 4px 0;
 		border-bottom: 1px dashed var(--border);
 	}
 	.a-ts {
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 	}
 	.a-target {
-		font-size: 0.74rem;
+		font-size: var(--fs-xs);
 		color: var(--text-dim);
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -427,14 +463,14 @@
 	}
 	.a-verdict {
 		color: var(--ok);
-		font-size: 0.76rem;
+		font-size: var(--fs-sm);
 	}
 	.a-verdict.deny {
 		color: var(--danger);
 	}
 	.a-reason {
 		grid-column: 3 / -1;
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 	}
 
@@ -472,7 +508,7 @@
 		text-overflow: ellipsis;
 	}
 	.g-count {
-		font-size: 0.68rem;
+		font-size: var(--fs-2xs);
 	}
 	/* Karty mají jednotnou výšku; delší seznam se sbalí s fadem.
 	   `content-visibility` platí JEN pro sbalené karty — u rozbalené
@@ -523,7 +559,7 @@
 		border: none;
 		color: var(--text-dim);
 		font: inherit;
-		font-size: 0.76rem;
+		font-size: var(--fs-sm);
 		cursor: pointer;
 		padding: 2px 0;
 	}
@@ -553,7 +589,7 @@
 		min-width: 0;
 	}
 	.i-name {
-		font-size: 0.88rem;
+		font-size: var(--fs-xl);
 		/* Dlouhé názvy (GUID balíčky, cesty) se zalomí, ať nelezou
 		   do přepínače. */
 		overflow-wrap: anywhere;
@@ -563,7 +599,7 @@
 		flex-wrap: wrap;
 	}
 	.i-cmd {
-		font-size: 0.7rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		white-space: nowrap;
 		overflow: hidden;
@@ -572,7 +608,7 @@
 		text-align: left;
 	}
 	.i-srclabel {
-		font-size: 0.64rem;
+		font-size: var(--fs-2xs);
 		white-space: nowrap;
 	}
 	/* Přepínač — vratná akce, žádný dialog (T0). */
@@ -614,13 +650,41 @@
 		opacity: 0.5;
 		cursor: wait;
 	}
+	/* Poznámka o skrytých systémových položkách. Nesmí vypadat jako
+	   poplach — je to vysvětlení, ne varování. */
+	.sysnote {
+		display: flex;
+		align-items: flex-start;
+		gap: 9px;
+		margin: 0;
+		padding: 9px 12px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--surface);
+		color: var(--text-dim);
+		font-size: var(--fs-sm);
+		line-height: 1.5;
+	}
+	.sysnote :global(svg) {
+		flex: none;
+		margin-top: 2px;
+		color: var(--net-down);
+	}
+	.sysnote a {
+		color: var(--text);
+	}
+	/* Zámek u položky Windows — modrý štít, ne jantarový vykřičník:
+	   není to problém, je to prostě systém. */
+	.locked.sysitem {
+		color: var(--net-down);
+	}
 	.locked {
 		color: var(--warn);
 		display: grid;
 		place-items: center;
 	}
 	.foot {
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		color: var(--text-faint);
 	}
 	.mono {
@@ -628,7 +692,7 @@
 	}
 	.dim {
 		color: var(--text-faint);
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 	}
 	.empty {
 		color: var(--text-faint);

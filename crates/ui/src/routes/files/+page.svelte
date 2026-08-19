@@ -5,6 +5,7 @@
 	// mazání přijde v v8 (bezpečně, do koše).
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
+	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import {
 		HardDrive,
 		Thermometer,
@@ -18,7 +19,8 @@
 		FolderTree
 	} from 'lucide-svelte';
 	import SystemBadge from '$lib/SystemBadge.svelte';
-	import { isSystemPath } from '$lib/mandatory.js';
+	import { systemPathInfo } from '$lib/mandatory.js';
+	import { prefs } from '$lib/prefs.svelte.js';
 
 	let volumes = $state([]);
 	let health = $state([]);
@@ -65,10 +67,56 @@
 		return cards.filter((c) => c.vols.length || c.health);
 	});
 
-	let dupWaste = $derived.by(() => {
-		const d = cleanup?.report?.dups ?? [];
-		return d.reduce((a, [size, paths]) => a + size * (paths.length - 1), 0);
-	});
+	// ── Ověření existence ─────────────────────────────────────────────
+	// Report ze služby je jednorázová cache spočtená krátce po startu
+	// a už se nepřepočítává (svc/daemon.rs, vlákno „cleanup"). Smazaný
+	// soubor by v seznamu visel dál — ať ho uživatel smazal tlačítkem
+	// koše, nebo v Průzkumníku. Ptáme se proto disku sami, jen čtení.
+	let gone = $state(new Set());
+	// Mimo $state: nevykresluje se, jen brání překryvu dvou kontrol.
+	let checking = false;
+
+	// Cesty, které report nabízí. Bereme i položky nad zobrazený limit —
+	// po odfiltrování se do seznamu posune další v pořadí.
+	function reportPaths(r) {
+		if (!r) return [];
+		const out = [];
+		for (const [, paths] of r.dups.slice(0, 60)) out.push(...paths);
+		out.push(...r.zero_byte.slice(0, 90));
+		for (const [, p] of r.big_dirs) out.push(p);
+		for (const [, p] of r.big_files) out.push(p);
+		return [...new Set(out)];
+	}
+
+	// Set se přiřazuje celý, ne mutuje — $state Set neproxuje, takže
+	// gone.add() by překreslení nespustilo.
+	async function recheckGone() {
+		const paths = reportPaths(cleanup?.report);
+		if (!paths.length || checking) return;
+		checking = true;
+		try {
+			const alive = await invoke('paths_exist', { paths });
+			gone = new Set(paths.filter((_, i) => !alive[i]));
+		} catch {
+			/* když se zeptat nejde, radši neschováme nic */
+		}
+		checking = false;
+	}
+
+	// Filtrované pohledy. Filtr jen ubírá, takže klíče v {#each}
+	// zůstávají unikátní (duplicitní klíč = tvrdá chyba v produkci).
+	// Skupina, ze které zbyl jediný soubor, už duplicita není.
+	let dupGroups = $derived.by(() =>
+		(cleanup?.report?.dups ?? [])
+			.map(([size, paths]) => [size, paths.filter((p) => !gone.has(p))])
+			.filter(([, paths]) => paths.length > 1)
+	);
+	let zeroFiles = $derived.by(() =>
+		(cleanup?.report?.zero_byte ?? []).filter((p) => !gone.has(p))
+	);
+	let dupWaste = $derived.by(() =>
+		dupGroups.reduce((a, [size, paths]) => a + size * (paths.length - 1), 0)
+	);
 	// Největší soubory/složky — přepínač svazku podle dat v reportu.
 	let bigVolume = $state(null);
 	let bigVolumes = $derived.by(() => {
@@ -78,10 +126,10 @@
 	});
 	let bigShown = $derived(bigVolume ?? bigVolumes[0] ?? null);
 	let bigDirs = $derived.by(() =>
-		(cleanup?.report?.big_dirs ?? []).filter((x) => x[0] === bigShown)
+		(cleanup?.report?.big_dirs ?? []).filter((x) => x[0] === bigShown && !gone.has(x[1]))
 	);
 	let bigFiles = $derived.by(() =>
-		(cleanup?.report?.big_files ?? []).filter((x) => x[0] === bigShown)
+		(cleanup?.report?.big_files ?? []).filter((x) => x[0] === bigShown && !gone.has(x[1]))
 	);
 
 	let indexingDone = $derived.by(() => (cleanup?.indexing ?? []).every((i) => i[2]));
@@ -113,7 +161,9 @@
 				r.verdict === 'allow' && r.outcome === 'ok'
 					? { kind: 'ok', text: `přesunuto do koše (${delPlan.paths.length})` }
 					: { kind: 'deny', text: r.deny_reason ?? `nepodařilo se (${r.outcome})` };
-			load();
+			// Report ze služby se mazáním nemění — řádek zmizí až tím,
+			// že si sami ověříme, že soubor v koši opravdu skončil.
+			load().then(recheckGone);
 		} catch (e) {
 			delToast = { kind: 'deny', text: String(e) };
 		}
@@ -140,16 +190,47 @@
 			loadError = String(e);
 		}
 		try {
-			cleanup = await invoke('query_cleanup');
+			const c = await invoke('query_cleanup');
+			// Nový report = nová sada cest; ověřit hned, ne až při
+			// dalším focusu, jinak by se poprvé ukázal neověřený.
+			const fresh = c?.report?.finished_ts !== cleanup?.report?.finished_ts;
+			cleanup = c;
+			if (fresh) recheckGone();
 		} catch {
 			cleanup = null;
+		}
+	}
+
+	// Lazy — mimo Tauri (náhled v prohlížeči) getCurrentWindow neexistuje.
+	function win() {
+		try {
+			return getCurrentWindow();
+		} catch {
+			return null;
 		}
 	}
 
 	onMount(() => {
 		load();
 		const t = setInterval(load, 4000);
-		return () => clearInterval(t);
+		// Návrat focusu do okna = uživatel se vrátil z Průzkumníku, kde
+		// možná mazal. Přesnější a levnější trigger než periodický
+		// dotaz: ptát se disku na stovky cest každé 4 s je buzení disku
+		// bez užitku, protože dokud okno focus má, v Průzkumníku se
+		// nemaže.
+		let unlisten = null;
+		let dead = false;
+		win()
+			?.onFocusChanged(({ payload: focused }) => {
+				if (focused) recheckGone();
+			})
+			.then((f) => (dead ? f() : (unlisten = f)))
+			.catch(() => {});
+		return () => {
+			dead = true;
+			clearInterval(t);
+			unlisten?.();
+		};
 	});
 </script>
 
@@ -201,6 +282,69 @@
 		{/each}
 	</div>
 
+	<!-- ── Co zabírá nejvíc místa ── -->
+	{#if bigVolumes.length}
+		<section class="card">
+			<div class="c-head">
+				<span class="label-tech">// co zabírá nejvíc místa</span>
+				<div class="vol-seg">
+					{#each bigVolumes as l (l)}
+						<button class:active={bigShown === l} onclick={() => (bigVolume = l)}>{l}:</button>
+					{/each}
+				</div>
+			</div>
+			<div class="c-cols">
+				<div class="c-block tall">
+					<h3><FolderTree size={15} /> Největší složky <em>{bigDirs.length}</em></h3>
+					<!-- U složek koš schválně NENÍ: smazat celou složku je
+					     nevratně větší zásah než smazat soubor a ze seznamu
+					     není poznat, co všechno v ní je. Klik otevře složku
+					     v Průzkumníku, kde uživatel vidí obsah. -->
+					{#each bigDirs as [, path, size] (path)}
+						{@const guard = systemPathInfo(path)}
+						<button class="row" onclick={() => openPath(path)} title="Otevřít v Průzkumníku">
+							<span class="r-path mono">{path}</span>
+							{#if guard}<SystemBadge compact level={guard.level} title={guard.reason} />{/if}
+							<span class="r-size mono">{fmtSize(size)}</span>
+						</button>
+					{/each}
+				</div>
+				<div class="c-block tall">
+					<h3><FileType2 size={15} /> Největší soubory <em>{bigFiles.length}</em></h3>
+					{#each bigFiles as [, path, size] (path)}
+						{@const guard = systemPathInfo(path)}
+						<div class="row-wrap">
+							<button class="row" onclick={() => openPath(path)} title="Otevřít v Průzkumníku">
+								<span class="r-path mono">{path}</span>
+								{#if guard}<SystemBadge compact level={guard.level} title={guard.reason} />{/if}
+								<span class="r-size mono">{fmtSize(size)}</span>
+							</button>
+							{#if guard?.level !== 'mandatory'}
+								<button
+									class="del-btn"
+									title="Přesunout do koše (jde vrátit)"
+									onclick={(ev) => askDelete([path], ev)}
+								>
+									<Trash2 size={14} />
+								</button>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			</div>
+			<!-- Legenda k oběma sloupcům. Největší soubory na disku jsou
+			     skoro vždy systémové; bez tohohle to vypadá jako seznam
+			     smetí k úklidu. -->
+			<p class="note big">
+				<SystemBadge compact /> povinná součást Windows — smazat ji nejde a systém by se rozbil ·
+				<SystemBadge compact level="managed" /> systémové, ale uklidit to umí nástroj Windows
+				(Vyčištění disku, Ochrana systému, koš) · bez značky jsou tvoje data. Po najetí myší
+				na značku je vidět, o co přesně jde.
+			</p>
+		</section>
+	{/if}
+
+
 	<!-- ── Úklid: progres indexace + výsledky analýzy ── -->
 	<section class="card cleanup">
 		<div class="c-head">
@@ -238,13 +382,13 @@
 				<!-- Duplicity -->
 				<div class="c-block">
 					<h3>
-						<Copy size={15} /> Duplicity — {r.dups.length} skupin, {fmtSize(dupWaste)} navíc
+						<Copy size={15} /> Duplicity — {dupGroups.length} skupin, {fmtSize(dupWaste)} navíc
 					</h3>
-					{#if r.dups.length === 0}
+					{#if dupGroups.length === 0}
 						<p class="note">žádné duplicitní soubory (média/archivy/dokumenty ≥ 1 MB)</p>
 					{:else}
 						<ul class="dup-list">
-							{#each r.dups.slice(0, 40) as [size, paths], gi (gi)}
+							{#each dupGroups.slice(0, 40) as [size, paths], gi (gi)}
 								<li>
 									<span class="dup-size mono">{fmtSize(size)} × {paths.length}</span>
 									{#each paths as p (p)}
@@ -267,28 +411,35 @@
 					{/if}
 				</div>
 
-				<!-- 0bajtové -->
-				<div class="c-block">
-					<h3><FileX size={15} /> Prázdné soubory (0 B) — {r.zero_byte.length}</h3>
-					{#if r.zero_byte.length === 0}
-						<p class="note">žádné prázdné soubory v profilech</p>
-					{:else}
-						{#each r.zero_byte.slice(0, 60) as p (p)}
-							<div class="row-wrap">
-								<button class="row" onclick={() => openPath(p)}>
-									<span class="r-path mono">{p}</span>
-								</button>
-								<button
-									class="del-btn"
-									title="Přesunout do koše (jde vrátit)"
-									onclick={(ev) => askDelete([p], ev)}
-								>
-									<Trash2 size={14} />
-								</button>
-							</div>
-						{/each}
-					{/if}
-				</div>
+				<!-- 0bajtové — ve výchozím stavu se blok NEUKAZUJE vůbec.
+				     Prázdný soubor sám o sobě není smetí (zámky, značky,
+				     rozdělaná stahování), tak se nenabízí k úklidu, dokud
+				     si to uživatel nezapne v Settings. Sloupec duplicit se
+				     pak roztáhne přes celou šířku sám — .c-cols je grid
+				     s auto-fit. -->
+				{#if prefs.showZeroByte}
+					<div class="c-block">
+						<h3><FileX size={15} /> Prázdné soubory (0 B) — {zeroFiles.length}</h3>
+						{#if zeroFiles.length === 0}
+							<p class="note">žádné prázdné soubory v profilech</p>
+						{:else}
+							{#each zeroFiles.slice(0, 60) as p (p)}
+								<div class="row-wrap">
+									<button class="row" onclick={() => openPath(p)}>
+										<span class="r-path mono">{p}</span>
+									</button>
+									<button
+										class="del-btn"
+										title="Přesunout do koše (jde vrátit)"
+										onclick={(ev) => askDelete([p], ev)}
+									>
+										<Trash2 size={14} />
+									</button>
+								</div>
+							{/each}
+						{/if}
+					</div>
+				{/if}
 			</div>
 			<p class="note big">
 				Winsent ukáže, co zabírá místo — mazat necháme na tobě. Klik otevře složku
@@ -330,42 +481,6 @@
 	{#if delToast}
 		<div class="dlg-toast {delToast.kind}">{delToast.text}</div>
 	{/if}
-
-	<!-- ── Co zabírá nejvíc místa ── -->
-	{#if bigVolumes.length}
-		<section class="card">
-			<div class="c-head">
-				<span class="label-tech">// co zabírá nejvíc místa</span>
-				<div class="vol-seg">
-					{#each bigVolumes as l (l)}
-						<button class:active={bigShown === l} onclick={() => (bigVolume = l)}>{l}:</button>
-					{/each}
-				</div>
-			</div>
-			<div class="c-cols">
-				<div class="c-block tall">
-					<h3><FolderTree size={15} /> Největší složky <em>{bigDirs.length}</em></h3>
-					{#each bigDirs as [, path, size] (path)}
-						<button class="row" onclick={() => openPath(path)} title="Otevřít v Průzkumníku">
-							<span class="r-path mono">{path}</span>
-							{#if isSystemPath(path)}<SystemBadge compact />{/if}
-							<span class="r-size mono">{fmtSize(size)}</span>
-						</button>
-					{/each}
-				</div>
-				<div class="c-block tall">
-					<h3><FileType2 size={15} /> Největší soubory <em>{bigFiles.length}</em></h3>
-					{#each bigFiles as [, path, size] (path)}
-						<button class="row" onclick={() => openPath(path)} title="Otevřít v Průzkumníku">
-							<span class="r-path mono">{path}</span>
-							{#if isSystemPath(path)}<SystemBadge compact />{/if}
-							<span class="r-size mono">{fmtSize(size)}</span>
-						</button>
-					{/each}
-				</div>
-			</div>
-		</section>
-	{/if}
 </div>
 
 <style>
@@ -388,7 +503,7 @@
 	}
 	.sub {
 		color: var(--text-faint);
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 	}
 	.card {
 		border: 1px dashed var(--border);
@@ -420,7 +535,7 @@
 		align-items: center;
 		gap: 6px;
 		font-family: var(--font-mono);
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 	}
 	.vol-row {
 		display: grid;
@@ -433,14 +548,14 @@
 		font-weight: 500;
 	}
 	.vol-label {
-		font-size: 0.86rem;
+		font-size: var(--fs-lg);
 		color: var(--text-dim);
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
 	.vol-fs {
-		font-size: 0.68rem;
+		font-size: var(--fs-2xs);
 	}
 	.bar {
 		height: 7px;
@@ -455,7 +570,7 @@
 		border-radius: 4px;
 	}
 	.vol-nums {
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		color: var(--text-dim);
 		text-align: right;
 	}
@@ -475,7 +590,7 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		font-size: 0.86rem;
+		font-size: var(--fs-lg);
 		color: var(--text-dim);
 	}
 	.vol-seg {
@@ -492,7 +607,7 @@
 		color: var(--text-dim);
 		font: inherit;
 		font-family: var(--font-mono);
-		font-size: 0.76rem;
+		font-size: var(--fs-sm);
 		padding: 3px 10px;
 		border-radius: 3px;
 		cursor: pointer;
@@ -519,7 +634,7 @@
 		display: flex;
 		align-items: center;
 		gap: 7px;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		color: var(--text-dim);
@@ -549,7 +664,7 @@
 		padding: 5px 0;
 	}
 	.dup-size {
-		font-size: 0.76rem;
+		font-size: var(--fs-sm);
 		color: var(--warn);
 	}
 	.row {
@@ -570,7 +685,7 @@
 	}
 	.r-path {
 		flex: 1;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -578,18 +693,18 @@
 		text-align: left;
 	}
 	.r-size {
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		color: var(--text-dim);
 	}
 	.note {
-		font-size: 0.74rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		margin: 6px 0 0;
 	}
 	.c-block h3 em {
 		font-style: normal;
 		font-family: var(--font-mono);
-		font-size: 0.68rem;
+		font-size: var(--fs-2xs);
 		color: var(--text-faint);
 	}
 	.idx-err {
@@ -597,14 +712,14 @@
 		align-items: center;
 		gap: 8px;
 		margin: 10px 0 0;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		color: var(--warn);
 	}
 	.mono.err {
 		color: var(--warn);
 	}
 	.note.big {
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		margin-top: 12px;
 	}
 
@@ -622,7 +737,7 @@
 		outline: none;
 		color: var(--text);
 		font: inherit;
-		font-size: 0.95rem;
+		font-size: var(--fs-2xl);
 		padding: 4px 0;
 	}
 	.sel {
@@ -631,7 +746,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text);
 		font: inherit;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		padding: 4px 8px;
 	}
 	.hits {
@@ -703,7 +818,7 @@
 		padding: 0;
 		max-height: 40vh;
 		overflow-y: auto;
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 	}
 	.d-steps li {
 		padding: 5px 0;
@@ -715,11 +830,11 @@
 	}
 	.d-why {
 		color: var(--danger);
-		font-size: 0.88rem;
+		font-size: var(--fs-xl);
 		margin-bottom: 12px;
 	}
 	.d-note {
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		color: var(--text-faint);
 		margin-bottom: 14px;
 	}
@@ -734,7 +849,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text);
 		font: inherit;
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 		padding: 7px 14px;
 		cursor: pointer;
 	}
@@ -754,7 +869,7 @@
 		border-radius: var(--radius);
 		background: #16171c;
 		border: 1px solid var(--border-strong);
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 		z-index: 50;
 	}
 	.dlg-toast.ok {
@@ -772,7 +887,7 @@
 	}
 	.empty {
 		color: var(--text-faint);
-		font-size: 0.88rem;
+		font-size: var(--fs-xl);
 		padding: 12px;
 	}
 </style>

@@ -215,7 +215,7 @@
 	}
 	.sub {
 		color: var(--text-faint);
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 	}
 	.grid {
 		display: grid;
@@ -252,7 +252,7 @@
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
 		color: var(--text-dim);
@@ -268,7 +268,7 @@
 		font-size: 0.95rem;
 	}
 	.t-sub {
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 	}
 	.t-list {
@@ -284,7 +284,7 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 	}
 	.t-name {
 		flex: 1;

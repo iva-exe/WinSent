@@ -180,3 +180,16 @@ pub fn user_hives() -> Vec<String> {
         .filter(|sid| sid.starts_with("S-1-5-21") && !sid.ends_with("_Classes"))
         .collect()
 }
+
+/// Cesta k profilu uživatele podle SID (`C:\Users\Jmeno`).
+///
+/// Služba běží jako SYSTEM, takže `%APPDATA%` a `%USERPROFILE%` míří do
+/// `…\config\systemprofile\…` — do profilu SYSTEMU, ne člověka. Kdo chce
+/// složku po spuštění skutečného uživatele, musí si cestu vzít odsud.
+pub fn profile_path(sid: &str) -> Option<String> {
+    crate::registry::read_string(
+        crate::registry::HKEY_LOCAL_MACHINE,
+        &format!(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\{sid}"),
+        "ProfileImagePath",
+    )
+}

@@ -692,17 +692,20 @@
 		}
 	}
 
-	// Deep-link z Programs: ?hl=<identity_key> → zaskrolovat na řádek
-	// (skupinu v apps view / první proces) a nechat ho probliknout.
-	function tryHighlight(key, tries = 0) {
+	// Deep-link z Programs a Network: ?hl=<identity_key> → zaskrolovat
+	// na řádek a nechat ho zvýrazněný. Zvýraznění je trvalé, ne
+	// problik: uživatel sem přišel s otázkou „který to je" a mezitím
+	// se seznam každou sekundu překresluje a přeuspořádává. Stav žije
+	// v komponentě, takže odchodem ze sekce zmizí sám.
+	let hlKey = $state(null);
+
+	function scrollToHl(key, tries = 0) {
 		const el = document.querySelector(`[data-idkey="${CSS.escape(key)}"]`);
 		if (el) {
 			el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-			el.classList.add('hl-flash');
-			setTimeout(() => el.classList.remove('hl-flash'), 1700);
 		} else if (tries < 20) {
 			// data ještě nedoběhla — zkusit znovu
-			setTimeout(() => tryHighlight(key, tries + 1), 300);
+			setTimeout(() => scrollToHl(key, tries + 1), 300);
 		}
 	}
 
@@ -710,7 +713,13 @@
 		const hl = new URLSearchParams(window.location.search).get('hl');
 		if (hl) {
 			history.replaceState(null, '', '/tasks');
-			tryHighlight(hl);
+			hlKey = hl;
+			// Uživatel klikl na POČET procesů — chce vidět ty procesy,
+			// ne zavřený řádek aplikace. Skupinu proto rovnou rozbalíme;
+			// děti se zvýrazní spolu s ní. U jednoprocesové aplikace je
+			// to bez efektu (řádek děti nemá).
+			expanded = new Set([...expanded, hl]);
+			scrollToHl(hl);
 		}
 		loadStatics();
 		pollSystem();
@@ -1222,7 +1231,7 @@
 						{#each groups as g (g.key)}
 							{@const single = g.children.length === 1}
 							{@const open = expanded.has(g.key)}
-							<tr class="grp" data-idkey={g.key} class:clickable={!single} onclick={() => !single && toggleGroup(g.key)} oncontextmenu={(e) => { e.preventDefault(); askKill(g.children[0], !single); }}>
+							<tr class="grp" data-idkey={g.key} class:hl={hlKey === g.key} class:clickable={!single} onclick={() => !single && toggleGroup(g.key)} oncontextmenu={(e) => { e.preventDefault(); askKill(g.children[0], !single); }}>
 								<td class="t-dot">
 									<span
 										class="load-dot"
@@ -1261,7 +1270,7 @@
 							</tr>
 							{#if !single && open}
 								{#each g.children as p (p.pid)}
-									<tr class="child" class:crit={p.protection === "critical"} oncontextmenu={(e) => { e.preventDefault(); askKill(p, false); }}>
+									<tr class="child" class:hl={hlKey === g.key} class:crit={p.protection === "critical"} oncontextmenu={(e) => { e.preventDefault(); askKill(p, false); }}>
 										<td class="t-dot"></td>
 										<td class="t-name child-name">{p.name}</td>
 										<td class="t-pub"></td>
@@ -1285,7 +1294,7 @@
 					{:else}
 						<!-- Plochý seznam procesů (původní view) -->
 						{#each visibleRows as p (p.pid)}
-							<tr data-idkey={p.identity_key} oncontextmenu={(e) => { e.preventDefault(); askKill(p, false); }}>
+							<tr data-idkey={p.identity_key} class:hl={hlKey === p.identity_key} oncontextmenu={(e) => { e.preventDefault(); askKill(p, false); }}>
 								<td class="t-dot">
 									<span
 										class="load-dot"
@@ -1375,7 +1384,7 @@
 		background: transparent;
 		color: var(--text-faint);
 		font-family: var(--font-mono);
-		font-size: 10.5px;
+		font-size: var(--fs-2xs);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		padding: 0.28rem 0.7rem;
@@ -1393,7 +1402,7 @@
 	.readouts {
 		display: flex;
 		gap: 1rem;
-		font-size: 12px;
+		font-size: var(--fs-xs);
 		flex-wrap: wrap;
 		justify-content: flex-end;
 	}
@@ -1405,7 +1414,7 @@
 	.readout .k {
 		color: var(--text-faint);
 		margin-right: 0.35rem;
-		font-size: 10.5px;
+		font-size: var(--fs-2xs);
 	}
 	.readout .v {
 		color: var(--text-dim);
@@ -1452,7 +1461,7 @@
 	.err {
 		margin: 0.6rem 0;
 		color: var(--danger);
-		font-size: 0.85rem;
+		font-size: var(--fs-lg);
 	}
 	.past-badge {
 		color: var(--warn);
@@ -1469,7 +1478,7 @@
 		border-radius: var(--radius);
 		background: var(--surface);
 		color: var(--text);
-		font-size: 11.5px;
+		font-size: var(--fs-xs);
 		outline: none;
 	}
 	.filter:focus {
@@ -1526,7 +1535,7 @@
 		width: 52px;
 		flex-shrink: 0;
 		text-align: right;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 	}
 	.core-spark {
 		flex: 1;
@@ -1588,12 +1597,12 @@
 	/* Název disku jako nadpis — bílý text. */
 	.disk-head > .label-tech {
 		color: var(--text);
-		font-size: 11.5px;
+		font-size: var(--fs-xs);
 	}
 	.disk-rates {
 		display: flex;
 		gap: 0.9rem;
-		font-size: 12px;
+		font-size: var(--fs-xs);
 	}
 
 	/* ── tabulka (bez CSS přechodů — výkon při 200+ řádcích) ── */
@@ -1621,7 +1630,7 @@
 		   vezme co potřebuje a vydavatel se posune podle nejdelšího
 		   řádku — nikdy nesmí zmizet počet procesů ani šipka */
 		table-layout: auto;
-		font-size: 0.86rem;
+		font-size: var(--fs-lg);
 	}
 	thead th {
 		position: sticky;
@@ -1629,7 +1638,7 @@
 		background: #1a1b21;
 		text-align: left;
 		font-family: var(--font-mono);
-		font-size: 10.5px;
+		font-size: var(--fs-2xs);
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
 		font-weight: 400;
@@ -1796,21 +1805,22 @@
 		padding: 2rem 0;
 	}
 
-	/* Problik řádku po deep-linku z Programs (?hl=identity_key). */
-	:global(tr.hl-flash td) {
-		animation: -global-hlflash 1.6s ease;
+	/* Zvýraznění řádku po deep-linku z Programs / Network (?hl=…).
+	   Drží, dokud je uživatel v Tasks — třída visí na datech, ne na DOM
+	   uzlu, takže ji přerovnání ani filtr neshodí.
+
+	   10 % --ok je vědomě málo: tečka zátěže (.load-dot) je u klidných
+	   procesů plná zelená s glow, takže se od desetiprocentního nádechu
+	   pozadí zřetelně odliší. Text se zároveň zvedá z --text-dim na
+	   --text, aby zvýrazněný řádek nebyl jen barevný, ale i čitelnější. */
+	tbody tr.hl > td {
+		background: color-mix(in srgb, var(--ok) 10%, transparent);
+		color: var(--text);
 	}
-	@keyframes -global-hlflash {
-		0%,
-		30%,
-		60%,
-		100% {
-			background: transparent;
-		}
-		15%,
-		45% {
-			background: color-mix(in srgb, var(--accent) 16%, transparent);
-		}
+	/* Hover musí být cítit i na zvýrazněném řádku. `tbody tr:hover td`
+	   má stejnou specifičnost jako pravidlo výše, proto explicitně. */
+	tbody tr.hl:hover > td {
+		background: color-mix(in srgb, var(--ok) 16%, transparent);
 	}
 
 	/* Potvrzení ukončení procesu (v7, T1 — nevratná akce). */
@@ -1837,7 +1847,7 @@
 	}
 	.k-target {
 		font-family: var(--font-mono);
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 		color: var(--text-dim);
 		margin-bottom: 12px;
 	}
@@ -1850,18 +1860,18 @@
 		background: var(--panel);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
 	}
 	.k-warn {
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		color: var(--warn);
 		margin-bottom: 14px;
 	}
 	.k-deny {
-		font-size: 0.9rem;
+		font-size: var(--fs-xl);
 		color: var(--danger);
 		margin-bottom: 14px;
 	}
@@ -1876,7 +1886,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text);
 		font: inherit;
-		font-size: 0.86rem;
+		font-size: var(--fs-lg);
 		padding: 7px 14px;
 		cursor: pointer;
 	}
@@ -1900,7 +1910,7 @@
 		border: 1px solid var(--border-strong);
 		border-radius: var(--radius);
 		padding: 9px 16px;
-		font-size: 0.86rem;
+		font-size: var(--fs-lg);
 		z-index: 101;
 	}
 	.kill-toast.ok {

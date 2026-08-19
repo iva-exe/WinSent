@@ -20,6 +20,6 @@
 	p {
 		margin: 0;
 		color: var(--text-faint);
-		font-size: 0.88rem;
+		font-size: var(--fs-xl);
 	}
 </style>

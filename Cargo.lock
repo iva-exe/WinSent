@@ -36,6 +36,7 @@ dependencies = [
 name = "actor-toggle"
 version = "0.1.0"
 dependencies = [
+ "collector-boot",
  "core-types",
  "thiserror 2.0.18",
  "tracing",

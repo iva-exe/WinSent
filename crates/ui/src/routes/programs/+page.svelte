@@ -13,6 +13,7 @@
 		Settings2,
 		Archive,
 		ScrollText,
+		Blocks as AppsIcon,
 		BookKey,
 		Scale,
 		ExternalLink,
@@ -523,7 +524,13 @@
 
 			<section class="detail">
 				{#if !selected}
-					<p class="empty">Vyber aplikaci vlevo — uvidíš, kde všude na disku žije.</p>
+					<!-- Prázdný stav uprostřed panelu, stejně jako v Network:
+					     věta vlevo nahoře vypadala jako chyba načítání, ne jako
+					     pokyn. -->
+					<div class="d-none-sel">
+						<AppsIcon size={30} />
+						<p>Vyber aplikaci vlevo — uvidíš, kde všude na disku žije.</p>
+					</div>
 				{:else}
 					<div class="d-head">
 						<AppIcon src={iconUrls[selected.identity_key]} name={selected.display_name} size={30} />
@@ -729,7 +736,7 @@
 	}
 	.sub {
 		color: var(--text-faint);
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 	}
 	.filter {
 		margin-left: auto;
@@ -748,7 +755,7 @@
 		outline: none;
 		color: var(--text);
 		font: inherit;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		width: 170px;
 	}
 	.refresh {
@@ -792,7 +799,7 @@
 		border: none;
 		color: var(--text-dim);
 		font: inherit;
-		font-size: 0.76rem;
+		font-size: var(--fs-sm);
 		padding: 4px 10px;
 		border-radius: 3px;
 		cursor: pointer;
@@ -803,7 +810,7 @@
 	.seg button i {
 		font-style: normal;
 		font-family: var(--font-mono);
-		font-size: 0.64rem;
+		font-size: var(--fs-2xs);
 		color: var(--text-faint);
 	}
 	.seg button.active {
@@ -819,7 +826,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-dim);
 		font: inherit;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		padding: 6px 26px 6px 10px;
 		cursor: pointer;
 		color-scheme: dark;
@@ -847,7 +854,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--warn);
 		font: inherit;
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		padding: 6px 12px;
 		cursor: pointer;
 		white-space: nowrap;
@@ -884,7 +891,7 @@
 		padding: 0;
 		max-height: 42vh;
 		overflow-y: auto;
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 	}
 	.d-steps li {
 		padding: 5px 0;
@@ -896,7 +903,7 @@
 		border: none;
 		color: var(--text);
 		font: inherit;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		text-align: left;
 		cursor: pointer;
 		padding: 0;
@@ -908,11 +915,11 @@
 	}
 	.d-why {
 		color: var(--danger);
-		font-size: 0.88rem;
+		font-size: var(--fs-xl);
 		margin-bottom: 12px;
 	}
 	.d-note {
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		color: var(--text-faint);
 		margin-bottom: 14px;
 		line-height: 1.5;
@@ -928,7 +935,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text);
 		font: inherit;
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 		padding: 7px 14px;
 		cursor: pointer;
 	}
@@ -945,7 +952,7 @@
 		border-radius: var(--radius);
 		background: #16171c;
 		border: 1px solid var(--border-strong);
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 		z-index: 50;
 	}
 	.dlg-toast.ok {
@@ -959,7 +966,7 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
-		font-size: 0.68rem;
+		font-size: var(--fs-2xs);
 		color: var(--warn);
 		border: 1px dotted color-mix(in srgb, var(--warn) 55%, transparent);
 		border-radius: 999px;
@@ -969,7 +976,7 @@
 		flex: none;
 	}
 	.ghost-badge.big {
-		font-size: 0.74rem;
+		font-size: var(--fs-xs);
 		padding: 2px 9px;
 	}
 
@@ -982,7 +989,7 @@
 		margin-left: 4px;
 	}
 	.mand.big {
-		font-size: 0.7rem;
+		font-size: var(--fs-xs);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		border: 1px solid color-mix(in srgb, var(--net-down) 40%, transparent);
@@ -995,7 +1002,7 @@
 		top: 0;
 		background: rgba(22, 23, 28, 0.92);
 		padding: 5px 12px 4px;
-		font-size: 0.68rem;
+		font-size: var(--fs-2xs);
 		color: var(--text-faint);
 		border-bottom: 1px dashed var(--border);
 		z-index: 1;
@@ -1003,7 +1010,7 @@
 	.empty-row {
 		padding: 18px 12px;
 		color: var(--text-faint);
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 	}
 	.m-load {
 		color: var(--text-faint);
@@ -1078,20 +1085,20 @@
 		flex: 1;
 	}
 	.row-title {
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
 	.row-pub {
-		font-size: 0.7rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
 	.row-ver {
-		font-size: 0.66rem;
+		font-size: var(--fs-2xs);
 		color: var(--text-faint);
 		max-width: 76px;
 		overflow: hidden;
@@ -1100,7 +1107,7 @@
 	}
 	.run-dot {
 		font-family: var(--font-mono);
-		font-size: 0.66rem;
+		font-size: var(--fs-2xs);
 		color: var(--ok);
 		border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent);
 		border-radius: 999px;
@@ -1131,7 +1138,7 @@
 		font-weight: 600;
 	}
 	.d-meta {
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		color: var(--text-dim);
 	}
 	.run-link {
@@ -1139,7 +1146,7 @@
 		border: none;
 		padding: 0;
 		font: inherit;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		color: var(--ok);
 		cursor: pointer;
 		display: inline-flex;
@@ -1159,7 +1166,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text);
 		font: inherit;
-		font-size: 0.76rem;
+		font-size: var(--fs-sm);
 		padding: 6px 10px;
 		cursor: pointer;
 		white-space: nowrap;
@@ -1189,7 +1196,7 @@
 		background: var(--panel);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
-		font-size: 0.88rem;
+		font-size: var(--fs-xl);
 	}
 	.map-row.guess .m-path {
 		text-decoration: underline dotted var(--text-faint);
@@ -1200,10 +1207,10 @@
 		align-items: center;
 		gap: 7px;
 		color: var(--text-dim);
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 	}
 	.m-path {
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -1224,7 +1231,7 @@
 		text-underline-offset: 3px;
 	}
 	.m-src {
-		font-size: 0.66rem;
+		font-size: var(--fs-2xs);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		padding: 2px 7px;
@@ -1241,13 +1248,13 @@
 		color: var(--text-faint);
 	}
 	.m-size {
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		text-align: right;
 		color: var(--text-dim);
 	}
 	.legend {
 		margin-top: 10px;
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 	}
 	.lg-guess {
@@ -1257,9 +1264,27 @@
 	.mono {
 		font-family: var(--font-mono);
 	}
+	/* Prázdný stav pravého panelu — ikona a věta uprostřed, stejně jako
+	   v Network. Text v rohu panelu vypadal jako chybová hláška. */
+	.d-none-sel {
+		height: 100%;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 10px;
+		color: var(--text-faint);
+		font-size: var(--fs-lg);
+		text-align: center;
+	}
+	.d-none-sel p {
+		margin: 0;
+		max-width: 34ch;
+		line-height: 1.5;
+	}
 	.empty {
 		color: var(--text-faint);
-		font-size: 0.85rem;
+		font-size: var(--fs-lg);
 		padding: 18px;
 	}
 </style>

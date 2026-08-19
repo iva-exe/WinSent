@@ -109,10 +109,21 @@ pub fn scan() -> Vec<BootItem> {
     out.sort_by_key(|i| i.name.to_lowercase());
     out
 }
+/// Hive přihlášeného uživatele pro čtení i zápis uživatelských položek.
+///
+/// Služba běží jako SYSTEM, takže její `HKEY_CURRENT_USER` je hive
+/// SYSTEMU — uživatelské Run položky ani jejich StartupApproved v něm
+/// nejsou. Bez tohohle kroku sekce Po spuštění neukázala ani jednu
+/// položku, kterou si člověk sám nainstaloval (Steam, Discord, Epic),
+/// a přepnutí by zapsalo do cizí hive, takže by se navenek „povedlo"
+/// a nezměnilo nic. Na běžném stroji je hive právě jeden.
+pub fn user_hive() -> Option<String> {
+    win_sys::consent::user_hives().into_iter().next()
+}
 
-/// Backend 1: Run klíče (HKLM/HKCU + Wow6432Node, Run i RunOnce).
+/// Backend 1: Run klíče (HKLM + hive uživatele, Wow6432Node, Run i RunOnce).
 fn run_keys(out: &mut Vec<BootItem>) {
-    use win_sys::registry::{enum_values, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use win_sys::registry::{enum_values, HKEY_LOCAL_MACHINE, HKEY_USERS};
     const RUNS: &[(&str, bool)] = &[
         (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", false),
         (r"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce", true),
@@ -121,44 +132,56 @@ fn run_keys(out: &mut Vec<BootItem>) {
             false,
         ),
     ];
-    for (root, machine) in [(HKEY_CURRENT_USER, false), (HKEY_LOCAL_MACHINE, true)] {
-        for (sub, once) in RUNS {
-            // Wow6432Node existuje jen pod HKLM.
-            if sub.contains("WOW6432Node") && !machine {
-                continue;
+    let hive = user_hive();
+    let mut roots: Vec<(win_sys::registry::RegKey, String, bool)> = Vec::new();
+    for (sub, _) in RUNS {
+        roots.push((HKEY_LOCAL_MACHINE, (*sub).to_string(), true));
+    }
+    if let Some(sid) = hive.as_deref() {
+        for (sub, _) in RUNS {
+            if sub.contains("WOW6432Node") {
+                continue; // Wow6432Node existuje jen pod HKLM.
             }
-            for (name, cmd) in enum_values(root, sub) {
-                let source = if machine {
-                    Source::RunMachine
+            roots.push((HKEY_USERS, format!(r"{sid}\{sub}"), false));
+        }
+    }
+    for (root, sub, machine) in roots {
+        let once = sub.contains("RunOnce");
+        for (name, cmd) in enum_values(root, &sub) {
+            let source = if machine {
+                Source::RunMachine
+            } else {
+                Source::RunUser
+            };
+            let enabled = approved_state(source, &name).unwrap_or(true);
+            out.push(BootItem {
+                id: format!("{}|{name}", source.as_str()),
+                name: if once {
+                    format!("{name} (jednorázově)")
                 } else {
-                    Source::RunUser
-                };
-                let enabled = approved_state(source, &name).unwrap_or(true);
-                out.push(BootItem {
-                    id: format!("{}|{name}", source.as_str()),
-                    name: if *once {
-                        format!("{name} (jednorázově)")
-                    } else {
-                        name.clone()
-                    },
-                    source,
-                    exe_path: exe_from_command(&cmd),
-                    command: cmd,
-                    enabled,
-                });
-            }
+                    name.clone()
+                },
+                source,
+                exe_path: exe_from_command(&cmd),
+                command: cmd,
+                enabled,
+            });
         }
     }
 }
 
 /// Backend 2: Startup složky (uživatelská + společná).
 fn startup_folders(out: &mut Vec<BootItem>) {
-    let user = std::env::var("APPDATA").ok().map(|a| {
-        (
-            format!(r"{a}\Microsoft\Windows\Start Menu\Programs\Startup"),
-            Source::FolderUser,
-        )
-    });
+    // %APPDATA% by se SYSTEMU rozbalilo do jeho vlastního profilu —
+    // složka po spuštění skutečného uživatele se bere z ProfileList.
+    let user = user_hive()
+        .and_then(|sid| win_sys::consent::profile_path(&sid))
+        .map(|p| {
+            (
+                format!(r"{p}\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"),
+                Source::FolderUser,
+            )
+        });
     let common = std::env::var("ProgramData").ok().map(|p| {
         (
             format!(r"{p}\Microsoft\Windows\Start Menu\Programs\Startup"),
@@ -267,14 +290,16 @@ fn shell_hooks(out: &mut Vec<BootItem>) {
 /// Stav ze `StartupApproved` (SPEC kap. 7): byte[0] & 0x01 = zakázáno.
 /// Chybí-li hodnota, položka je povolená.
 pub fn approved_state(source: Source, name: &str) -> Option<bool> {
-    use win_sys::registry::{read_binary, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use win_sys::registry::{read_binary, HKEY_LOCAL_MACHINE, HKEY_USERS};
     let (machine, sub) = approved_key(source)?;
-    let root = if machine {
-        HKEY_LOCAL_MACHINE
+    // Uživatelské položky mají StartupApproved ve své hive, ne v hive
+    // SYSTEMU, pod kterým služba běží.
+    let data = if machine {
+        read_binary(HKEY_LOCAL_MACHINE, sub, name)?
     } else {
-        HKEY_CURRENT_USER
+        let sid = user_hive()?;
+        read_binary(HKEY_USERS, &format!(r"{sid}\{sub}"), name)?
     };
-    let data = read_binary(root, sub, name)?;
     Some(data.first().map(|b| b & 0x01 == 0).unwrap_or(true))
 }
 

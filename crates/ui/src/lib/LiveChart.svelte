@@ -591,7 +591,7 @@
 		border-radius: var(--radius-sm);
 		background: rgba(20, 21, 26, 0.92);
 		font-family: var(--font-mono);
-		font-size: 10px;
+		font-size: var(--fs-3xs);
 		letter-spacing: 0.04em;
 		color: var(--text);
 		pointer-events: none;

@@ -142,7 +142,7 @@
 	}
 	.sub {
 		color: var(--text-faint);
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 	}
 	.seg {
 		display: flex;
@@ -158,7 +158,7 @@
 		border: none;
 		color: var(--text-dim);
 		font: inherit;
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		padding: 4px 10px;
 		border-radius: 3px;
 		cursor: pointer;
@@ -169,7 +169,7 @@
 	.seg button i {
 		font-style: normal;
 		font-family: var(--font-mono);
-		font-size: 0.64rem;
+		font-size: var(--fs-2xs);
 		color: var(--text-faint);
 	}
 	.seg button.active {
@@ -233,13 +233,13 @@
 		flex-wrap: wrap;
 	}
 	.r-act {
-		font-size: 0.9rem;
+		font-size: var(--fs-xl);
 	}
 	.r-class {
-		font-size: 0.62rem;
+		font-size: var(--fs-3xs);
 	}
 	.r-badge {
-		font-size: 0.66rem;
+		font-size: var(--fs-2xs);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		border-radius: 999px;
@@ -260,23 +260,23 @@
 		border-color: color-mix(in srgb, var(--warn) 40%, transparent);
 	}
 	.r-target {
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		color: var(--text-dim);
 		word-break: break-all;
 	}
 	.r-reason {
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		color: var(--danger);
 	}
 	.r-rev {
 		display: inline-flex;
 		align-items: center;
 		gap: 5px;
-		font-size: 0.74rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 	}
 	.r-ts {
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		white-space: nowrap;
 	}
@@ -284,12 +284,12 @@
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		font-size: 0.76rem;
+		font-size: var(--fs-sm);
 		color: var(--text-faint);
 	}
 	.empty {
 		color: var(--text-faint);
-		font-size: 0.88rem;
+		font-size: var(--fs-xl);
 		padding: 18px;
 	}
 	.empty.explain {

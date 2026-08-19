@@ -1403,9 +1403,20 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     })
                     .collect();
                 drop(conn);
+                // Vlastník souboru se pro tentýž svchost.exe ptá disku
+                // za stovky služeb — memo drží odpovědi po dobu jednoho
+                // skenu, jinak by se stejná cesta zjišťovala pořád dokola.
+                let mut owners = validate::OwnerMemo::new();
                 let rows = items
                     .into_iter()
                     .map(|it| {
+                        // Verdikt „patří Windows" počítá validační vrstva,
+                        // aby UI i zákaz přepnutí viděly TOTÉŽ rozhodnutí.
+                        let system_reason = validate::system_startup_reason(
+                            &it.id,
+                            Some(&it.command),
+                            Some(&mut owners),
+                        );
                         // Aplikace, pod jejíž instalační cestu .exe spadá.
                         // Nejdelší SHODNÝ prefix vyhrává (nejspecifičtější
                         // instalace, ne aplikace s nejdelší cestou vůbec).
@@ -1435,7 +1446,9 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             source: it.source.as_str().to_string(),
                             command: it.command,
                             enabled: it.enabled,
-                            toggleable: it.source.toggleable(),
+                            toggleable: it.source.toggleable() && system_reason.is_none(),
+                            system: system_reason.is_some(),
+                            system_reason,
                             identity_key: key,
                             app_name: app.map(|a| a.display_name.clone()),
                             publisher: app.and_then(|a| a.publisher.clone()),

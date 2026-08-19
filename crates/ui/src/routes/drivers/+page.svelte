@@ -280,21 +280,21 @@
 	}
 	.facts dt {
 		font-family: var(--font-mono);
-		font-size: 0.6rem;
+		font-size: var(--fs-3xs);
 		letter-spacing: 0.05em;
 		text-transform: uppercase;
 		color: var(--text-faint);
 	}
 	.facts dd {
 		margin: 2px 0 0;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		color: var(--text);
 		line-height: 1.35;
 		word-break: break-word;
 	}
 	.facts dd.mono {
 		font-family: var(--font-mono);
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		color: var(--text-dim);
 	}
 	/* Stáří je informace, ne chyba — jantarová, ne červená. */
@@ -324,7 +324,7 @@
 		outline: none;
 		color: var(--text);
 		font: inherit;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		width: 180px;
 	}
 	.filter input::placeholder {
@@ -345,7 +345,7 @@
 		border: none;
 		color: var(--text-dim);
 		font: inherit;
-		font-size: 0.76rem;
+		font-size: var(--fs-sm);
 		padding: 4px 10px;
 		border-radius: 3px;
 		cursor: pointer;
@@ -356,7 +356,7 @@
 	.seg button i {
 		font-style: normal;
 		font-family: var(--font-mono);
-		font-size: 0.64rem;
+		font-size: var(--fs-2xs);
 		color: var(--text-faint);
 	}
 	.seg button.active {
@@ -407,7 +407,7 @@
 		margin: 0 0 11px;
 		padding: 9px 2px 10px;
 		font-family: var(--font-mono);
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		font-weight: 500;
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
@@ -422,7 +422,7 @@
 	}
 	.sect-n {
 		font-weight: 400;
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		font-variant-numeric: tabular-nums;
 	}
@@ -436,7 +436,7 @@
 		border-radius: 999px;
 		color: var(--danger);
 		font: inherit;
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 		padding: 8px 10px 8px 15px;
 		cursor: pointer;
 	}
@@ -492,7 +492,7 @@
 	/* Kolika zařízením ovladač slouží — drobné, ať nepřebije název. */
 	.serves {
 		font-family: var(--font-mono);
-		font-size: 0.66rem;
+		font-size: var(--fs-2xs);
 		font-weight: 400;
 		letter-spacing: 0.02em;
 		color: var(--text-faint);
@@ -503,7 +503,7 @@
 	}
 	.vendor {
 		margin: 3px 0 0;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		color: var(--text-dim);
 	}
 	.side {
@@ -517,7 +517,7 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 5px;
-		font-size: 0.79rem;
+		font-size: var(--fs-sm);
 		padding: 4px 11px;
 		border-radius: 999px;
 		border: 1px solid transparent;
@@ -545,7 +545,7 @@
 	}
 	.empty {
 		color: var(--text-dim);
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 		padding: 20px 0;
 	}
 	@keyframes flash {
@@ -575,12 +575,12 @@
 	}
 	.note {
 		margin: 14px 0 0;
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		line-height: 1.55;
 		color: var(--text-faint);
 	}
 	.note code {
 		font-family: var(--font-mono);
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 	}
 </style>

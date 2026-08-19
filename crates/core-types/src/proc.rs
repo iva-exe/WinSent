@@ -249,6 +249,13 @@ pub struct StartupRow {
     pub enabled: bool,
     /// Lze přepínat? (Winlogon hooky ne — jen varování.)
     pub toggleable: bool,
+    /// Patří položka Windows? Rozhoduje se JEDNOU ve validační vrstvě
+    /// (`validate::system_startup_reason`) a verdikt sem jen cestuje —
+    /// UI vlastníka souboru z WebView nepřečte a druhé pravidlo v UI by
+    /// se s tím prvním nutně rozešlo.
+    pub system: bool,
+    /// Proč je systémová, česky. Jde rovnou do popisku v UI.
+    pub system_reason: Option<String>,
     /// Identita aplikace, která položku vlastní (ikona + seskupení).
     pub identity_key: Option<String>,
     pub app_name: Option<String>,

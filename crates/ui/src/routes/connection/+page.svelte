@@ -232,7 +232,7 @@
 		gap: 9px;
 		margin: 20px 0 9px;
 		font-family: var(--font-mono);
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		font-weight: 500;
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
@@ -246,7 +246,7 @@
 	}
 	.sect-n {
 		font-weight: 400;
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		font-variant-numeric: tabular-nums;
 	}
@@ -290,7 +290,7 @@
 	}
 	.vendor {
 		margin: 3px 0 0;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		color: var(--text-dim);
 	}
 	.facts {
@@ -300,7 +300,7 @@
 		margin-top: 9px;
 	}
 	.fact {
-		font-size: 0.79rem;
+		font-size: var(--fs-sm);
 		line-height: 1.4;
 		padding: 4px 11px;
 		border-radius: 7px;
@@ -316,7 +316,7 @@
 	.fact.mono,
 	.mono {
 		font-family: var(--font-mono);
-		font-size: 0.75rem;
+		font-size: var(--fs-sm);
 	}
 	.side {
 		display: flex;
@@ -335,7 +335,7 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 5px;
-		font-size: 0.79rem;
+		font-size: var(--fs-sm);
 		padding: 4px 11px;
 		border-radius: 999px;
 		border: 1px solid transparent;
@@ -371,7 +371,7 @@
 		color: var(--text-dim);
 	}
 	.tag {
-		font-size: 0.68rem;
+		font-size: var(--fs-2xs);
 		padding: 1px 7px;
 		margin-left: 6px;
 		border-radius: 999px;
@@ -382,12 +382,12 @@
 	table {
 		width: 100%;
 		border-collapse: collapse;
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 	}
 	th {
 		text-align: left;
 		font-family: var(--font-mono);
-		font-size: 0.66rem;
+		font-size: var(--fs-2xs);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		font-weight: 500;
@@ -408,7 +408,7 @@
 		align-items: center;
 		gap: 8px;
 		margin: 14px 0 0;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		color: var(--text-dim);
 	}
 	.other-toggle {
@@ -424,7 +424,7 @@
 	}
 	.empty {
 		color: var(--text-dim);
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 		padding: 14px 0;
 	}
 </style>

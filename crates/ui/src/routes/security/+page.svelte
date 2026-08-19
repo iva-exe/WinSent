@@ -306,21 +306,18 @@
 		return known ? s : null;
 	}
 
-	// Rozbalené kategorie. Po startu je otevřená jen první — deset
-	// kategorií naráz je zeď, ve které se nedá nic najít.
-	let openCaps = $state(null);
-	function toggleCap(cap, idx) {
-		const s = new Set(openCaps ?? []);
-		// Výchozí stav je „otevřená první VYKRESLENÁ kategorie", ne první
-		// v CAP_ORDER — ta v seznamu být vůbec nemusí. Bez toho by se při
-		// prvním kliknutí jinam první kategorie zavřela sama od sebe.
-		if (openCaps === null && permGroups.length) s.add(permGroups[0].cap);
+	// Rozbalené kategorie. Po startu jsou zavřené všechny — čtrnáct
+	// kategorií se sedmdesáti řádky naráz je zeď, ve které se nedá nic
+	// najít; hlavičky samy o sobě říkají, kolik čeho je.
+	let openCaps = $state(new Set());
+	function toggleCap(cap) {
+		const s = new Set(openCaps);
 		if (s.has(cap)) s.delete(cap);
 		else s.add(cap);
 		openCaps = s;
 	}
-	function capOpen(cap, idx) {
-		return openCaps === null ? idx === 0 : openCaps.has(cap);
+	function capOpen(cap) {
+		return openCaps.has(cap);
 	}
 
 	// Doba trvání lidsky. Vteřiny se u „držel mikrofon" nikoho neptají.
@@ -396,15 +393,15 @@
 			<div class="split">
 				<h2><Camera size={17} /> Kdo má přístup k čemu</h2>
 				<p>
-					Oprávnění po kategoriích. Klikni na kategorii pro rozbalení. U každé aplikace je
+					Oprávnění po kategoriích — kategorie jsou zavřené, klikni na ni pro rozbalení. U každé aplikace je
 					vidět, kdy schopnost použila naposledy a kolik času ji držela za posledních 30 dnů.
 				</p>
 			</div>
-			{#each permGroups as g, gi (g.cap)}
-				{@const capIsOpen = capOpen(g.cap, gi)}
+			{#each permGroups as g (g.cap)}
+				{@const capIsOpen = capOpen(g.cap)}
 				<!-- Kategorie se rozbaluje. Deset kategorií se sedmdesáti
 				     řádky naráz je zeď, ve které se nedá nic najít. -->
-				<button class="cap-head" class:on={capIsOpen} onclick={() => toggleCap(g.cap, gi)}>
+				<button class="cap-head" class:on={capIsOpen} onclick={() => toggleCap(g.cap)}>
 					<ChevronRight class="cap-caret" size={15} strokeWidth={2.25} />
 					<g.icon size={17} />
 					<span class="cap-label">{g.label}</span>
@@ -537,7 +534,7 @@
 	}
 	.split p {
 		margin: 5px 0 0;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		color: var(--text-faint);
 		line-height: 1.5;
 	}
@@ -587,7 +584,7 @@
 	.cap-n {
 		margin-left: auto;
 		font-family: var(--font-mono);
-		font-size: 0.7rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		font-variant-numeric: tabular-nums;
 	}
@@ -603,14 +600,14 @@
 	}
 	.meta dt {
 		font-family: var(--font-mono);
-		font-size: 0.6rem;
+		font-size: var(--fs-3xs);
 		letter-spacing: 0.05em;
 		text-transform: uppercase;
 		color: var(--text-faint);
 	}
 	.meta dd {
 		margin: 1px 0 0;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		color: var(--text);
 		font-variant-numeric: tabular-nums;
 	}
@@ -662,7 +659,7 @@
 		background: color-mix(in srgb, var(--warn) 14%, transparent);
 	}
 	.t-name {
-		font-size: 0.86rem;
+		font-size: var(--fs-lg);
 		font-family: var(--font-mono);
 		letter-spacing: 0.03em;
 		text-transform: uppercase;
@@ -684,13 +681,13 @@
 	}
 	.t-detail {
 		margin: 0;
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		color: var(--text-dim);
 		line-height: 1.45;
 	}
 	.t-explain {
 		margin: 3px 0 0;
-		font-size: 0.77rem;
+		font-size: var(--fs-sm);
 		color: var(--text-faint);
 		line-height: 1.5;
 	}
@@ -718,7 +715,7 @@
 		align-items: center;
 		gap: 7px;
 		margin-left: auto;
-		font-size: 0.82rem;
+		font-size: var(--fs-md);
 		color: var(--danger);
 		background: color-mix(in srgb, var(--danger) 12%, transparent);
 		border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
@@ -752,7 +749,7 @@
 		gap: 9px;
 		margin: 20px 0 9px;
 		font-family: var(--font-mono);
-		font-size: 0.8rem;
+		font-size: var(--fs-md);
 		font-weight: 500;
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
@@ -769,7 +766,7 @@
 	}
 	.sect-n {
 		font-weight: 400;
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		font-variant-numeric: tabular-nums;
 	}
@@ -777,7 +774,7 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 6px;
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 		color: var(--danger);
 		text-transform: none;
 		letter-spacing: 0;
@@ -830,7 +827,7 @@
 	}
 	.vendor {
 		margin: 3px 0 0;
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		color: var(--text-dim);
 		word-break: break-all;
 	}
@@ -845,7 +842,7 @@
 		background: transparent;
 		color: var(--text-faint);
 		font-family: var(--font-mono);
-		font-size: 0.66rem;
+		font-size: var(--fs-2xs);
 		letter-spacing: 0.02em;
 		cursor: pointer;
 		vertical-align: middle;
@@ -866,7 +863,7 @@
 	}
 	.mono {
 		font-family: var(--font-mono);
-		font-size: 0.72rem;
+		font-size: var(--fs-xs);
 	}
 	/* Stav a hodnoty jdou pod sebe, ne vedle sebe. Ve flexu v řádku
 	   se dlouhá pilulka („odepřeno — nevynuceno") tlačila do jména
@@ -887,7 +884,7 @@
 		align-items: center;
 		gap: 6px;
 		font-family: var(--font-mono);
-		font-size: 0.68rem;
+		font-size: var(--fs-2xs);
 		letter-spacing: 0.04em;
 		text-transform: uppercase;
 		color: var(--text-faint);
@@ -908,13 +905,13 @@
 
 	.note {
 		margin: 18px 0 12px;
-		font-size: 0.78rem;
+		font-size: var(--fs-sm);
 		line-height: 1.5;
 		color: var(--text-dim);
 	}
 	.empty {
 		color: var(--text-dim);
-		font-size: 0.84rem;
+		font-size: var(--fs-lg);
 		padding: 14px 0;
 	}
 </style>

@@ -538,23 +538,105 @@ fn delete_incident(id: i64) -> Result<(), String> {
 fn find_duplicates(root: String, min_size: u64) -> Result<Vec<(u64, Vec<String>)>, String> {
     ipc::client::find_duplicates(root, min_size).map_err(|e| e.to_string())
 }
+/// Cesta do uvozovek pro explorer.exe. Koncová zpětná lomítka se musí
+/// zdvojit: `"C:\"` přečte Windows jako escapovanou uvozovku, takže
+/// z argumentu zbyde `C:"` a Průzkumník otevře výchozí složku. Týká se
+/// to kořene svazku, který mezi největšími složkami klidně být může.
+fn quoted(p: &std::path::Path) -> String {
+    let s = p.display().to_string();
+    let tail = s.len() - s.trim_end_matches(char::from(92u8)).len();
+    format!("\"{s}{}\"", String::from_utf8(vec![92u8; tail]).unwrap_or_default())
+}
 
 /// Otevře cestu v Průzkumníku (adresář přímo, soubor s /select).
 /// Jen otevření — žádná mutace; registry cesty sem nepatří.
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
     if path.starts_with("HKLM") || path.starts_with("HKU") || path.starts_with("HKCU") {
         return Err("registry větev nejde otevřít v Průzkumníku".into());
     }
+
     let p = std::path::Path::new(&path);
-    let mut cmd = std::process::Command::new("explorer.exe");
-    if p.is_dir() {
-        cmd.arg(&path);
+
+    // Cesta mohla mezitím zmizet (uživatel ji smazal z Průzkumníku).
+    // Ok(false) znamená „opravdu tam není"; Err znamená jen „nešlo to
+    // zjistit" (třeba práva) — tam se o krok výš nechodí, jinak by se
+    // u chráněných souborů otevírala nadřazená složka zbytečně.
+    let target = if matches!(p.try_exists(), Ok(false)) {
+        match p.ancestors().find(|a| matches!(a.try_exists(), Ok(true))) {
+            Some(a) => a.to_path_buf(),
+            None => return Err("cesta ani žádná nadřazená složka už neexistuje".into()),
+        }
     } else {
-        cmd.arg(format!("/select,{path}"));
+        p.to_path_buf()
+    };
+
+    // Explorer.exe má vlastní parser příkazové řádky a chce přesně
+    // tvar `/select,"cesta"` — uvozovky JEN kolem cesty. Command::arg
+    // ale uvozuje celý token, takže u cesty s mezerou vznikne
+    // `"/select,C:\Program Files\…"`, což explorer nepřečte a místo
+    // souboru otevře výchozí složku. Proto se řádka skládá ručně přes
+    // raw_arg. (Uvozovka v cestě na Windows být nemůže, escapovat
+    // není co.)
+    let mut cmd = std::process::Command::new("explorer.exe");
+    if target.is_dir() {
+        cmd.raw_arg(quoted(&target));
+    } else {
+        cmd.raw_arg(format!("/select,{}", quoted(&target)));
     }
     cmd.spawn().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Cesta bezpečná i nad MAX_PATH. Bez prefixu vrací Windows u dlouhých
+/// cest „path not found" — a to by řádek nesprávně schovalo jako
+/// smazaný. Cesty z MFT jsou kanonické (`X:\…`, bez `.` a `..`), takže
+/// prefix nic nerozbije.
+fn long_path(p: &str) -> std::path::PathBuf {
+    if p.len() > 250 && p.as_bytes().get(1) == Some(&b':') && !p.starts_with(r"\\") {
+        std::path::PathBuf::from(format!(r"\?\{p}"))
+    } else {
+        std::path::PathBuf::from(p)
+    }
+}
+
+/// Které z cest na disku ještě jsou (jen čtení).
+///
+/// Úklidový report spočte služba jednou po startu a dál ho drží
+/// v paměti — smazaný soubor v něm visí dál, ať ho uživatel smazal
+/// v aplikaci, nebo v Průzkumníku. Než UI seznam vykreslí, zeptá se
+/// proto souborového systému samo. Na službu se tu nesahá, je to
+/// `std::fs` v procesu UI.
+///
+/// Za „chybí" se počítá VÝHRADNĚ `NotFound`. Report staví služba pod
+/// SYSTEM, UI běží pod uživatelem — na cestu, kam UI nedosáhne, přijde
+/// `PermissionDenied`, a tu v seznamu NECHÁVÁME. Schovat něco, o čem
+/// nic nevíme, by lhalo víc než to ukázat.
+///
+/// Návratem není `Result`: chyba u jedné cesty JE odpovědí o ní, ne
+/// selháním celého dotazu. Délka výstupu vždy odpovídá délce vstupu.
+#[tauri::command(async)]
+fn paths_exist(paths: Vec<String>) -> Vec<bool> {
+    // Pojistka proti utrženému seznamu. Co je nad limit, hlásíme jako
+    // existující — nikdy neschováme víc, než jsme opravdu ověřili.
+    const MAX: usize = 2_000;
+    paths
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            if i >= MAX {
+                return true;
+            }
+            // symlink_metadata nenásleduje reparse pointy: zajímá nás
+            // sama položka v adresáři, ne cíl odkazu.
+            match std::fs::symlink_metadata(long_path(p)) {
+                Ok(_) => true,
+                Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+            }
+        })
+        .collect()
 }
 
 /// Vlastní spotřeba nástroje pro dlaždici v Settings (SPEC kap. 2.3).
@@ -654,6 +736,7 @@ fn main() {
             rescan_apps,
             query_inv_status,
             open_path,
+            paths_exist,
             query_volumes,
             query_hardware,
             query_displays,
