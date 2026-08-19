@@ -141,3 +141,26 @@ mod tests {
         assert!(history(&c, "a", "location", 10).expect("historie").is_empty());
     }
 }
+
+/// Součty za období pro VŠECHNY dvojice (aplikace, schopnost).
+///
+/// Jeden dotaz místo jednoho na řádek: UI má u každého oprávnění
+/// ukázat, kolik času ho aplikace držela, a sedmdesát samostatných
+/// dotazů kvůli tomu je zbytečné.
+pub fn totals(conn: &Connection, from: i64, now: i64) -> Result<Vec<(String, String, i64)>, Error> {
+    let mut st = conn.prepare(
+        "SELECT app, capability,
+                SUM(MIN(COALESCE(stop_ts, ?2), ?2) - MAX(start_ts, ?1))
+         FROM perm_use
+         WHERE COALESCE(stop_ts, ?2) > ?1
+         GROUP BY app, capability",
+    )?;
+    let rows = st.query_map(params![from, now], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2).unwrap_or(0).max(0),
+        ))
+    })?;
+    Ok(rows.flatten().collect())
+}

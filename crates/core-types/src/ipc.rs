@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 38;
+pub const PROTOCOL_VERSION: u32 = 39;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -110,6 +110,12 @@ pub enum Request {
     /// Historie použití jedné schopnosti aplikací (v9D): sezení
     /// za posledních `days` dní. ConsentStore drží jen to poslední,
     /// tohle je to, co si služba zapsala sama.
+    /// Součty použití VŠECH oprávnění za období najednou (v9D).
+    ///
+    /// Jeden dotaz místo sedmdesáti: čas u každého řádku má být vidět
+    /// rovnou, ne až po kliknutí. Po jednom by to znamenalo dotaz na
+    /// každou aplikaci a schopnost zvlášť.
+    QueryPermUseTotals { days: u32 },
     QueryPermUse {
         app: String,
         capability: String,
@@ -227,6 +233,8 @@ pub enum Response {
     CrashReports(Vec<crate::proc::CrashReportRow>),
     /// Text výpisů k incidentu.
     IncidentDumps(String),
+    /// Součty použití za období: (aplikace, schopnost, sekundy).
+    PermUseTotals(Vec<(String, String, i64)>),
     /// Sezení použití oprávnění + součet sekund za období (v9D).
     PermUse {
         sessions: Vec<crate::proc::PermUseRow>,

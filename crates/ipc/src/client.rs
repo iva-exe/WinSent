@@ -639,6 +639,19 @@ pub fn query_users() -> Result<core_types::proc::UsersReport, Error> {
 }
 
 
+
+/// Součty použití všech oprávnění za období — jeden dotaz místo mnoha.
+pub fn query_perm_use_totals(days: u32) -> Result<Vec<(String, String, i64)>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryPermUseTotals { days })? {
+        Response::PermUseTotals(v) => Ok(v),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Historie použití oprávnění (v9D): sezení za posledních `days` dní
 /// a jejich součet v sekundách.
 pub fn query_perm_use(

@@ -44,6 +44,7 @@
 
 	onMount(() => {
 		load();
+		loadTotals();
 		// Oprávnění jsou levná (registr) a živá tečka má žít; stav
 		// ochrany si služba cachuje na 30 s sama.
 		const t = setInterval(load, 3000);
@@ -271,23 +272,61 @@
 		)
 	);
 
-	// Historie použití: kolik času aplikace kameru nebo mikrofon opravdu
-	// držela. ConsentStore drží jen poslední sezení — tohle je to, co si
-	// služba zapsala sama, jak to viděla přicházet.
-	let useHist = $state({});
-	async function loadHistory(key, app, capability) {
-		if (useHist[key]) return;
+	// Kolik času aplikace schopnost držela za posledních 30 dní.
+	//
+	// Načítá se JEDNÍM dotazem pro všechny řádky. Dřív to bylo schované
+	// za tlačítkem „kolik času?", protože každý řádek stál vlastní dotaz.
+	// Jenže to znamenalo, že se uživatel musel proklikat k tomu
+	// nejzajímavějšímu údaji na celé stránce.
+	let totals = $state(new Map());
+
+	async function loadTotals() {
 		try {
-			const r = await invoke('query_perm_use', { app, capability, days: 30 });
-			useHist = { ...useHist, [key]: r };
+			const rows = await invoke('query_perm_use_totals', { days: 30 });
+			const m = new Map();
+			for (const [app, cap, secs] of rows) m.set(`${cap}|${app}`, secs);
+			totals = m;
 		} catch {
 			/* historie je bonus — bez ní řádek pořád dává smysl */
 		}
 	}
 
+	// Součet za aplikaci. Čas se počítá každé verzi zvlášť, ale uživatele
+	// zajímá součet za aplikaci jako celek.
+	function totalFor(cap, group) {
+		let s = 0;
+		let known = false;
+		for (const v of group.versions ?? [group]) {
+			const t = totals.get(`${cap}|${v.app}`);
+			if (t != null) {
+				s += t;
+				known = true;
+			}
+		}
+		return known ? s : null;
+	}
+
+	// Rozbalené kategorie. Po startu je otevřená jen první — deset
+	// kategorií naráz je zeď, ve které se nedá nic najít.
+	let openCaps = $state(null);
+	function toggleCap(cap, idx) {
+		const s = new Set(openCaps ?? []);
+		// Výchozí stav je „otevřená první VYKRESLENÁ kategorie", ne první
+		// v CAP_ORDER — ta v seznamu být vůbec nemusí. Bez toho by se při
+		// prvním kliknutí jinam první kategorie zavřela sama od sebe.
+		if (openCaps === null && permGroups.length) s.add(permGroups[0].cap);
+		if (s.has(cap)) s.delete(cap);
+		else s.add(cap);
+		openCaps = s;
+	}
+	function capOpen(cap, idx) {
+		return openCaps === null ? idx === 0 : openCaps.has(cap);
+	}
+
 	// Doba trvání lidsky. Vteřiny se u „držel mikrofon" nikoho neptají.
 	function fmtDur(s) {
-		if (!s || s < 60) return `${Math.max(0, Math.round(s || 0))} s`;
+		if (s == null) return null;
+		if (s < 60) return `${Math.max(0, Math.round(s))} s`;
 		const h = Math.floor(s / 3600);
 		const m = Math.round((s % 3600) / 60);
 		return h ? `${h} h ${m} min` : `${m} min`;
@@ -354,15 +393,27 @@
 			</div>
 
 			<!-- ── 2. Oprávnění aplikací ── -->
-			{#each permGroups as g (g.cap)}
-				<h2 class="sect">
-					<g.icon size={16} />
-					{g.label}
-					<span class="sect-n">{g.allowed} s přístupem</span>
+			<div class="split">
+				<h2><Camera size={17} /> Kdo má přístup k čemu</h2>
+				<p>
+					Oprávnění po kategoriích. Klikni na kategorii pro rozbalení. U každé aplikace je
+					vidět, kdy schopnost použila naposledy a kolik času ji držela za posledních 30 dnů.
+				</p>
+			</div>
+			{#each permGroups as g, gi (g.cap)}
+				{@const capIsOpen = capOpen(g.cap, gi)}
+				<!-- Kategorie se rozbaluje. Deset kategorií se sedmdesáti
+				     řádky naráz je zeď, ve které se nedá nic najít. -->
+				<button class="cap-head" class:on={capIsOpen} onclick={() => toggleCap(g.cap, gi)}>
+					<ChevronRight class="cap-caret" size={15} strokeWidth={2.25} />
+					<g.icon size={17} />
+					<span class="cap-label">{g.label}</span>
+					<span class="cap-n">{g.items.length} aplikací · {g.allowed} s přístupem</span>
 					{#if g.inUse.length}
 						<span class="sect-live"><span class="live-dot"></span>používá se právě teď</span>
 					{/if}
-				</h2>
+				</button>
+				{#if capIsOpen}
 				{#each g.items as p (g.cap + p.key)}
 					{@const okey = g.cap + p.key}
 					{@const open = openVersions.has(okey)}
@@ -393,32 +444,14 @@
 							<p class="vendor mono">{p.app}</p>
 						</div>
 						<div class="side">
+							<!-- Mřížka popisek → hodnota. Dřív to byla řada
+							     odznaků bez popisků a čas byl navíc schovaný
+							     za tlačítkem; teď je u každé hodnoty napsané,
+							     co to je, a vidí se rovnou. -->
 							{#if p.in_use && p.allow}
 								<span class="pill bad-live">používá právě teď</span>
-						{:else if p.allow}
-							<span class="pill dim">
-								povoleno{#if p.last_used}&nbsp;· naposledy {fmtWhen(p.last_used)}{/if}
-							</span>
-							<!-- Kolik času to opravdu zabralo. „Naposledy včera"
-							     a „naposledy včera, 3 h 12 min" jsou dvě úplně
-							     jiné informace. Historii si vede služba sama —
-							     Windows si pamatují jen poslední sezení. -->
-							{#if p.last_used}
-								{@const hk = g.cap + p.app}
-								{#if useHist[hk]}
-									{#if useHist[hk].total_s > 0}
-										<span class="pill dim" title="Součet za posledních 30 dní z {useHist[hk].sessions.length} použití">
-											za 30 dní {fmtDur(useHist[hk].total_s)}
-										</span>
-									{:else}
-										<span class="pill dim">za 30 dní nepoužito</span>
-									{/if}
-								{:else}
-									<button class="pill dim link" onclick={() => loadHistory(hk, p.app, g.cap)}>
-										kolik času?
-									</button>
-								{/if}
-							{/if}
+							{:else if p.allow}
+								<span class="pill dim">povoleno</span>
 							{:else if p.enforced}
 								<!-- Balená aplikace: Windows Deny VYNUTÍ — jediné
 								     místo, kde smí být zelený zámek. -->
@@ -432,13 +465,29 @@
 									<TriangleAlert size={13} /> odepřeno — nevynuceno
 								</span>
 							{/if}
+							<dl class="meta">
+								<div>
+									<dt>Naposledy</dt>
+									<dd>{p.in_use ? 'právě teď' : (fmtWhen(p.last_used) ?? 'nikdy')}</dd>
+								</div>
+								<div>
+									<dt>Posledních 30 dnů</dt>
+									<dd class:zero={totalFor(g.cap, p) === 0}>
+										{totalFor(g.cap, p) == null
+											? '—'
+											: totalFor(g.cap, p) === 0
+												? 'nepoužito'
+												: fmtDur(totalFor(g.cap, p))}
+									</dd>
+								</div>
+							</dl>
 						</div>
 					</article>
 					{#if open}
 						<!-- Klíč nese i pořadí: dvakrát stejný klíč ve {#each}
-					     je v produkci tvrdá chyba, která zabije překreslování
-					     celé stránky. -->
-					{#each p.versions.slice(1) as v, vi (vi + ':' + v.app)}
+						     je v produkci tvrdá chyba, která zabije překreslování
+						     celé stránky. -->
+						{#each p.versions.slice(1) as v, vi (vi + ':' + v.app)}
 							<article class="item slim ver-row">
 								<div class="info">
 									<p class="vendor mono">{v.app}</p>
@@ -453,6 +502,7 @@
 						{/each}
 					{/if}
 				{/each}
+				{/if}
 			{/each}
 
 			<p class="note">
@@ -465,6 +515,94 @@
 </div>
 
 <style>
+	/* Oddělovač mezi dlaždicemi a seznamem oprávnění — jsou to dvě
+	   různé věci a bez hranice splývaly do jedné dlouhé kaše. */
+	.split {
+		margin: 26px 0 14px;
+		padding-top: 20px;
+		border-top: 1px solid var(--border);
+	}
+	.split h2 {
+		display: flex;
+		align-items: center;
+		gap: 9px;
+		margin: 0;
+		font-size: 1.02rem;
+		font-weight: 600;
+	}
+	.split p {
+		margin: 5px 0 0;
+		font-size: 0.8rem;
+		color: var(--text-faint);
+		line-height: 1.5;
+	}
+	/* Hlavička kategorie = rozbalovací pruh. */
+	.cap-head {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		width: 100%;
+		margin-bottom: 6px;
+		padding: 11px 13px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--surface);
+		color: var(--text-dim);
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+	.cap-head:hover {
+		background: var(--surface-hover);
+		color: var(--text);
+	}
+	.cap-head.on {
+		color: var(--text);
+		box-shadow: inset 0 0 0 1px var(--border-strong);
+	}
+	:global(.cap-caret) {
+		transition: transform 0.15s ease;
+		flex: none;
+	}
+	.cap-head.on :global(.cap-caret) {
+		transform: rotate(90deg);
+	}
+	.cap-label {
+		font-size: 0.94rem;
+		font-weight: 600;
+	}
+	.cap-n {
+		margin-left: auto;
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		color: var(--text-faint);
+		font-variant-numeric: tabular-nums;
+	}
+	/* Mřížka popisek → hodnota vpravo na řádku. Popisky jsou v jednom
+	   jazyce (mono verzálky) bez ohledu na to, že hodnoty jsou různé
+	   typy — čas, doba, stav. */
+	.meta {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(96px, auto));
+		gap: 2px 18px;
+		margin: 8px 0 0;
+	}
+	.meta dt {
+		font-family: var(--font-mono);
+		font-size: 0.6rem;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--text-faint);
+	}
+	.meta dd {
+		margin: 1px 0 0;
+		font-size: 0.8rem;
+		color: var(--text);
+		font-variant-numeric: tabular-nums;
+	}
+	.meta dd.zero {
+		color: var(--text-faint);
+	}
 	/* Dlaždice stavu ochrany. Šířka se přizpůsobí oknu; obsah je
 	   pokaždé stejně stavěný, aby se očima dalo skákat po stavech. */
 	.tiles {

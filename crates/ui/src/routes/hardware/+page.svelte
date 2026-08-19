@@ -1,4 +1,4 @@
-<script>
+						<h3>{d.monitor || "Obrazovka"}</h3><script>
 	// Hardware (v9, SPEC kap. 15) — soupis všeho, co v počítači je.
 	//
 	// Rozvržení:
@@ -451,29 +451,45 @@
 						<div class="info">
 							<h3>{statics?.cpu_name ?? 'Procesor'}</h3>
 							<p class="vendor">{cpuVendor}</p>
-							<div class="facts">
-								<span class="fact"
-									>{statics?.physical_cores ?? '—'} fyzických / {statics?.logical_cores ?? '—'} logických
-									jader</span
-								>
-								<span class="fact"
-									>{hw?.cpu_thermal?.clock_mhz ?? '—'} MHz z {hw?.cpu_thermal?.max_mhz ?? '—'} MHz</span
-								>
-								<span class="fact"
-									>L1 {statics?.l1_kb ?? '—'} kB · L2 {statics?.l2_kb ?? '—'} kB · L3 {statics?.l3_kb ??
-										'—'} kB</span
-								>
-								{#if hw?.cpu_thermal?.celsius != null}
-									<span class="fact"
-										>{Math.round(hw.cpu_thermal.celsius)} °C · zdroj {hw.cpu_thermal.temp_source}</span
-									>
-								{:else}
-									<span class="fact muted"
-										>teplotu tenhle stroj z Windows nehlásí — ukázala by se, kdyby běžel HWiNFO nebo
-										LibreHardwareMonitor</span
-									>
+							<dl class="facts">
+								<div>
+									<dt>Jádra</dt>
+									<dd>{statics?.physical_cores ?? '—'} fyz. / {statics?.logical_cores ?? '—'} log.</dd>
+								</div>
+								<div>
+									<dt>Takt</dt>
+									<dd>
+										{hw?.cpu_thermal?.clock_mhz ?? '—'} MHz
+										<span class="note-v">z {hw?.cpu_thermal?.max_mhz ?? '—'} MHz</span>
+									</dd>
+								</div>
+								{#if statics?.cpu_base_mhz}
+									<div><dt>Základní takt</dt><dd>{statics.cpu_base_mhz} MHz</dd></div>
 								{/if}
-							</div>
+								<div>
+									<dt>Mezipaměť</dt>
+									<dd>
+										{statics?.l1_kb ?? '—'} / {statics?.l2_kb ?? '—'} / {statics?.l3_kb ?? '—'} kB
+										<span class="note-v">L1 / L2 / L3</span>
+									</dd>
+								</div>
+								<!-- Teplota se nikdy nepředstírá (SPEC 15.2): buňka
+								     zůstane, ale je v ní pomlčka a proč. -->
+								<div>
+									<dt>Teplota</dt>
+									{#if hw?.cpu_thermal?.celsius != null}
+										<dd>
+											{Math.round(hw.cpu_thermal.celsius)} °C
+											<span class="note-v">zdroj: {hw.cpu_thermal.temp_source}</span>
+										</dd>
+									{:else}
+										<dd class="dim">
+											—
+											<span class="note-v">stroj ji z Windows nehlásí; ukáže se s HWiNFO</span>
+										</dd>
+									{/if}
+								</div>
+							</dl>
 						</div>
 						<div class="side">
 							<span class="metric">{sys ? Math.round(sys.cpu_pct) : '—'}<small>%</small></span>
@@ -488,18 +504,28 @@
 						<div class="info">
 							<h3>Paměť</h3>
 							<p class="vendor">{statics?.ram_modules?.[0]?.manufacturer ?? '—'}</p>
-							<div class="facts">
-								<span class="fact">{gb(sys?.mem_total_mb)} celkem</span>
-								<span class="fact"
-									>{statics?.ram_modules?.length ?? 0} modulů ve {statics?.ram_slots ?? '—'} slotech</span
-								>
-								{#each statics?.ram_modules ?? [] as m, i (m.slot + i)}
-									<span class="fact muted">
-										{m.slot}: {(m.size_mb / 1024).toFixed(0)} GB @ {m.configured_mts || '—'} MT/s
-										(umí {m.speed_mts || '—'}) · {m.part_number || '—'}
-									</span>
+							<dl class="facts">
+								<div><dt>Celkem</dt><dd>{gb(sys?.mem_total_mb)}</dd></div>
+								<div>
+									<dt>Moduly</dt>
+									<dd>
+										{statics?.ram_modules?.length ?? 0} ze {statics?.ram_slots ?? '—'} slotů
+									</dd>
+								</div>
+								<!-- Popiskem je slot — mono verzálky na „DIMM_A1"
+								     sedí doslova a moduly se pod sebou zarovnají. -->
+								{#each statics?.ram_modules ?? [] as m, i (i + ':' + m.slot)}
+									<div>
+										<dt>{m.slot || `Modul ${i + 1}`}</dt>
+										<dd>
+											{(m.size_mb / 1024).toFixed(0)} GB @ {m.configured_mts || '—'} MT/s
+											<span class="note-v">
+												umí {m.speed_mts || '—'}{m.part_number ? ` · ${m.part_number}` : ''}
+											</span>
+										</dd>
+									</div>
 								{/each}
-							</div>
+							</dl>
 						</div>
 						<div class="side">
 							<span class="metric">{ramPct ?? '—'}<small>%</small></span>
@@ -511,22 +537,41 @@
 						<div class="info">
 							<h3>{r.dev.name}</h3>
 							<p class="vendor">{r.dev.manufacturer || '—'}</p>
-							<div class="facts">
-								{#if driver(r.dev)}<span class="fact">{driver(r.dev)}</span>{/if}
+							<dl class="facts">
+								{#if r.dev?.driver_version}
+									<div><dt>Ovladač</dt><dd>{r.dev.driver_version}</dd></div>
+								{/if}
+								{#if r.dev?.driver_date}
+									<div><dt>Datum</dt><dd>{r.dev.driver_date}</dd></div>
+								{/if}
+								<!-- Živé hodnoty jen u karty, kterou umíme číst.
+								     Buňky se u ostatních vynechají celé — prázdná
+								     buňka by naznačovala, že hodnota je nula. -->
 								{#if live && sys?.gpu?.vram_used_mb != null}
-									<span class="fact">VRAM {gb(sys.gpu.vram_used_mb)} z {gb(sys.gpu.vram_total_mb)}</span>
+									<div>
+										<dt>VRAM</dt>
+										<dd>
+											{gb(sys.gpu.vram_used_mb)}
+											<span class="note-v">z {gb(sys.gpu.vram_total_mb)}</span>
+										</dd>
+									</div>
 								{/if}
 								{#if live && sys?.gpu?.clock_mhz != null}
-									<span class="fact">{sys.gpu.clock_mhz} MHz</span>
+									<div><dt>Takt</dt><dd>{sys.gpu.clock_mhz} MHz</dd></div>
 								{/if}
 								{#if live && sys?.gpu?.power_w != null}
-									<span class="fact">{Math.round(sys.gpu.power_w)} W</span>
+									<div><dt>Příkon</dt><dd>{Math.round(sys.gpu.power_w)} W</dd></div>
 								{/if}
 								{#if !live}
-									<span class="fact muted">zatížení ani teplotu tahle karta přes ovladač nehlásí</span>
+									<div class="wide">
+										<dt>Telemetrie</dt>
+										<dd class="dim">zatížení ani teplotu tahle karta přes ovladač nehlásí</dd>
+									</div>
 								{/if}
-								{#if hwid(r.dev)}<span class="fact mono muted">{hwid(r.dev)}</span>{/if}
-							</div>
+								{#if hwid(r.dev)}
+									<div><dt>ID</dt><dd class="mono">{hwid(r.dev)}</dd></div>
+								{/if}
+							</dl>
 						</div>
 						<div class="side">
 							{#if live}
@@ -547,24 +592,36 @@
 						<div class="info">
 							<h3>{r.disk.model || `Disk ${r.disk.index}`}</h3>
 							<p class="vendor">{diskVendor(r.disk.model)}</p>
-							<div class="facts">
+							<dl class="facts">
+								<!-- Popiskem svazku je jeho písmeno; hodnota je to,
+								     co uživatele zajímá — kolik je volno. -->
 								{#each volumesOf(r.disk.index) as v (v.letter)}
-									<span class="fact">
-										{v.letter}: {v.label || v.fs} — {bytes(v.free_bytes)} volných z {bytes(
-											v.total_bytes
-										)}
-									</span>
+									<div>
+										<dt>{v.letter}:</dt>
+										<dd>
+											{bytes(v.free_bytes)} volných
+											<span class="note-v">
+												z {bytes(v.total_bytes)}{v.label ? ` · ${v.label}` : ''} ({v.fs})
+											</span>
+										</dd>
+									</div>
 								{/each}
 								{#if r.disk.power_on_hours != null}
-									<span class="fact muted">{hours(r.disk.power_on_hours)}</span>
+									<div><dt>Provoz</dt><dd>{hours(r.disk.power_on_hours)}</dd></div>
 								{/if}
 								{#if r.disk.spare_pct != null}
-									<span class="fact muted">rezervní bloky {r.disk.spare_pct} %</span>
+									<div><dt>Rezerva</dt><dd>{r.disk.spare_pct} %</dd></div>
+								{/if}
+								{#if r.disk.used_pct != null}
+									<div><dt>Opotřebení</dt><dd>{r.disk.used_pct} %</dd></div>
 								{/if}
 								{#if r.disk.temp_c == null && r.disk.used_pct == null}
-									<span class="fact muted">zdraví přes SMART umí NVMe disky; tenhle ho nedává</span>
+									<div class="wide">
+										<dt>Zdraví</dt>
+										<dd class="dim">SMART přes NVMe umí jen novější disky; tenhle ho nedává</dd>
+									</div>
 								{/if}
-							</div>
+							</dl>
 						</div>
 						<div class="side">
 							{#if r.disk.temp_c != null}
@@ -587,18 +644,27 @@
 						<div class="info">
 							<h3>{hw.board.product || 'Základní deska'}</h3>
 							<p class="vendor">{hw.board.manufacturer || '—'}</p>
-							<div class="facts">
-								{#if hw.board.version}<span class="fact">revize {hw.board.version}</span>{/if}
-								<span class="fact"
-									>BIOS {hw.board.bios_version || '—'} · {hw.board.bios_date || '—'}</span
-								>
-								<span class="fact muted">{hw.board.bios_vendor}</span>
-								{#if hw.board.system_product}
-									<span class="fact muted"
-										>stroj: {hw.board.system_manufacturer} {hw.board.system_product}</span
-									>
+							<dl class="facts">
+								{#if hw.board.version}
+									<div><dt>Revize</dt><dd>{hw.board.version}</dd></div>
 								{/if}
-							</div>
+								<div>
+									<dt>BIOS</dt>
+									<dd>
+										{hw.board.bios_version || '—'}
+										<span class="note-v">{hw.board.bios_date || '—'}</span>
+									</dd>
+								</div>
+								{#if hw.board.bios_vendor}
+									<div><dt>BIOS od</dt><dd>{hw.board.bios_vendor}</dd></div>
+								{/if}
+								{#if hw.board.system_product}
+									<div>
+										<dt>Stroj</dt>
+										<dd>{hw.board.system_manufacturer} {hw.board.system_product}</dd>
+									</div>
+								{/if}
+							</dl>
 						</div>
 						<div class="side"><span class="pill quiet">v pořádku</span></div>
 					{:else if r.kind === 'battery'}
@@ -609,17 +675,33 @@
 								{#if hw.battery.charging}nabíjí se{:else if hw.battery.ac_online}napájení ze sítě{:else}běží
 									z baterie{/if}
 							</p>
-							<div class="facts">
+							<dl class="facts">
 								{#if hw.battery.wear_pct != null}
-									<span class="fact">
-										nabije se na {(hw.battery.full_mwh / 1000).toFixed(1)} Wh z původních
-										{(hw.battery.design_mwh / 1000).toFixed(1)} Wh
-									</span>
+									<div>
+										<dt>Kapacita</dt>
+										<dd>
+											{(hw.battery.full_mwh / 1000).toFixed(1)} Wh
+											<span class="note-v">
+												z původních {(hw.battery.design_mwh / 1000).toFixed(1)} Wh
+											</span>
+										</dd>
+									</div>
 								{/if}
 								{#if hw.battery.cycles != null}
-									<span class="fact muted">{hw.battery.cycles} nabíjecích cyklů</span>
+									<div><dt>Cykly</dt><dd>{hw.battery.cycles}</dd></div>
 								{/if}
-							</div>
+								<!-- Zbývající čas dává smysl jen při běhu z baterie;
+								     při napájení ze sítě je to nesmyslné číslo. -->
+								{#if !hw.battery.ac_online && hw.battery.remaining_s}
+									<div>
+										<dt>Zbývá</dt>
+										<dd>
+											{Math.floor(hw.battery.remaining_s / 3600)} h
+											{Math.round((hw.battery.remaining_s % 3600) / 60)} min
+										</dd>
+									</div>
+								{/if}
+							</dl>
 						</div>
 						<div class="side">
 							<span class="metric">{hw.battery.percent ?? '—'}<small>%</small></span>
@@ -646,10 +728,13 @@
 					<div class="info">
 						<h3>{d.monitor || 'Obrazovka'}</h3>
 						<p class="vendor">{d.adapter}</p>
-						<div class="facts">
-							<span class="fact">{d.width} × {d.height} bodů</span>
-							<span class="fact">{d.refresh_hz} Hz</span>
-						</div>
+						<dl class="facts">
+							<div><dt>Rozlišení</dt><dd>{d.width} × {d.height}</dd></div>
+							<div><dt>Obnovování</dt><dd>{d.refresh_hz} Hz</dd></div>
+							<!-- Adaptér patří do mřížky s popiskem, ne na pozici
+							     výrobce — výrobce monitoru to totiž není. -->
+							<div><dt>Adaptér</dt><dd>{d.adapter}</dd></div>
+						</dl>
 					</div>
 					<div class="side">
 						{#if d.primary}<span class="pill dim">hlavní</span>{/if}
@@ -699,11 +784,24 @@
 							{/if}
 						</h3>
 						<p class="vendor">{d.manufacturer || '—'}</p>
-						<div class="facts">
-							{#if driver(d)}<span class="fact">{driver(d)}</span>{/if}
-							{#if d.class_desc}<span class="fact muted">{d.class_desc}</span>{/if}
-							{#if hwid(d)}<span class="fact mono muted">{hwid(d)}</span>{/if}
-						</div>
+						<!-- Mřížka popisek → hodnota. Dřív to byla řada štítků,
+						     kde „ovladač 10.0.19041.1" a „Audio inputs and
+						     outputs" vypadaly stejně a nešlo poznat, co je co.
+						     Pořadí buněk je pevné napříč všemi kartami. -->
+						<dl class="facts">
+							{#if d.driver_version}
+								<div><dt>Ovladač</dt><dd>{d.driver_version}</dd></div>
+							{/if}
+							{#if d.driver_date}
+								<div><dt>Datum</dt><dd>{d.driver_date}</dd></div>
+							{/if}
+							{#if d.class_desc}
+								<div><dt>Třída</dt><dd>{d.class_desc}</dd></div>
+							{/if}
+							{#if hwid(d)}
+								<div><dt>ID</dt><dd class="mono">{hwid(d)}</dd></div>
+							{/if}
+						</dl>
 						<!-- U rozbitého zařízení nestačí kód: musí být vidět,
 						     co se děje a co to pro uživatele znamená. -->
 						{#if trouble}
@@ -747,6 +845,52 @@
 </div>
 
 <style>
+	/* Doplněk pod hodnotou — kontext, který by v hodnotě dělal zmatek
+	   („4200 MHz z 4700 MHz" se špatně čte, „4200 MHz" a pod tím
+	   „z 4700 MHz" dobře). */
+	.note-v {
+		display: block;
+		margin-top: 1px;
+		font-size: 0.7rem;
+		color: var(--text-faint);
+		line-height: 1.35;
+	}
+	.facts dd.dim {
+		color: var(--text-faint);
+	}
+	.facts .wide {
+		grid-column: 1 / -1;
+	}
+	/* Mřížka popisek → hodnota.
+	   Popisky jsou v jednom jazyce (mono verzálky) bez ohledu na to, že
+	   hodnoty jsou různé typy — verze, datum, text, identifikátor.
+	   Pořadí buněk je pevné napříč kartami, takže se dá očima skákat
+	   po sloupci celým seznamem. */
+	.facts {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(130px, max-content));
+		gap: 7px 22px;
+		margin: 9px 0 0;
+	}
+	.facts dt {
+		font-family: var(--font-mono);
+		font-size: 0.6rem;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--text-faint);
+	}
+	.facts dd {
+		margin: 2px 0 0;
+		font-size: 0.82rem;
+		color: var(--text);
+		line-height: 1.35;
+		word-break: break-word;
+	}
+	.facts dd.mono {
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		color: var(--text-dim);
+	}
 	.page {
 		display: flex;
 		flex-direction: column;
@@ -1015,12 +1159,6 @@
 	.p-bad {
 		font-size: 0.68rem;
 		color: var(--danger);
-	}
-	.facts {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 7px 8px;
-		margin-top: 9px;
 	}
 	.fact {
 		font-size: 0.79rem;

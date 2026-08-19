@@ -10,7 +10,7 @@
 	import CategoryNav from '$lib/CategoryNav.svelte';
 	import { mergeSame } from '$lib/mergesame.js';
 	import { invoke } from '@tauri-apps/api/core';
-	import { Search, Package, PackageCheck, TriangleAlert, Calendar, ChevronRight } from 'lucide-svelte';
+	import { Search, Package, PackageCheck, TriangleAlert, ChevronRight } from 'lucide-svelte';
 	import { byCategory } from '$lib/devcategory.js';
 
 	let report = $state(null);
@@ -213,18 +213,28 @@
 						{/if}
 					</h3>
 						<p class="vendor">{d.provider || '—'}</p>
-						<div class="facts">
-							{#if d.version}<span class="fact">verze {d.version}</span>{/if}
-							{#if d.date}
-								<span class="fact" class:old={isOld(d)}>
-									<Calendar size={12} />
-									{d.date}
-									{#if isOld(d) && year}· {thisYear - year} let starý{/if}
-								</span>
+						<!-- Mřížka popisek → hodnota. Dřív to byla řada štítků,
+						     kde „verze 10.0.19041.1" a „Audio inputs and outputs"
+						     vypadaly stejně a nešlo poznat, co je co. Pořadí
+						     buněk je pevné, aby první sloupec napříč seznamem
+						     držel vždycky tentýž druh údaje. -->
+						<dl class="facts">
+							{#if d.version}
+								<div><dt>Verze</dt><dd>{d.version}</dd></div>
 							{/if}
-							{#if d.class_desc}<span class="fact muted">{d.class_desc}</span>{/if}
-							{#if d.inf}<span class="fact mono muted">{d.inf}</span>{/if}
-						</div>
+							{#if d.date}
+								<div><dt>Datum</dt><dd>{d.date}</dd></div>
+							{/if}
+							{#if isOld(d) && year}
+								<div><dt>Stáří</dt><dd class="warn">{thisYear - year} let</dd></div>
+							{/if}
+							{#if d.class_desc}
+								<div><dt>Třída</dt><dd>{d.class_desc}</dd></div>
+							{/if}
+							{#if d.inf}
+								<div><dt>INF</dt><dd class="mono">{d.inf}</dd></div>
+							{/if}
+						</dl>
 					</div>
 					<div class="side">
 						{#if d.problem_code}
@@ -257,6 +267,69 @@
 </div>
 
 <style>
+	/* Mřížka popisek → hodnota.
+	   Popisky jsou v jednom jazyce (mono verzálky) bez ohledu na to, že
+	   hodnoty jsou různé typy — verze, datum, text. Sloupce se
+	   přizpůsobí šířce, ale pořadí buněk je pevné, takže se dá očima
+	   skákat po sloupci napříč celým seznamem. */
+	.facts {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(130px, max-content));
+		gap: 7px 22px;
+		margin: 9px 0 0;
+	}
+	.facts dt {
+		font-family: var(--font-mono);
+		font-size: 0.6rem;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--text-faint);
+	}
+	.facts dd {
+		margin: 2px 0 0;
+		font-size: 0.82rem;
+		color: var(--text);
+		line-height: 1.35;
+		word-break: break-word;
+	}
+	.facts dd.mono {
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		color: var(--text-dim);
+	}
+	/* Stáří je informace, ne chyba — jantarová, ne červená. */
+	.facts dd.warn {
+		color: var(--warn);
+	}
+	/* Pole pro hledání — bez tohohle mělo výchozí vzhled prohlížeče
+	   a trčelo z jinak sladěné hlavičky. */
+	.filter {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-left: auto;
+		padding: 5px 10px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--surface);
+		color: var(--text-dim);
+	}
+	.filter:focus-within {
+		border-color: var(--border-strong);
+		color: var(--text);
+	}
+	.filter input {
+		background: none;
+		border: none;
+		outline: none;
+		color: var(--text);
+		font: inherit;
+		font-size: 0.8rem;
+		width: 180px;
+	}
+	.filter input::placeholder {
+		color: var(--text-faint);
+	}
 	/* Segmentový přepínač — stejný jazyk jako Programs a On start.
 	   Bez tohohle to byla holá tlačítka prohlížeče. */
 	.seg {
@@ -442,27 +515,6 @@
 	/* Uvnitř faktu bývá ikona (datum ovladače) — bez inline-flex by
 	   spadla na účaří a zmizela mezera. Hardware ikony ve faktech nemá,
 	   takže tohle je jediný rozdíl proti němu. */
-	.fact {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		font-size: 0.79rem;
-		line-height: 1.4;
-		padding: 4px 11px;
-		border-radius: 7px;
-		background: var(--surface-hover);
-		color: var(--text);
-	}
-	.fact.muted {
-		background: none;
-		padding-left: 2px;
-		padding-right: 2px;
-		color: var(--text-dim);
-	}
-	.fact.mono {
-		font-family: var(--font-mono);
-		font-size: 0.73rem;
-	}
 	.side {
 		display: flex;
 		flex-direction: column;
@@ -479,14 +531,6 @@
 		border-radius: 999px;
 		border: 1px solid transparent;
 		white-space: nowrap;
-	}
-	.pill.ok {
-		color: var(--ok);
-		background: color-mix(in srgb, var(--ok) 12%, transparent);
-	}
-	.pill.warn {
-		color: var(--warn);
-		background: color-mix(in srgb, var(--warn) 14%, transparent);
 	}
 	.pill.bad {
 		color: var(--danger);
@@ -508,31 +552,10 @@
 		border-radius: 50%;
 		background: var(--ok);
 	}
-	.pill.cool {
-		background: color-mix(in srgb, var(--ok) 12%, transparent);
-	}
-	.pill.warm {
-		background: color-mix(in srgb, var(--warn) 14%, transparent);
-	}
-	.pill.hot {
-		background: color-mix(in srgb, var(--danger) 14%, transparent);
-	}
 	.empty {
 		color: var(--text-dim);
 		font-size: 0.84rem;
 		padding: 20px 0;
-	}
-	.filter {
-		margin-left: auto;
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		padding: 5px 9px;
-		color: var(--text-dim);
-		background: var(--surface);
-		width: 300px;
 	}
 	@keyframes flash {
 		0%,
@@ -555,9 +578,6 @@
 		color: var(--danger);
 	}
 	/* Stáří je informace, ne chyba — jantarová, ne červená. */
-	.fact.old {
-		color: var(--warn);
-	}
 	.pill.bad {
 		color: var(--danger);
 		border-color: color-mix(in srgb, var(--danger) 55%, transparent);

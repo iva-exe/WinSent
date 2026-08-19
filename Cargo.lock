@@ -557,6 +557,7 @@ version = "0.1.0"
 dependencies = [
  "core-types",
  "thiserror 2.0.18",
+ "tracing",
  "win-sys",
 ]
 
@@ -564,6 +565,7 @@ dependencies = [
 name = "collector-drv"
 version = "0.1.0"
 dependencies = [
+ "collector-hw",
  "core-types",
  "thiserror 2.0.18",
  "win-sys",
@@ -649,8 +651,9 @@ name = "collector-users"
 version = "0.1.0"
 dependencies = [
  "core-types",
- "thiserror 2.0.18",
+ "tracing",
  "win-sys",
+ "windows",
 ]
 
 [[package]]
@@ -2060,6 +2063,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "validate",
+ "win-sys",
  "windows",
 ]
 
@@ -3633,12 +3637,14 @@ dependencies = [
  "actor-toggle",
  "collector-boot",
  "collector-crash",
+ "collector-drv",
  "collector-etw",
  "collector-hw",
  "collector-inv",
  "collector-net",
  "collector-proc",
  "collector-sec",
+ "collector-users",
  "core-types",
  "ctrlc",
  "fs-index",

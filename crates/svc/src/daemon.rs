@@ -1107,6 +1107,19 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             // služba běží jako SYSTEM a o relaci uživatele neví.
             // Historie použití oprávnění (v9D). Čte se z NAŠÍ databáze,
             // ne z registru — ConsentStore drží jen poslední sezení.
+            // Součty použití za období pro všechna oprávnění najednou.
+            Request::QueryPermUseTotals { days } => {
+                let now = unix_now();
+                let from = now - (days.max(1) as i64) * 86_400;
+                match store::open_readonly(&db_path) {
+                    Ok(c) => Response::PermUseTotals(
+                        store::permuse::totals(&c, from, now).unwrap_or_default(),
+                    ),
+                    Err(e) => Response::Error {
+                        message: format!("databáze nedostupná: {e}"),
+                    },
+                }
+            }
             Request::QueryPermUse {
                 app,
                 capability,

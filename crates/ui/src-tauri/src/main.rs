@@ -181,6 +181,13 @@ fn query_security() -> Result<core_types::proc::SecurityReport, String> {
 }
 
 
+
+/// Součty použití všech oprávnění za období (v9D) — jeden dotaz.
+#[tauri::command(async)]
+fn query_perm_use_totals(days: u32) -> Result<Vec<(String, String, i64)>, String> {
+    ipc::client::query_perm_use_totals(days).map_err(|e| e.to_string())
+}
+
 /// Historie použití oprávnění (v9D) — sezení a součet za období.
 #[derive(Debug, Serialize)]
 struct PermUseDto {
@@ -660,6 +667,7 @@ fn main() {
             save_incident_report,
             query_incident_dumps,
             query_perm_use,
+            query_perm_use_totals,
             build_file_index,
             search_files,
             find_duplicates,
