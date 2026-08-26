@@ -364,8 +364,17 @@ enum PlanOrDeny {
     Deny(core_types::action::ActionResult),
 }
 
+/// Čas vzniku procesu chodí z UI jako ŘETĚZEC.
+///
+/// FILETIME je dnes zhruba 1,34 × 10¹⁷ a JavaScript umí přesně jen celá
+/// čísla do 2⁵³. Kdyby se posílalo jako číslo, vrátí se zaokrouhlené,
+/// validační vrstva ho neuzná za tentýž proces a ukončení odmítne
+/// s hláškou o recyklovaném PID — což se taky dělo skoro pokaždé.
 #[tauri::command(async)]
-fn plan_kill(pid: u32, create_time: i64, tree: bool) -> Result<PlanOrDeny, String> {
+fn plan_kill(pid: u32, create_time: String, tree: bool) -> Result<PlanOrDeny, String> {
+    let create_time: i64 = create_time
+        .parse()
+        .map_err(|_| format!("neplatný čas vzniku procesu: {create_time:?}"))?;
     ipc::client::plan_action(core_types::action::Action::KillProc {
         pid,
         create_time,

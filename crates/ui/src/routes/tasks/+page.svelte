@@ -751,9 +751,12 @@
 		if (!p?.create_time) return;
 		killBusy = true;
 		try {
+			// Čas vzniku je řetězec schválně: jako číslo by ho JavaScript
+			// zaokrouhlil (FILETIME je nad 2⁵³) a služba by proces neuznala
+			// za tentýž — ukončení pak selhalo na „recyklovaný PID".
 			const r = await invoke('plan_kill', {
 				pid: p.pid,
-				createTime: p.create_time,
+				createTime: String(p.create_time),
 				tree
 			});
 			if (r.plan_id != null) killPlan = { plan: r, target: p, tree };

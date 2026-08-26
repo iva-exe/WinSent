@@ -2,6 +2,47 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Čas vzniku procesu přes JSON jako řetězec, přes postcard jako číslo.
+///
+/// FILETIME je počet setin mikrosekundy od roku 1601, dnes zhruba
+/// 1,34 × 10¹⁷. JavaScript umí přesně jen celá čísla do 2⁵³ ≈ 9 × 10¹⁵,
+/// takže se hodnota v UI zaokrouhlí na násobek šestnácti — naměřeno:
+/// 133785551234567891 se vrátilo jako …888. Validační vrstva pak
+/// porovnala vrácené číslo s tím, co má systém, neshodla se a ukončení
+/// procesu odmítla s hláškou o recyklovaném PID. Nešlo tedy ukončit
+/// skoro nic a vypadalo to jako chyba té pojistky.
+///
+/// Přes IPC (postcard) se pořád posílá i64 — tam žádný problém není
+/// a řetězec by jen zvětšoval každý vzorek.
+mod filetime_json {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &i64, s: S) -> Result<S::Ok, S::Error> {
+        if s.is_human_readable() {
+            s.serialize_str(&v.to_string())
+        } else {
+            s.serialize_i64(*v)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+        if !d.is_human_readable() {
+            return i64::deserialize(d);
+        }
+        // UI může poslat řetězec i číslo (staré uložené stavy).
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Text(String),
+            Num(i64),
+        }
+        match Either::deserialize(d)? {
+            Either::Text(s) => s.parse().map_err(serde::de::Error::custom),
+            Either::Num(n) => Ok(n),
+        }
+    }
+}
+
 /// Jeden proces v aktuálním snapshotu sampleru.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProcRow {
@@ -9,6 +50,8 @@ pub struct ProcRow {
     pub parent_pid: u32,
     /// Čas vzniku procesu — s PID tvoří stabilní identitu instance
     /// (PID se recykluje; každá mutace se validuje proti téhle dvojici).
+    /// Do UI jde jako řetězec, viz `filetime_json`.
+    #[serde(with = "filetime_json")]
     pub create_time: i64,
     /// Jméno image (bez cesty). Prázdné jméno u pid 0 = System Idle.
     pub name: String,
