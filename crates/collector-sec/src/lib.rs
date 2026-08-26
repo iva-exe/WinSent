@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn report_builds_and_enforcement_is_honest() {
         win_sys::wic::init_com_for_thread();
-        let r = report();
+        let r = report(&RunningApps::from_procs(&[]));
         for p in &r.permissions {
             if p.enforced {
                 assert!(

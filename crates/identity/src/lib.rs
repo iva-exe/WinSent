@@ -92,12 +92,14 @@ impl SigKey {
 /// Práce pro worker: dořeš identitu procesu.
 struct Job {
     pid: u32,
+    birth: i64,
     image_name: String,
 }
 
 /// Hotová identita z workeru (mapuje se na pid v hlavním vlákně).
 struct Done {
     pid: u32,
+    birth: i64,
     identity: Identity,
     protection: Protection,
 }
@@ -107,6 +109,7 @@ struct Done {
 pub struct Engine {
     per_pid: HashMap<u32, Identity>,
     prot_pid: HashMap<u32, Protection>,
+    birth: HashMap<u32, i64>,
     tx: Sender<Job>,
     rx_done: Receiver<Done>,
     pending: HashSet<u32>,
@@ -130,6 +133,7 @@ impl Engine {
         Engine {
             per_pid: HashMap::new(),
             prot_pid: HashMap::new(),
+            birth: HashMap::new(),
             tx,
             rx_done,
             pending: HashSet::new(),
@@ -146,6 +150,13 @@ impl Engine {
     /// Vezme hotové výsledky z workeru.
     fn drain(&mut self) {
         while let Ok(done) = self.rx_done.try_recv() {
+            // Zatímco worker počítal, mohl PID zaniknout a Windows ho
+            // přidělit jinému procesu. Výsledek se přijme jen tehdy,
+            // když pořád patří tomu procesu, pro který se zadával.
+            if self.birth.get(&done.pid) != Some(&done.birth) {
+                self.pending.remove(&done.pid);
+                continue;
+            }
             self.pending.remove(&done.pid);
             self.per_pid.insert(done.pid, done.identity);
             self.prot_pid.insert(done.pid, done.protection);
@@ -155,8 +166,21 @@ impl Engine {
 
     /// Identita procesu. V samplovacím cyklu jen lookup; nováček dostane
     /// provisional a zařadí se do fronty.
-    pub fn identify(&mut self, pid: u32, image_name: &str) -> (Identity, Protection) {
+    pub fn identify(
+        &mut self,
+        pid: u32,
+        image_name: &str,
+        create_time: i64,
+    ) -> (Identity, Protection) {
         self.drain();
+        // Cache drží PID, ale PID Windows recykluje. Když se čas vzniku
+        // liší, je za tím číslem jiný proces a stará identita by mu
+        // podstrčila cizí aplikaci — záznam se zahodí a začne se znovu.
+        if self.birth.insert(pid, create_time) != Some(create_time) {
+            self.per_pid.remove(&pid);
+            self.prot_pid.remove(&pid);
+            self.pending.remove(&pid);
+        }
         if let Some(id) = self.per_pid.get(&pid) {
             let prot = self.prot_pid.get(&pid).copied().unwrap_or_default();
             return (id.clone(), prot);
@@ -167,6 +191,7 @@ impl Engine {
         if self.pending.insert(pid) {
             let _ = self.tx.send(Job {
                 pid,
+                birth: create_time,
                 image_name: image_name.to_string(),
             });
         }
@@ -178,6 +203,7 @@ impl Engine {
         self.per_pid.retain(|pid, _| live.contains(pid));
         self.prot_pid.retain(|pid, _| live.contains(pid));
         self.pending.retain(|pid| live.contains(pid));
+        self.birth.retain(|pid, _| live.contains(pid));
     }
 
     /// Orientační velikost cache (pro měření).
@@ -243,6 +269,7 @@ fn worker(rx: Receiver<Job>, tx_done: Sender<Done>, tables: Tables, icons: IconS
         if tx_done
             .send(Done {
                 pid: job.pid,
+                birth: job.birth,
                 identity,
                 protection,
             })
@@ -255,7 +282,9 @@ fn worker(rx: Receiver<Job>, tx_done: Sender<Done>, tables: Tables, icons: IconS
 
 /// Načte uninstall záznamy z registru (SPEC kap. 5.1) — jednou při startu.
 pub fn load_tables() -> Tables {
-    use win_sys::registry::{enum_subkeys, read_string, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use win_sys::registry::{
+        enum_subkeys, read_string, read_u64, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+    };
     let mut uninstall = Vec::new();
     let roots = [
         (
@@ -275,20 +304,35 @@ pub fn load_tables() -> Tables {
     for (root, base) in roots {
         for sub in enum_subkeys(root, base) {
             let key = format!("{base}\\{sub}");
-            let Some(loc) = read_string(root, &key, "InstallLocation") else {
+            // Bez DisplayName to není aplikace pro uživatele, jen stub.
+            //
+            // Windows si u vestavěných aplikací (Malování, Výstřižky,
+            // Připojení ke vzdálené ploše) zakládá záznam, který jméno
+            // drží jen v MUI hodnotě DisplayName_Localized. Jméno
+            // podklíče použité místo něj vyrobilo aplikaci
+            // „mspaint-b330ad9e-f80b-4c96-9949-4b4228be9a6e" a sebralo
+            // pod ni každou nemicrosoftí binárku pod System32.
+            // Inventář takové záznamy přeskakuje odjakživa
+            // (collector-inv), tady to chybělo.
+            let Some(name) = read_string(root, &key, "DisplayName") else {
                 continue;
             };
-            if loc.trim().is_empty() {
+            if name.trim().is_empty() || read_u64(root, &key, "SystemComponent") == Some(1) {
                 continue;
             }
-            let name = read_string(root, &key, "DisplayName").unwrap_or_else(|| sub.clone());
             // DisplayIcon jako fallback zdroj ikony (SPEC 5.2).
             if let Some(ico) = read_string(root, &key, "DisplayIcon") {
                 if !ico.trim().is_empty() {
                     icons.insert(format!("app:{}", name.to_ascii_lowercase()), ico);
                 }
             }
-            uninstall.push((loc.to_ascii_lowercase(), name));
+            let Some(loc) = read_string(root, &key, "InstallLocation")
+                .as_deref()
+                .and_then(install_prefix)
+            else {
+                continue;
+            };
+            uninstall.push((loc, name));
         }
     }
     // Nejdelší prefix první (nejspecifičtější InstallLocation vyhrává).
@@ -300,6 +344,52 @@ pub fn load_tables() -> Tables {
         "načteny uninstall záznamy pro identitu"
     );
     Tables { uninstall, icons }
+}
+
+/// `InstallLocation` → porovnatelný prefix cesty, nebo `None`, když je
+/// záznam k identifikaci nepoužitelný.
+///
+/// Do registru si leccos zapíše kořen disku nebo systémový adresář:
+/// Blender 2.93 má `InstallLocation` „D:\", stuby vestavěných aplikací
+/// „C:\WINDOWS\System32\". Takový prefix sedne na tisíce cizích cest,
+/// a protože vyhrává nejdelší shoda, přebije všechno ostatní —
+/// `D:\steam\steam.exe` pak vyšel jako aplikace „blender" a
+/// `NVDisplay.Container.exe` z DriverStore jako „mspaint-…".
+///
+/// Uvozovky kolem cesty a lomítka dopředu zapisuje část instalátorů.
+fn install_prefix(raw: &str) -> Option<String> {
+    let cleaned = raw.trim().trim_matches('"').trim().replace('/', "\\");
+    let lc = cleaned.trim_end_matches('\\').to_ascii_lowercase();
+    // „d:" — celý disk, žádná aplikace.
+    if lc.len() <= 2 || !lc.contains('\\') {
+        return None;
+    }
+    let env = |k: &str| std::env::var(k).ok().map(|v| v.to_ascii_lowercase());
+    let sysroot = env("SystemRoot").unwrap_or_else(|| r"c:\windows".into());
+    let sysroot = sysroot.trim_end_matches('\\');
+    // Sdílené kontejnery — nejsou to instalační adresáře jedné aplikace.
+    let generic = [
+        sysroot.to_string(),
+        format!(r"{sysroot}\system32"),
+        format!(r"{sysroot}\syswow64"),
+        env("ProgramFiles").unwrap_or_else(|| r"c:\program files".into()),
+        env("ProgramFiles(x86)").unwrap_or_else(|| r"c:\program files (x86)".into()),
+        env("ProgramData").unwrap_or_else(|| r"c:\programdata".into()),
+        env("PUBLIC").unwrap_or_else(|| r"c:\users\public".into()),
+    ];
+    if generic.iter().any(|g| g.trim_end_matches('\\') == lc) {
+        return None;
+    }
+    Some(lc)
+}
+
+/// Leží cesta uvnitř adresáře? Obojí malými písmeny, `dir` bez koncového
+/// „\". Porovnává se na hranici komponenty, ne po znacích — jinak
+/// „…\zen browser" sedne i na „…\zen browser nightly\zen.exe".
+pub(crate) fn under_dir(path_lc: &str, dir_lc: &str) -> bool {
+    path_lc.len() > dir_lc.len()
+        && path_lc.starts_with(dir_lc)
+        && path_lc.as_bytes()[dir_lc.len()] == b'\\'
 }
 
 /// Je cesta pod systémovým adresářem Windows?

@@ -231,7 +231,7 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
         }
         // Identita (v2): jen lookup v cache; nováček dostane provisional
         // a dořeší se na pozadí (SPEC kap. 4.2 — nic drahého v cyklu).
-        let (id, prot) = state.identity.identify(p.pid, &p.name);
+        let (id, prot) = state.identity.identify(p.pid, &p.name, p.create_time);
         rows.push(ProcRow {
             pid: p.pid,
             parent_pid: p.parent_pid,
@@ -511,6 +511,14 @@ fn reparent_hosts(rows: &mut [ProcRow]) {
             }
             visited.push(cur);
             let Some(&pidx) = by_pid.get(&cur) else { break };
+            // Rodič musí být starší než potomek. Windows PID recykluje
+            // a `parent_pid` se po zániku rodiče neaktualizuje — číslo
+            // pak ukazuje na proces, který vznikl až potom a s WebView2
+            // nemá nic společného. Bez téhle kontroly by si hostitel
+            // vypůjčil identitu náhodné aplikace.
+            if rows[pidx].create_time > rows[idx].create_time {
+                break;
+            }
             if is_generic_host(&rows[pidx].name) {
                 cur = rows[pidx].parent_pid;
                 continue;

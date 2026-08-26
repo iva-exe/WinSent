@@ -41,7 +41,13 @@ const RE_IPV4 = /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]
 const RE_IPV6 = /\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{0,4}\b/g;
 const RE_MAC = /\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b/g;
 const RE_SID = /\bS-1-5-21-\d+-\d+-\d+-(\d+)\b/g;
-const RE_PROFILE = /([A-Za-z]:\\Users\\)[^\\/:*?"<>|\s]+/g;
+// Oddělovač může být obojí. Registr obsahuje, co do něj instalátor
+// zapsal, a Windows si poradí s `C:/Users/Jméno` stejně jako
+// s `C:\Users\Jméno` — jenže maska hlídající jen zpětné lomítko takový
+// řádek pustí dál. Naměřeno na položce po spuštění pro Movavi:
+// `C:/Users/IVA/AppData/Roaming\Movavi…` prošla nemaskovaná, přestože
+// všechny ostatní cesty v témž souboru maskované byly.
+const RE_PROFILE = /([A-Za-z]:[\\/]Users[\\/])[^\\/:*?"<>|\s]+/gi;
 
 /// Adresy, které nikoho neidentifikují — nechávají se celé.
 const KEEP_IP = new Set(['0.0.0.0', '255.255.255.255', '::', '::1']);
@@ -88,6 +94,28 @@ function ts(t) {
 	if (!t) return '—';
 	const d = new Date(t * 1000);
 	return `${d.toLocaleDateString('cs-CZ')} ${d.toLocaleTimeString('cs-CZ')}`;
+}
+
+/// Datum bez času, ISO. Ve zkráceném sloupci vždycky přežije rok —
+/// „21. 2. 2026" useknuté na deset znaků dávalo „21. 2. 202", takže
+/// sloupec s datem instalace neměl žádnou informační hodnotu.
+function day(t) {
+	if (!t) return '';
+	const d = new Date(t * 1000);
+	const p = (n) => String(n).padStart(2, '0');
+	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/// Doba lidsky. Sloupec „30 dnů" míchal „43200 m" a „65 min" — minuty
+/// se u velkých čísel do sedmi znaků nevešly a text se ořízl uprostřed
+/// jednotky. Nad hodinu a půl se proto přepíná na hodiny, nad dva dny
+/// na dny.
+function dur(secs) {
+	if (secs == null) return '—';
+	const m = Math.round(secs / 60);
+	if (m < 90) return `${m} min`;
+	const h = Math.round(m / 6) / 10;
+	return h < 48 ? `${h} h` : `${Math.round(h / 24)} d`;
 }
 
 function gb(b) {
@@ -169,9 +197,36 @@ export function reportText(d) {
 	L.push('WINSENT — ZÁZNAM O STAVU POČÍTAČE');
 	L.push(SEP);
 	L.push(`Vytvořeno:  ${ts(d.now)}  (unix ${d.now})`);
-	L.push(`Okno dat:   ${ts(d.from)} .. ${ts(d.now)}  (posledních 24 hodin)`);
+	// Nadpis „posledních 24 hodin" lhal, když tolik dat neexistuje —
+	// čerstvě nainstalovaný nástroj má hodinu, po restartu systému se
+	// jede od bootu. Píše se proto skutečně pokryté okno i důvod.
+	const oldest = d.sysHist?.length ? d.sysHist[0].ts : null;
+	const covered = oldest ? d.now - oldest : 0;
+	const boot = d.system?.uptime_s != null ? d.now - d.system.uptime_s : null;
+	L.push(`Okno dat:   ${ts(d.from)} .. ${ts(d.now)}  (žádáno 24 hodin)`);
+	if (oldest) {
+		const why =
+			boot != null && oldest <= boot + 120
+				? ''
+				: boot != null && oldest > boot
+					? '  — omezeno startem systému nebo instalací nástroje'
+					: '';
+		L.push(
+			`Skutečně:   ${ts(oldest)} .. ${ts(d.now)}  (${dur(covered)}, ${d.sysHist.length} vzorků)${why}`
+		);
+	} else {
+		L.push('Skutečně:   žádná naměřená historie — služba běží krátce');
+	}
+	if (boot != null) {
+		L.push(`Systém běží od: ${ts(boot)}  (${dur(d.system.uptime_s)})`);
+	}
 	if (d.ping) {
-		L.push(`Služba:     běží, protokol v${d.ping.protocol_version}, uptime ${d.ping.uptime_s} s`);
+		// Uptime služby a stáří dat jsou dvě různé věci: data přežijí
+		// restart služby, protože bydlí v databázi.
+		L.push(
+			`Služba:     běží, protokol v${d.ping.protocol_version}, uptime ${dur(d.ping.uptime_s)}` +
+				(d.ping.uptime_s < covered ? '  (data jsou starší — přežila restart služby)' : '')
+		);
 	} else {
 		L.push('Služba:     NEBĚŽÍ — živé hodnoty v tomhle záznamu chybí');
 	}
@@ -389,11 +444,13 @@ export function reportText(d) {
 		const totals = new Map();
 		for (const [app, cap, secs] of d.permTotals ?? []) totals.set(`${cap}|${app}`, secs);
 		S(`Oprávnění aplikací (${perms.length} záznamů)`);
-		L.push('  schopnost            stav        používá  naposledy            30 dnů  aplikace');
+		L.push(
+			'  schopnost            stav        používá  naposledy            30 dnů     aplikace'
+		);
 		for (const x of perms) {
 			const t = totals.get(`${x.capability}|${x.app}`);
 			L.push(
-				`  ${pad(x.capability, 20)} ${pad(x.allow ? 'povoleno' : x.enforced ? 'zablokováno' : 'odepřeno*', 11)} ${pad(x.in_use ? 'ANO' : '', 8)} ${pad(x.last_used ? ts(x.last_used) : '—', 20)} ${pad(t != null ? Math.round(t / 60) + ' min' : '—', 7)} ${x.app_name || x.app}`
+				`  ${pad(x.capability, 20)} ${pad(x.allow ? 'povoleno' : x.enforced ? 'zablokováno' : 'odepřeno*', 11)} ${pad(x.in_use ? 'ANO' : '', 8)} ${pad(x.last_used ? ts(x.last_used) : '—', 20)} ${pad(dur(t), 10)} ${x.app_name || x.app}`
 			);
 		}
 		L.push('  * u klasických aplikací Windows „odepřeno" tvrdě nevynucují');
@@ -503,7 +560,7 @@ export function reportText(d) {
 		L.push('  název                                    vydavatel                  verze          instalováno');
 		for (const a of d.apps) {
 			L.push(
-				`  ${pad(a.display_name, 40)} ${pad(a.publisher, 26)} ${pad(a.version, 14)} ${pad(a.install_ts ? ts(a.install_ts).slice(0, 10) : '', 12)}${a.missing_install ? ' [instalace chybí na disku]' : ''}`
+				`  ${pad(a.display_name, 40)} ${pad(a.publisher, 26)} ${pad(a.version, 14)} ${pad(day(a.install_ts), 11)}${a.missing_install ? ' [instalace chybí na disku]' : ''}`
 			);
 		}
 	}

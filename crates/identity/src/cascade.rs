@@ -4,7 +4,7 @@
 
 use core_types::proc::Confidence;
 
-use crate::{parent_dir, under_system_root, Identity, Tables};
+use crate::{parent_dir, under_dir, under_system_root, Identity, Tables};
 
 /// Identita vlastních procesů. Poznává se podle jména binárky nebo
 /// instalačního adresáře služby — WebView2 renderery se poznají podle
@@ -78,11 +78,13 @@ pub fn resolve(pid: u32, image_name: &str, path: Option<&str>, tables: &Tables) 
     }
 
     // 3. Uninstall — nejdelší InstallLocation, který je prefixem cesty.
+    // Shoda musí padnout na hranici komponenty cesty, ne po znacích:
+    // „…\zen browser" by jinak sedlo i na „…\zen browser nightly\zen.exe".
     let path_lc = path.to_ascii_lowercase();
     if let Some((_, name)) = tables
         .uninstall
         .iter()
-        .find(|(loc, _)| path_lc.starts_with(loc.as_str()))
+        .find(|(loc, _)| under_dir(&path_lc, loc))
     {
         return Identity {
             identity_key: format!("app:{}", name.to_ascii_lowercase()),
