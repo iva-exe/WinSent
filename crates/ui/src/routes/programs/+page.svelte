@@ -18,7 +18,8 @@
 		Scale,
 		ExternalLink,
 		ShieldCheck,
-		PackageX
+		PackageX,
+		Eraser
 	} from 'lucide-svelte';
 	import SystemBadge from '$lib/SystemBadge.svelte';
 	import { isSystemApp } from '$lib/mandatory.js';
@@ -337,6 +338,51 @@
 		uninstBusy = false;
 	}
 
+
+	// ── Úklid záznamu po programu, který na disku není ──
+	// Odinstalovat se nedá, protože není co spustit — zbyl jen zápis
+	// v registru. Úklid dělá služba: sahá jen na klíč a na složky, ve
+	// kterých nic není, a prázdnost si ověřuje znovu těsně před
+	// smazáním.
+	let purgePlan = $state(null); // { plan | deny, app }
+	let purgeBusy = $state(false);
+
+	async function askPurge(app) {
+		purgeBusy = true;
+		try {
+			const r = await invoke('plan_purge_ghost', { identityKey: app.identity_key });
+			purgePlan = r.plan_id != null ? { plan: r, app } : { deny: r, app };
+		} catch (e) {
+			uninstToast = { kind: 'deny', text: String(e) };
+			setTimeout(() => (uninstToast = null), 6000);
+		}
+		purgeBusy = false;
+	}
+
+	async function confirmPurge() {
+		if (!purgePlan?.plan || purgeBusy) return;
+		const app = purgePlan.app;
+		const planId = purgePlan.plan.plan_id;
+		purgeBusy = true;
+		purgePlan = null;
+		try {
+			const r = await invoke('execute_plan', { planId });
+			const ok = r.verdict === 'allow' && r.outcome === 'ok';
+			uninstToast = {
+				kind: ok ? 'ok' : 'deny',
+				text: ok
+					? `${app.display_name}: záznam z registru odstraněn`
+					: (r.deny_reason ?? `nepodařilo se (${r.outcome ?? 'chyba'})`)
+			};
+			if (ok && selected?.identity_key === app.identity_key) selected = null;
+			load();
+		} catch (e) {
+			uninstToast = { kind: 'deny', text: String(e) };
+		}
+		purgeBusy = false;
+		setTimeout(() => (uninstToast = null), 6000);
+	}
+
 	// Hlídá, jestli odinstalátor pořád běží. Odinstalátory se často samy
 	// znovu spustí (kvůli právům správce nebo z kopie v temp), takže se
 	// nespoléháme na jediný proces — a když se spleteme, uživatel má
@@ -538,7 +584,7 @@
 							<h2>
 								{selected.display_name}
 								{#if isSystemApp(selected)}<SystemBadge />{/if}
-								{#if selected.missing_install}
+								{#if selected.missing_install && selected.uninstaller_missing}
 									<span class="ghost-badge big">
 										<PackageX size={16} /> instalace chybí na disku
 									</span>
@@ -564,14 +610,28 @@
 							{sizing ? 'počítám velikosti…' : totalSize != null ? fmtSize(totalSize) : '—'}
 						</span>
 						{#if selected.kind === 'desktop' && !isSystemApp(selected)}
-							<button
-								class="uninst-btn"
-								disabled={uninstBusy}
-								title="Spustí oficiální odinstalátor aplikace"
-								onclick={() => askUninstall(selected)}
-							>
-								<PackageX size={15} /> Odinstalovat
-							</button>
+							{#if selected.missing_install}
+								<!-- Program na disku není, zbyl po něm jen zápis
+								     v registru. Odinstalátor tu není co spustit,
+								     takže se místo něj nabídne úklid záznamu. -->
+								<button
+									class="uninst-btn purge"
+									disabled={purgeBusy}
+									title="Odstraní zápis v registru a prázdné složky po programu"
+									onclick={() => askPurge(selected)}
+								>
+									<Eraser size={15} /> Smazat z registru
+								</button>
+							{:else}
+								<button
+									class="uninst-btn"
+									disabled={uninstBusy}
+									title="Spustí oficiální odinstalátor aplikace"
+									onclick={() => askUninstall(selected)}
+								>
+									<PackageX size={15} /> Odinstalovat
+								</button>
+							{/if}
 						{/if}
 					</div>
 
@@ -640,6 +700,41 @@
 						<button class="d-btn" onclick={() => (uninstPlan = null)}>Zrušit</button>
 						<button class="d-btn primary" disabled={uninstBusy} onclick={confirmUninstall}>
 							{uninstBusy ? 'odinstalovávám…' : 'Spustit odinstalátor'}
+						</button>
+					</div>
+				{/if}
+			</div>
+		</div>
+	{/if}
+
+
+	<!-- ── Úklid záznamu v registru: plán → potvrzení ── -->
+	{#if purgePlan}
+		<div class="dlg-backdrop" role="presentation" onclick={() => (purgePlan = null)} onkeydown={() => {}}>
+			<div class="dlg" role="dialog" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
+				{#if purgePlan.deny}
+					<h2>Nelze uklidit</h2>
+					<p class="d-why">{purgePlan.deny.deny_reason}</p>
+					<div class="d-actions">
+						<button class="d-btn" onclick={() => (purgePlan = null)}>Zavřít</button>
+					</div>
+				{:else}
+					<h2>Smazat záznam po {purgePlan.app.display_name}?</h2>
+					<ul class="d-steps">
+						{#each purgePlan.plan.steps as s, i (i)}
+							<li>{s.description}</li>
+						{/each}
+					</ul>
+					<p class="d-note">
+						Program na disku není — zbyl po něm jen zápis v registru, kvůli kterému se
+						pořád ukazuje v seznamu nainstalovaných. Smaže se ten zápis a složky, ve
+						kterých nic není. Kdyby v nich cokoliv zbylo, služba to odmítne. Vrátit zpět
+						to nejde, ale nepřijdeš o žádná data — žádná tam nejsou.
+					</p>
+					<div class="d-actions">
+						<button class="d-btn" onclick={() => (purgePlan = null)}>Zrušit</button>
+						<button class="d-btn primary" disabled={purgeBusy} onclick={confirmPurge}>
+							{purgeBusy ? 'mažu…' : 'Smazat z registru'}
 						</button>
 					</div>
 				{/if}
@@ -845,6 +940,15 @@
 	}
 	/* Aplikace, po které zbyl jen záznam — instalační složka je pryč. */
 	/* Odinstalace + dialogy (stejný jazyk jako Files/Tasks) */
+	/* Úklid registru není odinstalace — jantarová říká „pozor, ale
+	   nepřijdeš o data", ne „nebezpečí". */
+	.uninst-btn.purge {
+		color: var(--warn);
+		border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+	}
+	.uninst-btn.purge:hover {
+		background: color-mix(in srgb, var(--warn) 12%, transparent);
+	}
 	.uninst-btn {
 		display: flex;
 		align-items: center;

@@ -9,7 +9,7 @@
 		MonitorX,
 		Timer,
 		RefreshCw,
-		Trash2,
+		Eye,
 		FileText,
 		EyeOff,
 		Download,
@@ -65,18 +65,6 @@
 		}
 	}
 
-	// Smazání ZÁZNAMU (jen náš seznam — nic v systému se nemění).
-	async function remove(i, ev) {
-		ev?.stopPropagation();
-		try {
-			await invoke('delete_incident', { id: i.id });
-			if (selected?.id === i.id) selected = null;
-			load();
-		} catch {
-			/* služba mimo */
-		}
-	}
-
 	// Vybraná položka časové osy (ne jen incident — může to být i samotné
 	// hlášení Windows, ke kterému žádný náš incident není).
 	let selRow = $state(null);
@@ -125,7 +113,7 @@
 	// Windows nevědí.
 	const PAIR_WINDOW_S = 120;
 
-	let timeline = $derived.by(() => {
+	let allRows = $derived.by(() => {
 		const used = new Set();
 		const rows = incidents.map((i) => {
 			const d = parseDetail(i);
@@ -148,12 +136,18 @@
 			}
 			return { key: `i${i.id}`, ts: i.ts, incident: i, report };
 		});
+		// Klíč hlášení Windows se skládá z obsahu, ne z pořadí v poli —
+		// pořadí se mezi spuštěními mění a skrytá položka by se pak
+		// vrátila, případně by zmizela jiná.
 		crashes.forEach((c, k) => {
 			if (used.has(k)) return;
-			rows.push({ key: `c${k}:${c.ts}`, ts: c.ts, incident: null, report: c });
+			rows.push({ key: `c:${c.app}:${c.ts}`, ts: c.ts, incident: null, report: c });
 		});
-		return rows.filter((r) => !hidden.has(r.key)).sort((a, b) => b.ts - a.ts);
+		return rows.sort((a, b) => b.ts - a.ts);
 	});
+
+	let timeline = $derived(allRows.filter((r) => !hidden.has(r.key)));
+	let hiddenRows = $derived(allRows.filter((r) => hidden.has(r.key)));
 
 	// Index bodu nejblíž okamžiku incidentu (marker ve sparkline).
 	let markerIdx = $derived.by(() => {
@@ -197,6 +191,22 @@
 			selected = null;
 		}
 	}
+
+	// Vrácení skryté položky zpět mezi ostatní.
+	function unhideReport(row, ev) {
+		ev?.stopPropagation();
+		const s = new Set(hidden);
+		s.delete(row.key);
+		hidden = s;
+		try {
+			localStorage.setItem(HIDDEN_KEY, JSON.stringify([...s]));
+		} catch {
+			/* bez úložiště to platí aspoň do zavření okna */
+		}
+	}
+
+	// Sekce skrytých je po startu zavřená — je to archiv, ne seznam.
+	let showHidden = $state(false);
 
 	// Hlášení o pádech, která mají uložená Windows.
 	//
@@ -536,10 +546,35 @@
 		}
 	}
 
+	// Deep-link z grafu v Tasks: ?id=<incident> → vybrat ten řádek
+	// a doskrolovat k němu. Data chodí asynchronně, takže se to zkouší,
+	// dokud řádek nepřibude (nebo se to po chvíli vzdá).
+	function openIncident(id, tries = 0) {
+		const row = allRows.find((r) => r.incident?.id === id);
+		if (row) {
+			// Skrytý incident by po deep-linku zůstal neviditelný —
+			// otevřeme rovnou i archiv, ať je vidět, kam nás to poslalo.
+			if (hidden.has(row.key)) showHidden = true;
+			selectRow(row);
+			requestAnimationFrame(() => {
+				document
+					.querySelector('.list .row.active')
+					?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+			});
+		} else if (tries < 20) {
+			setTimeout(() => openIncident(id, tries + 1), 250);
+		}
+	}
+
 	onMount(() => {
 		loadHidden();
 		load();
 		loadCrashes();
+		const want = Number(new URLSearchParams(window.location.search).get('id'));
+		if (Number.isFinite(want) && want > 0) {
+			history.replaceState(null, '', '/incidents');
+			openIncident(want);
+		}
 		const t = setInterval(load, 15000);
 		return () => clearInterval(t);
 	});
@@ -597,28 +632,65 @@
 								</span>
 							</span>
 							<span class="row-ts">{fmtTs(row.ts)}</span>
-							{#if i}
-								<span
-									class="row-del"
-									role="button"
-									tabindex="-1"
-									title="Odstranit záznam (v systému se nic nemění)"
-									onclick={(ev) => remove(i, ev)}
-									onkeydown={() => {}}><Trash2 size={15} /></span
-								>
-							{:else}
-								<span
-									class="row-del"
-									role="button"
-									tabindex="-1"
-									title="Skrýt ze seznamu (protokol Windows zůstane nedotčený)"
-									onclick={(ev) => hideReport(row, ev)}
-									onkeydown={() => {}}><EyeOff size={15} /></span
-								>
-							{/if}
+							<!-- Jediná akce je skrýt. Mazat záznam pádu nedává
+							     smysl: hlášení Windows není naše a náš vlastní
+							     incident je doklad o tom, co se stalo. Skryté
+							     položky zůstanou dole v seznamu. -->
+							<span
+								class="row-del"
+								role="button"
+								tabindex="-1"
+								title="Skrýt ze seznamu (nic se nemaže — najdeš ho dole ve Skrytých)"
+								onclick={(ev) => hideReport(row, ev)}
+								onkeydown={() => {}}><EyeOff size={15} /></span
+							>
 						</button>
 					</li>
 				{/each}
+
+					<!-- Skryté položky nejdou pryč, jen dolů a došeda. Kdo si
+					     řádek schoval omylem, musí ho mít kde najít; a seznam,
+					     ze kterého se dá nenávratně mizet, by lhal o tom, co
+					     se v počítači stalo. -->
+					{#if hiddenRows.length}
+						<li class="hid-head">
+							<button class="hid-toggle" class:on={showHidden} onclick={() => (showHidden = !showHidden)}>
+								<ChevronRight class="hid-caret" size={15} strokeWidth={2.25} />
+								<EyeOff size={15} />
+								<span>Skryté položky</span>
+								<span class="hid-n">{hiddenRows.length}</span>
+							</button>
+						</li>
+						{#if showHidden}
+							{#each hiddenRows as row (row.key)}
+								{@const hk = row.incident ? kindOf(row.incident.kind) : kinds.app_crash}
+								<li>
+									<button
+										class="row hid"
+										class:active={selRow?.key === row.key}
+										onclick={() => selectRow(row)}
+									>
+										<span class="kind-ico"><hk.icon size={16} /></span>
+										<span class="row-main">
+											<span class="row-title">{hk.label}</span>
+											<span class="row-culprit">
+												{row.report?.app ?? row.incident?.culprit ?? '—'}
+											</span>
+										</span>
+										<span class="row-ts">{fmtTs(row.ts)}</span>
+										<span
+											class="row-del"
+											role="button"
+											tabindex="-1"
+											title="Vrátit zpět do seznamu"
+											onclick={(ev) => unhideReport(row, ev)}
+											onkeydown={() => {}}><Eye size={15} /></span
+										>
+									</button>
+								</li>
+							{/each}
+						{/if}
+					{/if}
 			</ul>
 
 			<section class="detail">
@@ -1120,6 +1192,53 @@
 		font-size: var(--fs-2xs);
 		color: var(--text-faint);
 		margin-top: 4px;
+	}
+	/* Archiv skrytých položek: šedivý, sbalený, ale na dosah. */
+	.hid-head {
+		margin-top: 10px;
+		border-top: 1px solid var(--border);
+		padding-top: 8px;
+	}
+	.hid-toggle {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 100%;
+		padding: 7px 10px;
+		border: none;
+		border-radius: var(--radius-sm);
+		background: none;
+		color: var(--text-faint);
+		font: inherit;
+		font-size: var(--fs-sm);
+		text-align: left;
+		cursor: pointer;
+	}
+	.hid-toggle:hover {
+		background: var(--surface-hover);
+		color: var(--text-dim);
+	}
+	:global(.hid-caret) {
+		transition: transform 0.15s ease;
+		flex: none;
+	}
+	.hid-toggle.on :global(.hid-caret) {
+		transform: rotate(90deg);
+	}
+	.hid-n {
+		margin-left: auto;
+		font-family: var(--font-mono);
+		font-size: var(--fs-3xs);
+		font-variant-numeric: tabular-nums;
+	}
+	/* Skrytý řádek nemá barvu druhu — barva by ho tahala zpátky do očí. */
+	.row.hid,
+	.row.hid .kind-ico {
+		color: var(--text-faint);
+	}
+	.row.hid .row-title,
+	.row.hid .row-culprit {
+		color: var(--text-faint);
 	}
 	.row-del {
 		display: grid;

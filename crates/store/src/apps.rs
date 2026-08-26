@@ -130,6 +130,8 @@ pub fn list_apps(conn: &Connection) -> Result<Vec<AppRow>, rusqlite::Error> {
                     .all(|p| !p.trim().is_empty() && !std::path::Path::new(p.trim()).exists()),
                 _ => false,
             },
+            // Doplní služba — store do registru nesahá.
+            uninstaller_missing: false,
         })
     })?;
     rows.collect()

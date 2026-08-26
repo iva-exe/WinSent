@@ -839,7 +839,27 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             Request::QueryApps => {
                 let conn = read_conn.lock().expect("read conn lock poisoned");
                 match store::apps::list_apps(&conn) {
-                    Ok(rows) => Response::Apps(rows),
+                    Ok(mut rows) => {
+                        drop(conn);
+                        // Jestli odinstalátor na disku je, ví jen registr
+                        // + disk. Index se čte JEDNOU pro celý inventář —
+                        // ptát se zvlášť za každou z pěti stovek aplikací
+                        // by znamenalo projít registr pětsetkrát.
+                        let idx = validate::uninstall_exe_index();
+                        for r in rows.iter_mut() {
+                            let key = r.display_name.trim().to_ascii_lowercase();
+                            r.uninstaller_missing = match idx.get(&key) {
+                                // Záznam v registru je, ale binárka chybí.
+                                Some(Some(exe)) => !std::path::Path::new(exe).exists(),
+                                // Záznam bez odinstalačního příkazu.
+                                Some(None) => true,
+                                // Aplikace v Uninstall klíčích vůbec není
+                                // (Store aplikace) — tam se úklid nenabízí.
+                                None => false,
+                            };
+                        }
+                        Response::Apps(rows)
+                    }
                     Err(e) => Response::Error {
                         message: format!("čtení inventáře selhalo: {e}"),
                     },

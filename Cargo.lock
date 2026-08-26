@@ -4483,6 +4483,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-single-instance",
  "thiserror 2.0.18",
+ "win-sys",
  "windows",
 ]
 

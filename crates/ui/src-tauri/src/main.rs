@@ -412,6 +412,18 @@ fn plan_uninstall(identity_key: String) -> Result<PlanOrDeny, String> {
         .map_err(|e| e.to_string())
 }
 
+
+/// T1 plán úklidu záznamu po programu, který na disku není (v10).
+#[tauri::command(async)]
+fn plan_purge_ghost(identity_key: String) -> Result<PlanOrDeny, String> {
+    ipc::client::plan_action(core_types::action::Action::PurgeGhost { identity_key })
+        .map(|r| match r {
+            Ok(p) => PlanOrDeny::Plan(p),
+            Err(d) => PlanOrDeny::Deny(d),
+        })
+        .map_err(|e| e.to_string())
+}
+
 /// Co po aplikaci zbylo na disku (v8).
 #[tauri::command(async)]
 fn query_leftovers(identity_key: String) -> Result<Vec<String>, String> {
@@ -658,6 +670,194 @@ fn query_self_usage() -> Result<SelfUsageDto, String> {
         .map_err(|e| e.to_string())
 }
 
+
+// ── Aktualizace aplikace ───────────────────────────────────────────
+//
+// Zdroj pravdy je `release/version.txt` v repozitáři — týž soubor, ze
+// kterého bere verzi instalátor. Kontrola i stažení jdou přes commit
+// SHA, ne přes větev: `raw.githubusercontent.com` drží soubory v CDN
+// cache pět minut a query parametry ignoruje, takže by se mohla vrátit
+// stará `version.txt` k novým binárkám. Adresa s konkrétním commitem
+// je neměnná, takže tenhle problém nemá.
+//
+// Samotnou aktualizaci NEDĚLÁME sami: stáhne se `WinsentSetup.exe`
+// a spustí se. Ten už umí zastavit službu, zavřít okno aplikace,
+// přepsat binárky, službu vrátit do běhu a aplikaci znovu spustit —
+// druhá implementace téhož by se s ním nutně rozešla.
+
+const RAW_HOST: &str = "raw.githubusercontent.com";
+const API_HOST: &str = "api.github.com";
+const REPO: &str = "iva-exe/WinSent";
+
+/// Kde bydlí nainstalovaná kopie (`%ProgramFiles%\Winsent`).
+fn install_dir() -> std::path::PathBuf {
+    let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+    std::path::PathBuf::from(pf).join("Winsent")
+}
+
+/// Verze nainstalované kopie. `None` = běží se z vývojového stromu,
+/// kde soubor s verzí není — tam se aktualizace nenabízí.
+fn installed_version() -> Option<String> {
+    std::fs::read_to_string(install_dir().join("version.txt"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Commit, na kterém repozitář právě stojí.
+fn latest_commit() -> Result<String, String> {
+    let body = win_sys::http::get(API_HOST, &format!("/repos/{REPO}/commits/main"), |_| {})
+        .map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&body);
+    let pos = text
+        .find("\"sha\":\"")
+        .ok_or("odpověď GitHubu neobsahuje commit")?;
+    let sha: String = text[pos + 7..]
+        .chars()
+        .take_while(|c| c.is_ascii_hexdigit())
+        .collect();
+    if sha.len() < 7 {
+        return Err("GitHub vrátil neplatný commit".into());
+    }
+    Ok(sha)
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateInfo {
+    /// Verze, která běží teď. Prázdná u vývojového stromu.
+    current: String,
+    /// Verze v repozitáři; prázdná, když se nepodařilo zjistit.
+    latest: String,
+    /// Je co aktualizovat? Jen když obě verze známe a liší se.
+    available: bool,
+    /// Proč se nepodařilo zjistit (síť, GitHub) — UI to nekřičí,
+    /// ale v ladění se to hodí.
+    error: Option<String>,
+}
+
+/// Je v repozitáři jiná verze, než která běží?
+///
+/// Rozdíl, ne „vyšší": verze je `0.1.0+RRRRMMDD.HHMM` a porovnávat to
+/// jako číslo by znamenalo psát parser, který se u prvního jiného tvaru
+/// splete. Vydavatel navíc může vydat i starší build zpátky, a i to je
+/// změna, o které má uživatel vědět.
+#[tauri::command(async)]
+fn check_update() -> UpdateInfo {
+    let current = installed_version().unwrap_or_default();
+    if current.is_empty() {
+        return UpdateInfo {
+            current,
+            latest: String::new(),
+            available: false,
+            error: Some("aplikace neběží z instalace — aktualizace se nenabízí".into()),
+        };
+    }
+    let latest = match latest_commit()
+        .and_then(|sha| {
+            win_sys::http::get(
+                RAW_HOST,
+                &format!("/{REPO}/{sha}/release/version.txt"),
+                |_| {},
+            )
+            .map_err(|e| e.to_string())
+        })
+        .map(|b| String::from_utf8_lossy(&b).trim().to_string())
+    {
+        Ok(v) if !v.is_empty() => v,
+        Ok(_) => {
+            return UpdateInfo {
+                current,
+                latest: String::new(),
+                available: false,
+                error: Some("server vrátil prázdnou verzi".into()),
+            }
+        }
+        Err(e) => {
+            return UpdateInfo {
+                current,
+                latest: String::new(),
+                available: false,
+                error: Some(e),
+            }
+        }
+    };
+    UpdateInfo {
+        available: latest != current,
+        current,
+        latest,
+        error: None,
+    }
+}
+
+/// Stáhne instalátor a spustí ho.
+///
+/// Vrací se hned, jakmile je instalátor na světě — čekat nemá smysl:
+/// jeho první práce je zavřít tohle okno. Zbytek (služba, binárky,
+/// nové spuštění aplikace) dělá on.
+#[tauri::command(async)]
+fn run_update() -> Result<String, String> {
+    let sha = latest_commit()?;
+    let data = win_sys::http::get(
+        RAW_HOST,
+        &format!("/{REPO}/{sha}/release/WinsentSetup.exe"),
+        |_| {},
+    )
+    .map_err(|e| e.to_string())?;
+    // Každý PE soubor začíná „MZ". Když místo instalátoru dorazí
+    // chybová stránka nebo půlka souboru, pozná se to tady — ne až
+    // ve chvíli, kdy má zastavit službu.
+    if data.len() < 100_000 || &data[..2] != b"MZ" {
+        return Err(format!(
+            "instalátor se stáhl poškozený ({} B) — zkus to za chvíli znovu",
+            data.len()
+        ));
+    }
+
+    // Do vlastní podsložky v TEMPu se jménem podle commitu: běžící
+    // instalátor drží svůj soubor zamčený a přepisovat ho pod rukama
+    // by skončilo chybou sdílení.
+    let dir = std::env::temp_dir().join("winsent-update");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let exe = dir.join(format!("WinsentSetup-{}.exe", &sha[..7.min(sha.len())]));
+    std::fs::write(&exe, &data).map_err(|e| format!("instalátor nejde uložit: {e}"))?;
+
+    // `runas` = spuštění se zvýšenými právy (Windows se zeptají).
+    // Instalátor má práva správce i v manifestu, ale bez „runas" by
+    // ShellExecute zdědil token téhle aplikace a UAC by se neukázalo.
+    launch_elevated(&exe, "/quiet")?;
+    Ok(exe.to_string_lossy().to_string())
+}
+
+/// Spustí program se zvýšenými právy přes ShellExecuteW(„runas").
+fn launch_elevated(exe: &std::path::Path, args: &str) -> Result<(), String> {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let verb = HSTRING::from("runas");
+    let file = HSTRING::from(exe.as_os_str());
+    let params = HSTRING::from(args);
+    // SAFETY: všechny řetězce žijí až za volání; ShellExecuteW vrací
+    // pseudohandle, který se nezavírá.
+    let rc = unsafe {
+        ShellExecuteW(
+            None,
+            &verb,
+            &file,
+            &params,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    // Návratová hodnota ≤ 32 je chybový kód; 5 = uživatel odmítl UAC.
+    let code = rc.0 as usize;
+    match code {
+        c if c > 32 => Ok(()),
+        5 => Err("aktualizace potřebuje souhlas správce — nebyl udělen".into()),
+        c => Err(format!("instalátor se nepodařilo spustit (kód {c})")),
+    }
+}
+
 /// Ukáže a vyzdvihne hlavní okno.
 fn show_main_window(app: &tauri::AppHandle) {
     use tauri::Manager;
@@ -762,6 +962,9 @@ fn main() {
             plan_kill,
             plan_delete,
             plan_uninstall,
+            plan_purge_ghost,
+            check_update,
+            run_update,
             start_uninstall,
             uninstall_running,
             finish_uninstall,

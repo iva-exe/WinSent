@@ -26,6 +26,7 @@
 		Shield,
 		Settings,
 		History,
+		Download,
 		Minus,
 		Square,
 		TriangleAlert,
@@ -120,6 +121,39 @@
 		badges = b;
 	}
 
+
+	// ── Aktualizace aplikace ──
+	// Kontroluje se při startu a pak jednou za šest hodin. Upozornění
+	// je trvalé, ne mizící bublina: nová verze je stav, ne událost —
+	// a kdo si toho zrovna nevšiml, nemá se to dozvědět jen jednou.
+	let update = $state(null); // { current, latest }
+	let updateBusy = $state(false);
+	let updateError = $state('');
+
+	async function checkUpdate() {
+		try {
+			const r = await invoke('check_update');
+			update = r.available ? { current: r.current, latest: r.latest } : null;
+		} catch {
+			// Bez sítě se prostě nic nenabídne — křičet o tom nemá smysl.
+		}
+	}
+
+	async function doUpdate() {
+		if (updateBusy) return;
+		updateBusy = true;
+		updateError = '';
+		try {
+			// Instalátor si sám zastaví službu, zavře tohle okno, přepíše
+			// binárky a aplikaci zase spustí. Odsud se tedy nedočkáme
+			// odpovědi — okno zmizí dřív.
+			await invoke('run_update');
+		} catch (e) {
+			updateError = String(e);
+			updateBusy = false;
+		}
+	}
+
 	onMount(() => {
 		startDaemonPolling();
 		async function pollUptime() {
@@ -132,11 +166,14 @@
 		}
 		pollUptime();
 		pollBadges();
+		checkUpdate();
 		const t = setInterval(pollUptime, 5000);
 		const t2 = setInterval(pollBadges, 60000);
+		const t3 = setInterval(checkUpdate, 6 * 3600 * 1000);
 		return () => {
 			clearInterval(t);
 			clearInterval(t2);
+			clearInterval(t3);
 		};
 	});
 </script>
@@ -230,9 +267,92 @@
 			{/key}
 		</main>
 	</div>
+
+	<!-- ── Nová verze: trvalé upozornění vpravo dole ──
+	     Nemizí samo a nedá se odkliknout: stará verze je stav, který
+	     platí, dokud se neaktualizuje. Zavírací křížek by z toho udělal
+	     oznámení, které si člověk odbaví a zapomene. -->
+	{#if update}
+		<div class="upd" transition:fade={{ duration: 200 }}>
+			<Download size={17} />
+			<div class="upd-text">
+				<b>Je dostupná nová verze</b>
+				<span class="upd-ver">
+					máš <span class="mono">{update.current}</span> · nová
+					<span class="mono">{update.latest}</span>
+				</span>
+				{#if updateError}
+					<span class="upd-err">{updateError}</span>
+				{/if}
+			</div>
+			<button class="upd-btn" disabled={updateBusy} onclick={doUpdate}>
+				{updateBusy ? 'stahuji…' : 'Aktualizovat'}
+			</button>
+		</div>
+	{/if}
 </div>
 
 <style>
+	/* Upozornění na novou verzi — vpravo dole, nad obsahem, trvale.
+	   Jantarová, ne červená: není to porucha, jen je co stáhnout. */
+	.upd {
+		position: fixed;
+		right: 16px;
+		bottom: 16px;
+		z-index: 40;
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		max-width: 420px;
+		padding: 12px 14px;
+		border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+		border-radius: var(--radius-lg);
+		background: color-mix(in srgb, var(--warn) 12%, var(--panel));
+		backdrop-filter: blur(12px);
+		box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+		color: var(--text);
+	}
+	.upd > :global(svg) {
+		flex: none;
+		color: var(--warn);
+	}
+	.upd-text {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+		font-size: var(--fs-sm);
+	}
+	.upd-ver {
+		color: var(--text-dim);
+		font-size: var(--fs-xs);
+	}
+	.upd-ver .mono {
+		font-family: var(--font-mono);
+	}
+	.upd-err {
+		color: var(--danger);
+		font-size: var(--fs-xs);
+	}
+	.upd-btn {
+		flex: none;
+		padding: 7px 14px;
+		border: none;
+		border-radius: var(--radius-sm);
+		background: var(--warn);
+		color: #1b1200;
+		font: inherit;
+		font-size: var(--fs-sm);
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.upd-btn:hover:not(:disabled) {
+		filter: brightness(1.12);
+	}
+	.upd-btn:disabled {
+		opacity: 0.6;
+		cursor: wait;
+	}
 	.app {
 		display: flex;
 		flex-direction: column;

@@ -157,6 +157,11 @@ pub struct AppRow {
     /// zbytek po ručně smazané aplikaci (typicky hry). Odinstalátor
     /// takovou položku často nechá v systému viset.
     pub missing_install: bool,
+    /// Odinstalátor, který registr slibuje, na disku není. Doplňuje
+    /// ho služba (`validate::uninstall_exe_index`) — bez toho by UI
+    /// u hry smazané ze Steamu nabídlo úklid registru, přestože ji
+    /// Steam pořád odinstalovat umí.
+    pub uninstaller_missing: bool,
 }
 
 /// Proces, který drží soubor (v8, SPEC kap. 18.1 — Restart Manager).

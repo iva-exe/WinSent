@@ -16,6 +16,7 @@ pub mod evtlog;
 pub mod gpu;
 pub mod gpubasic;
 pub mod gpuproc;
+pub mod http;
 pub mod icon;
 pub mod ipcfg;
 pub mod msi;

@@ -46,6 +46,10 @@ pub enum Action {
         id: String,
         on: bool,
     },
+    /// T1: odstranění záznamu po programu, který na disku už není
+    /// (v10). Maže se JEN klíč v registru a prázdné složky po něm —
+    /// nikdy nic, v čem ještě něco je. Vrstva si existenci ověří sama.
+    PurgeGhost { identity_key: String },
 }
 
 impl Action {
@@ -57,7 +61,8 @@ impl Action {
             | Action::CheckProc { .. }
             | Action::KillProc { .. }
             | Action::DeleteFiles { .. }
-            | Action::UninstallApp { .. } => ActionClass::T1,
+            | Action::UninstallApp { .. }
+            | Action::PurgeGhost { .. } => ActionClass::T1,
         }
     }
 
@@ -77,6 +82,7 @@ impl Action {
                 if *tree { " (strom)" } else { "" }
             ),
             Action::UninstallApp { identity_key } => identity_key.clone(),
+            Action::PurgeGhost { identity_key } => identity_key.clone(),
 
             Action::DeleteFiles { paths } => match paths.len() {
                 0 => "(nic)".into(),
@@ -96,6 +102,7 @@ impl Action {
             Action::KillProc { .. } => "kill",
             Action::DeleteFiles { .. } => "delete",
             Action::UninstallApp { .. } => "uninstall",
+            Action::PurgeGhost { .. } => "purge_ghost",
         }
     }
 }

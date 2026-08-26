@@ -5,6 +5,8 @@
 	//  • kolečko        = posun v čase (dolů = do minulosti); u přítomnosti
 	//                     snap na živě — v minulosti se view nehýbe
 	//  • Ctrl+kolečko   = zoom (30 s – 1 h)
+	//  • dvojklik       = přiblížit na místo pod kurzorem
+	//  • klik na šipku  = přejít na incident v Incidents
 	//  • klik do grafu  = zámek na bod v čase (linka + tečka na křivce,
 	//                     nezávislé na myši); přepíše se dalším klikem,
 	//                     ruší se klikem mimo graf
@@ -26,7 +28,9 @@
 		// (zásek žlutě, pád/BSOD červeně) + tečkovaná svislice.
 		markers = [],
 		onhover = () => {},
-		onpin = () => {}
+		onpin = () => {},
+		// Klik na šipku incidentu na časové ose.
+		onmarker = () => {}
 	} = $props();
 
 	const SPAN_DEFAULT = 180;
@@ -329,8 +333,37 @@
 		dragging = false;
 	}
 
+	// Marker pod kurzorem: šipka dole je terč zhruba 9 px na každou
+	// stranu. Hledá se nejbližší, ne první — při přiblížení jich vedle
+	// sebe může být víc.
+	function markerAt(clientX, clientY) {
+		if (!u || !markers.length) return null;
+		const rect = u.over.getBoundingClientRect();
+		const x = clientX - rect.left;
+		const y = clientY - rect.top;
+		// Terč je spodní třetina grafu, kde šipka sedí.
+		if (y < rect.height - 22) return null;
+		let best = null;
+		let bestD = 10;
+		for (const m of markers) {
+			const mx = u.valToPos(m.ts, 'x', false);
+			const d = Math.abs(mx - x);
+			if (d < bestD) {
+				bestD = d;
+				best = m;
+			}
+		}
+		return best;
+	}
+
 	function onClick(e) {
 		if (!u) return;
+		// Klik na šipku incidentu je odkaz, ne zámek na bod v čase.
+		const m = markerAt(e.clientX, e.clientY);
+		if (m) {
+			onmarker(m);
+			return;
+		}
 		// Čas z pozice kliknutí (ne z cursor.idx — ten může být po
 		// aktualizaci dat zastaralý).
 		const rect = u.over.getBoundingClientRect();
@@ -339,6 +372,30 @@
 		if (i != null && ts[i] != null) {
 			onpin(ts[i]);
 		}
+	}
+
+	// Dvojklik přiblíží na místo, kam uživatel klikl: rozsah na polovinu
+	// a okno posunuté tak, aby ten okamžik zůstal pod kurzorem. Bez
+	// druhé části by se zoom táhl k pravému okraji a hledané místo by
+	// z obrazu uteklo.
+	function onDblClick(e) {
+		if (!u) return;
+		// Na šipce incidentu dvojklik nezoomuje — první klik už odešel
+		// na stránku incidentu.
+		if (markerAt(e.clientX, e.clientY)) return;
+		e.preventDefault();
+		const last = lastTs();
+		if (last == null) return;
+		const rect = u.over.getBoundingClientRect();
+		const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / Math.max(rect.width, 1)));
+		const at = u.posToVal(e.clientX - rect.left, 'x');
+		const next = Math.round(Math.max(SPAN_MIN, span / 2));
+		if (next === span) return;
+		span = next;
+		// Konec okna = bod pod kurzorem + kolik z nového rozsahu má být
+		// napravo od něj.
+		setEnd(at + next * (1 - frac));
+		applyScale();
 	}
 
 	// Tažení spodní čáry (pan indikátoru) — grab & scroll historií.
@@ -463,6 +520,7 @@
 		u.over.appendChild(pinLabelEl);
 		u.over.addEventListener('wheel', onWheel, { passive: false });
 		u.over.addEventListener('click', onClick);
+		u.over.addEventListener('dblclick', onDblClick);
 		u.over.addEventListener('mousedown', onMouseDown);
 		u.over.addEventListener('mousemove', onMouseMove);
 		u.over.addEventListener('mouseup', onMouseUp);

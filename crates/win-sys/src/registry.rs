@@ -290,3 +290,52 @@ pub fn wait_for_change(root: HKEY, subkey: &str, subtree: bool, timeout_ms: u32)
         changed
     }
 }
+
+/// Smaže klíč včetně podklíčů a hodnot.
+///
+/// Jediná mazací operace v tomhle modulu a smí ji volat výhradně
+/// exekutor za validační vrstvou. `RegDeleteTreeW` chce otevřený
+/// rodičovský klíč s právem DELETE, proto se cesta dělí na rodiče
+/// a poslední článek.
+pub fn delete_key_tree(root: HKEY, subkey: &str) -> Result<(), crate::Error> {
+    use windows::Win32::System::Registry::{RegDeleteTreeW, REG_SAM_FLAGS};
+    // DELETE (0x0001_0000) je standardní přístupové právo; ve windows
+    // crate pro registr vlastní konstantu nemá.
+    const DELETE_RIGHT: u32 = 0x0001_0000;
+
+    let subkey = subkey.trim_matches(char::from(92u8));
+    let (parent, leaf) = match subkey.rfind(char::from(92u8)) {
+        Some(i) => (&subkey[..i], &subkey[i + 1..]),
+        None => ("", subkey),
+    };
+    if leaf.is_empty() {
+        return Err(crate::Error::Win32 {
+            call: "delete_key_tree: prázdný klíč",
+            code: 0,
+        });
+    }
+    let wparent = HSTRING::from(parent);
+    let wleaf = HSTRING::from(leaf);
+    let mut hkey = HKEY::default();
+    // SAFETY: otevřený klíč se vždy zavírá.
+    unsafe {
+        RegOpenKeyExW(
+            root,
+            &wparent,
+            None,
+            REG_SAM_FLAGS(DELETE_RIGHT) | KEY_ENUMERATE_SUB_KEYS | KEY_READ,
+            &mut hkey,
+        )
+        .ok()
+        .map_err(|e| crate::Error::Win32 {
+            call: "RegOpenKeyExW",
+            code: e.code().0,
+        })?;
+        let r = RegDeleteTreeW(hkey, &wleaf);
+        let _ = RegCloseKey(hkey);
+        r.ok().map_err(|e| crate::Error::Win32 {
+            call: "RegDeleteTreeW",
+            code: e.code().0,
+        })
+    }
+}

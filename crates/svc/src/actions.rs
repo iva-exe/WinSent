@@ -269,6 +269,7 @@ fn plan_for(action: &Action) -> Vec<core_types::action::PlanStep> {
         Action::DeleteFiles { .. } => actor_file::plan(action),
 
         Action::UninstallApp { .. } => actor_app::plan(action),
+        Action::PurgeGhost { .. } => actor_app::purge_plan(action),
         _ => actor_toggle::plan(action),
     }
 }
@@ -288,6 +289,13 @@ fn execute_for(action: &Action) -> (bool, bool, String) {
             (verified, false, out.detail)
         }
 
+        // Úklid záznamu v registru běží ve službě: sahá se na registr
+        // a prázdné složky, žádné okno se neotvírá, takže session 0
+        // nevadí — a naopak jsou tu práva, která uživatel mít nemusí.
+        Action::PurgeGhost { .. } => {
+            let (ok, detail) = actor_app::purge_execute(action);
+            (ok && actor_app::purge_verify(action), false, detail)
+        }
         // Pojistka: odinstalátor se ze služby NIKDY nespouští. Kdyby
         // sem akce přesto dorazila (nová cesta v kódu), skončí tady —
         // ne na neviditelné ploše session 0 pod účtem SYSTEM.

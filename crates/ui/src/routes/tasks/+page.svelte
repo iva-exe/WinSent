@@ -1,6 +1,7 @@
 <script>
 	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import { daemon } from '$lib/daemon.svelte.js';
 	import LiveChart from '$lib/LiveChart.svelte';
@@ -686,7 +687,9 @@
 	async function pollIncidents() {
 		try {
 			const rows = await invoke('query_incidents', { limit: 100 });
-			incidentMarkers = rows.map((i) => ({ ts: i.ts, kind: i.kind }));
+			// `id` cestuje do markeru, aby klik na šipku vedl přesně na ten
+			// incident, ne na seznam.
+			incidentMarkers = rows.map((i) => ({ ts: i.ts, kind: i.kind, id: i.id }));
 		} catch {
 			// služba bez v3 — markery prostě nebudou
 		}
@@ -894,6 +897,7 @@
 				markers={incidentMarkers}
 				onhover={(h) => (hover = h)}
 				onpin={(t) => (pinned = t)}
+				onmarker={(m) => m.id != null && goto("/incidents?id=" + m.id)}
 			/>
 		{:else}
 			<p class="err">{error || 'služba neběží — graf čeká na data'}</p>

@@ -100,7 +100,6 @@
 	// rozejít. Přepnout je nejde tak jako tak; dlouhý seznam zamčených
 	// řádků by jen zakryl to, co uživatel ovlivnit může.
 	let visibleItems = $derived(prefs.showSystemStartup ? items : items.filter((i) => !i.system));
-	let hiddenCount = $derived(items.filter((i) => i.system).length);
 
 	let shown = $derived.by(() => {
 		const f = filter.trim().toLowerCase();
@@ -219,22 +218,6 @@
 			<History size={16} />
 		</a>
 	</header>
-
-	<!-- Kolik toho neukazujeme a proč. Tiše ubrat stovku řádků z toho,
-	     co startuje s Windows, by byla lež o stavu systému — a uživatel
-	     by nevěděl, že se má kde podívat. -->
-	{#if hiddenCount && !prefs.showSystemStartup}
-		<p class="sysnote">
-			<ShieldCheck size={15} />
-			<span>
-				Skryto {hiddenCount}
-				{hiddenCount === 1 ? 'položka' : hiddenCount < 5 ? 'položky' : 'položek'}, které
-				patří Windows — služby, naplánované úlohy a zápisy systému. Přepínat je Winsent
-				nedovolí, takže by ze seznamu udělaly jen šum. Zobrazit je jde v
-				<a href="/settings">Settings → zobrazení</a>.
-			</span>
-		</p>
-	{/if}
 
 	{#if toast}
 		<div class="toast {toast.kind}">{toast.text}</div>
@@ -649,29 +632,6 @@
 	.sw.busy {
 		opacity: 0.5;
 		cursor: wait;
-	}
-	/* Poznámka o skrytých systémových položkách. Nesmí vypadat jako
-	   poplach — je to vysvětlení, ne varování. */
-	.sysnote {
-		display: flex;
-		align-items: flex-start;
-		gap: 9px;
-		margin: 0;
-		padding: 9px 12px;
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		background: var(--surface);
-		color: var(--text-dim);
-		font-size: var(--fs-sm);
-		line-height: 1.5;
-	}
-	.sysnote :global(svg) {
-		flex: none;
-		margin-top: 2px;
-		color: var(--net-down);
-	}
-	.sysnote a {
-		color: var(--text);
 	}
 	/* Zámek u položky Windows — modrý štít, ne jantarový vykřičník:
 	   není to problém, je to prostě systém. */

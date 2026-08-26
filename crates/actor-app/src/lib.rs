@@ -107,3 +107,81 @@ mod tests {
         assert!(verify(&a));
     }
 }
+
+/// Plán úklidu záznamu po programu, který na disku není (v10).
+pub fn purge_plan(action: &Action) -> Vec<PlanStep> {
+    let Action::PurgeGhost { identity_key } = action else {
+        return Vec::new();
+    };
+    let name = identity_key.strip_prefix("app:").unwrap_or(identity_key);
+    let Some(g) = validate::ghost_entry(name) else {
+        return vec![PlanStep {
+            description: "záznam v registru se nepodařilo najít".into(),
+            reversible: true,
+        }];
+    };
+    let mut steps = vec![PlanStep {
+        description: format!("smazat záznam v registru: {}", g.key),
+        reversible: false,
+    }];
+    for d in &g.dirs {
+        steps.push(match validate::dir_state(d) {
+            validate::DirState::Missing => PlanStep {
+                description: format!("složka {d} na disku není — nic k mazání"),
+                reversible: true,
+            },
+            _ => PlanStep {
+                description: format!("odstranit prázdnou složku {d}"),
+                reversible: false,
+            },
+        });
+    }
+    steps.push(PlanStep {
+        description: "nic, v čem ještě něco je, se nemaže — vrstva to ověřuje znovu".into(),
+        reversible: true,
+    });
+    steps
+}
+
+/// Provedení úklidu. Volá se JEN po `Verdict::Allow`, takže existenci
+/// a prázdnost už někdo ověřil — přesto se prázdnost testuje ještě
+/// jednou těsně před smazáním: mezi verdiktem a zápisem může uběhnout
+/// čas a soubor se v té složce mohl objevit.
+pub fn purge_execute(action: &Action) -> (bool, String) {
+    let Action::PurgeGhost { identity_key } = action else {
+        return (false, "špatný typ akce".into());
+    };
+    let name = identity_key.strip_prefix("app:").unwrap_or(identity_key);
+    let Some(g) = validate::ghost_entry(name) else {
+        return (false, "záznam v registru už neexistuje".into());
+    };
+
+    let mut done = Vec::new();
+    // Nejdřív složky: kdyby smazání selhalo, záznam v registru zůstane
+    // a uživatel to zkusí znovu. Opačné pořadí by nechalo osiřelé
+    // složky bez jediné stopy, odkud byly.
+    for d in &g.dirs {
+        match validate::dir_state(d) {
+            validate::DirState::Missing => {}
+            validate::DirState::Empty => match std::fs::remove_dir_all(d) {
+                Ok(()) => done.push(format!("složka {d}")),
+                Err(e) => return (false, format!("složku {d} nejde odstranit: {e}")),
+            },
+            _ => return (false, format!("ve složce {d} něco je — nemažu")),
+        }
+    }
+    if let Err(e) = win_sys::registry::delete_key_tree(g.root, &g.key) {
+        return (false, format!("klíč {} nejde smazat: {e}", g.key));
+    }
+    done.push(format!("klíč {}", g.key));
+    (true, format!("odstraněno: {}", done.join(", ")))
+}
+
+/// Ověření: záznam v registru je pryč. Čte se ZNOVU.
+pub fn purge_verify(action: &Action) -> bool {
+    let Action::PurgeGhost { identity_key } = action else {
+        return false;
+    };
+    let name = identity_key.strip_prefix("app:").unwrap_or(identity_key);
+    validate::ghost_entry(name).is_none()
+}

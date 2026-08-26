@@ -211,6 +211,51 @@ pub fn validate(action: &Action, ctx: &mut LiveContext) -> Verdict {
             }
         }
 
+
+        // ── T1: úklid záznamu po programu, který na disku není (v10).
+        // Nejde o odinstalaci: odinstalátor tu není co spustit, zbyl
+        // jen klíč v registru. Proto se ověřuje ČERSTVĚ a přísně —
+        // stačí, aby po programu na disku cokoliv zbylo, a zamítáme.
+        Action::PurgeGhost { identity_key } => {
+            let Some(name) = identity_key.strip_prefix("app:") else {
+                return Verdict::deny(
+                    "z registru se uklízí jen klasicky nainstalovaný program (ne Store aplikace)",
+                );
+            };
+            if name.trim().is_empty() {
+                return Verdict::deny("prázdný identifikátor aplikace");
+            }
+            let Some(g) = ghost_entry(name) else {
+                return Verdict::deny(format!("„{name}“ v registru není — není co uklízet"));
+            };
+            // Odinstalátor na disku = program tam pořád je. Tohle není
+            // náhradní cesta k odinstalaci.
+            if let Some(exe) = g.uninstall_exe.as_deref() {
+                if std::path::Path::new(exe).exists() {
+                    return Verdict::deny(format!(
+                        "odinstalátor na disku je ({exe}) — použij Odinstalovat, ne úklid registru"
+                    ));
+                }
+            }
+            for dir in &g.dirs {
+                if let Some(why) = protected_path(dir) {
+                    return Verdict::deny(why);
+                }
+                match dir_state(dir) {
+                    DirState::Missing | DirState::Empty => {}
+                    DirState::HasFiles => {
+                        return Verdict::deny(format!(
+                            "ve složce „{dir}“ pořád něco je — z registru se uklízí jen po programu, který na disku není"
+                        ))
+                    }
+                    DirState::Unreadable => {
+                        return Verdict::deny(format!("do složky „{dir}“ nevidíme — radši nic"))
+                    }
+                }
+            }
+            Verdict::Allow
+        }
+
         // ── T1: ukončení procesu (v7). Stejná kontrola jako CheckProc
         // + zákaz sebevraždy: démon nesmí zabít sám sebe (přišli
         // bychom o monitoring i o auditní zápis výsledku).
@@ -810,6 +855,165 @@ pub fn uninstall_command(display_name: &str) -> Option<String> {
     None
 }
 
+
+/// Záznam v registru po programu — kde leží a co po něm zbylo.
+/// `pub`, protože totéž musí vidět i exekutor: co vrstva povolila
+/// smazat, to se smaže, a nic jiného (žádná cesta okolo vrstvy).
+#[derive(Debug, Clone)]
+pub struct GhostEntry {
+    /// Kořen a podklíč v registru (`HKLM\…\Uninstall\{GUID}`).
+    pub root: win_sys::registry::RegKey,
+    pub key: String,
+    /// Binárka odinstalátoru, pokud je v záznamu uvedená.
+    pub uninstall_exe: Option<String>,
+    /// Složky, které záznam uvádí jako svoje (InstallLocation a adresář
+    /// odinstalátoru). Smí se odstranit jen prázdné.
+    pub dirs: Vec<String>,
+}
+
+/// Najde záznam v Uninstall klíčích podle DisplayName. Čte se čerstvě —
+/// UI posílá jen jméno, nikdy cestu do registru.
+pub fn ghost_entry(display_name: &str) -> Option<GhostEntry> {
+    use win_sys::registry::{enum_subkeys, read_string, read_u64, HKEY_LOCAL_MACHINE, HKEY_USERS};
+    let want = display_name.trim().to_ascii_lowercase();
+
+    // Služba běží jako SYSTEM, takže HKEY_CURRENT_USER je hive SYSTEMu.
+    // Instalace „jen pro mě" se hledají v HKU\<SID> reálných uživatelů.
+    let mut roots: Vec<(win_sys::registry::RegKey, String)> = vec![
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall".to_string(),
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall".to_string(),
+        ),
+    ];
+    for sid in enum_subkeys(HKEY_USERS, "") {
+        if sid.starts_with("S-1-5-21") && !sid.ends_with("_Classes") {
+            roots.push((
+                HKEY_USERS,
+                format!(r"{sid}\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+            ));
+        }
+    }
+
+    for (root, base) in roots {
+        for sub in enum_subkeys(root, &base) {
+            let key = format!("{base}\\{sub}");
+            let Some(name) = read_string(root, &key, "DisplayName") else {
+                continue;
+            };
+            if name.trim().to_ascii_lowercase() != want {
+                continue;
+            }
+            // Systémové komponenty se z registru neuklízejí.
+            if read_u64(root, &key, "SystemComponent") == Some(1) {
+                return None;
+            }
+            let uninstall_exe = read_string(root, &key, "UninstallString")
+                .as_deref()
+                .and_then(exe_of_command);
+            let mut dirs: Vec<String> = Vec::new();
+            if let Some(loc) = read_string(root, &key, "InstallLocation") {
+                let loc = loc.trim().trim_matches('"').trim_end_matches(char::from(92u8));
+                if !loc.is_empty() {
+                    dirs.push(loc.to_string());
+                }
+            }
+            // Adresář odinstalátoru bere v úvahu jen tehdy, když je pod
+            // Program Files nebo v profilu — jinak by to mohl být
+            // sdílený adresář (System32, Temp) a ten se nemaže.
+            if let Some(exe) = uninstall_exe.as_deref() {
+                if let Some(dir) = std::path::Path::new(exe).parent() {
+                    let d = dir.to_string_lossy().to_string();
+                    if own_install_dir(&d) && !dirs.iter().any(|x| x.eq_ignore_ascii_case(&d)) {
+                        dirs.push(d);
+                    }
+                }
+            }
+            return Some(GhostEntry {
+                root,
+                key,
+                uninstall_exe,
+                dirs,
+            });
+        }
+    }
+    None
+}
+
+/// Vypadá cesta jako VLASTNÍ adresář programu? Sdílené adresáře (kořen
+/// Program Files, Temp, System32) se nikdy nemažou ani prázdné.
+fn own_install_dir(path: &str) -> bool {
+    let p = path.replace('/', "\\").to_ascii_lowercase();
+    let p = p.trim_end_matches(char::from(92u8));
+    // Musí být aspoň o dvě úrovně hlouběji než kořen svazku, jinak je to
+    // něco jako `C:\Program Files` a mazat to nesmíme.
+    let depth = p.matches(char::from(92u8)).count();
+    if depth < 2 {
+        return false;
+    }
+    const SHARED: &[&str] = &[
+        r"\windows",
+        r"\program files",
+        r"\program files (x86)",
+        r"\programdata",
+        r"\users",
+    ];
+    !SHARED.iter().any(|s| p == format!("c:{s}"))
+}
+
+/// Stav složky pro úklid: chybí / je prázdná (i po stromu) / něco v ní
+/// je / nejde přečíst.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirState {
+    Missing,
+    Empty,
+    HasFiles,
+    Unreadable,
+}
+
+/// Prázdná = nemá ANI JEDEN soubor, ať je zanoření jakékoli. Prázdné
+/// podsložky se počítají za prázdno. Hloubka je omezená, aby zacyklený
+/// junction point nedržel vlákno navěky.
+pub fn dir_state(path: &str) -> DirState {
+    fn walk(p: &std::path::Path, depth: u32) -> DirState {
+        if depth > 12 {
+            return DirState::Unreadable;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return DirState::Unreadable;
+        };
+        let state = DirState::Empty;
+        for e in rd {
+            let Ok(e) = e else {
+                return DirState::Unreadable;
+            };
+            let Ok(ft) = e.file_type() else {
+                return DirState::Unreadable;
+            };
+            // Symlink ani junction se nesleduje — cíl patří někomu jinému.
+            if ft.is_symlink() || ft.is_file() {
+                return DirState::HasFiles;
+            }
+            match walk(&e.path(), depth + 1) {
+                DirState::Empty | DirState::Missing => {}
+                other => return other,
+            }
+        }
+        state
+    }
+    let p = std::path::Path::new(path);
+    match p.try_exists() {
+        Ok(false) => DirState::Missing,
+        Ok(true) if p.is_dir() => walk(p, 0),
+        // Cesta existuje, ale není to složka → je to soubor.
+        Ok(true) => DirState::HasFiles,
+        Err(_) => DirState::Unreadable,
+    }
+}
+
 /// Cesta k .exe z příkazové řádky (s uvozovkami i bez).
 pub fn exe_of_command(cmd: &str) -> Option<String> {
     let cmd = cmd.trim();
@@ -1246,4 +1450,52 @@ mod tests {
         );
         assert_eq!(v, Verdict::Allow);
     }
+}
+
+/// Mapa `DisplayName (malými) → binárka odinstalátoru`, přečtená JEDNÍM
+/// průchodem Uninstall klíči.
+///
+/// `uninstall_command` prochází celý registr při každém volání, takže
+/// pro celý inventář (stovky aplikací) by to byla kvadratická práce.
+/// Tohle je tentýž zdroj, jen přečtený najednou.
+pub fn uninstall_exe_index() -> std::collections::HashMap<String, Option<String>> {
+    use win_sys::registry::{enum_subkeys, read_string, read_u64, HKEY_LOCAL_MACHINE, HKEY_USERS};
+    let mut out = std::collections::HashMap::new();
+
+    let mut roots: Vec<(win_sys::registry::RegKey, String)> = vec![
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall".to_string(),
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall".to_string(),
+        ),
+    ];
+    for sid in enum_subkeys(HKEY_USERS, "") {
+        if sid.starts_with("S-1-5-21") && !sid.ends_with("_Classes") {
+            roots.push((
+                HKEY_USERS,
+                format!(r"{sid}\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+            ));
+        }
+    }
+    for (root, base) in roots {
+        for sub in enum_subkeys(root, &base) {
+            let key = format!("{base}{}{sub}", char::from(92u8));
+            let Some(name) = read_string(root, &key, "DisplayName") else {
+                continue;
+            };
+            if read_u64(root, &key, "SystemComponent") == Some(1) {
+                continue;
+            }
+            let exe = read_string(root, &key, "QuietUninstallString")
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| read_string(root, &key, "UninstallString"))
+                .as_deref()
+                .and_then(exe_of_command);
+            out.insert(name.trim().to_ascii_lowercase(), exe);
+        }
+    }
+    out
 }
