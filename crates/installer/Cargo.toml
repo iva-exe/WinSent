@@ -35,4 +35,12 @@ features = [
     "Win32_System_Registry",
     "Win32_UI_Shell",
     "Win32_System_Threading",
+    # Vlastní okno instalátoru (src/gui.rs) — kreslí se přes GDI,
+    # aby binárka zůstala malá a bez cizích knihoven.
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_HiDpi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Console",
 ]
