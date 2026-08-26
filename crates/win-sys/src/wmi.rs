@@ -26,6 +26,26 @@ use windows::Win32::System::Wmi::{
 /// to sám; univerzální typ pro VARIANT by tady byl jen na obtíž.
 pub type Row = HashMap<String, String>;
 
+/// Přeloží WMI boolean na `bool`.
+///
+/// VARIANT typu VT_BOOL nese pravdu jako −1 (všechny bity), ne jako 1,
+/// a převod na text z toho udělá „-1". Porovnání s „true" tedy nikdy
+/// nesedlo: TPM se hlásilo jako vypnuté a Defender jako bez ochrany
+/// v reálném čase, přestože obojí bylo zapnuté. Naměřeno sondou
+/// `wmibool` — `Win32_DiskPartition.Bootable` vrací přesně „-1" a „0".
+///
+/// Bere i „1"/„true"/„True", kdyby se poskytovatel zachoval jinak.
+pub fn truthy(v: &str) -> bool {
+    let t = v.trim();
+    t == "-1" || t == "1" || t.eq_ignore_ascii_case("true")
+}
+
+/// Boolean z řádku. `None` = vlastnost tam není, což NENÍ „ne" —
+/// volající má rozlišit „vypnuto" od „nevíme".
+pub fn flag(row: &Row, name: &str) -> Option<bool> {
+    row.get(name).map(|v| truthy(v))
+}
+
 /// Spustí WQL dotaz v daném jmenném prostoru (např. `root\WMI`).
 ///
 /// Vrací prázdný seznam, když jmenný prostor neexistuje — to je běžný,

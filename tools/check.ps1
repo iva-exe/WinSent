@@ -26,7 +26,7 @@ $all = @(
     'iconcheck', 'incidents', 'v8check', 'v8dcheck', 'v9check', 'v9netcheck',
     'v9conncheck', 'v9seccheck', 'v9usercheck', 'permusecheck', 'v10check', 'memcheck',
     'onstartcheck', 'updatecheck', 'purgecheck', 'gpucheck', 'permlive',
-    'hwgroupcheck', 'idcheck', 'netcheck'
+    'hwgroupcheck', 'idcheck', 'netcheck', 'wmicheck'
 )
 $gates = if ($Only) { $Only } else { $all }
 

@@ -129,7 +129,13 @@ impl Nvml {
             if let Some(f) = self.get_temperature {
                 let mut t = 0u32;
                 // 0 = NVML_TEMPERATURE_GPU
-                if f(self.device, 0, &mut t) == 0 {
+                //
+                // Nula není teplota, je to nevyplněná proměnná: karta
+                // pod pokojovou teplotou v zapnutém počítači neexistuje.
+                // Některé ovladače vrátí úspěch a hodnotu nechají ležet,
+                // a v záznamu pak stálo „GPU 0 °C" jako fakt. Horní mez
+                // hlídá opačný nesmysl (255 z nepřečteného bajtu).
+                if f(self.device, 0, &mut t) == 0 && (5..=120).contains(&t) {
                     d.temp_c = Some(t as f32);
                 }
             }

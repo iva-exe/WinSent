@@ -142,9 +142,7 @@ fn defender_status() -> Option<DefenderStatus> {
     );
     let r = rows.first()?;
     Some(DefenderStatus {
-        realtime: r
-            .get("RealTimeProtectionEnabled")
-            .map(|v| v == "true" || v == "1")?,
+        realtime: crate::wmi::flag(r, "RealTimeProtectionEnabled")?,
         signature_age_days: r.get("AntivirusSignatureAge").and_then(|v| v.parse().ok()),
         // QuickScanAge 4294967295 = sken nikdy neproběhl.
         quick_scan_age_days: r
@@ -209,8 +207,7 @@ fn tpm() -> Option<(bool, String)> {
     );
     let r = rows.first()?;
     Some((
-        r.get("IsEnabled_InitialValue")
-            .is_some_and(|v| v == "true" || v == "1"),
+        crate::wmi::flag(r, "IsEnabled_InitialValue").unwrap_or(false),
         r.get("SpecVersion")
             .map(|v| v.split(',').next().unwrap_or(v).trim().to_string())
             .unwrap_or_default(),

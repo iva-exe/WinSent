@@ -75,10 +75,16 @@ impl CpuThermal {
 /// inicializované (`wic::init_com_for_thread`).
 pub fn cpu_thermal(n_cpus: usize) -> CpuThermal {
     let (clock_mhz, max_mhz) = crate::sysinfo::cpu_clocks(n_cpus).unwrap_or((0, 0));
+    // Nula ani 255 °C nejsou teploty, jsou to nepřečtené hodnoty.
+    // Zdroj, který vrátí úspěch a proměnnou nechá ležet, poslal
+    // do záznamu „CPU 0 °C" jako fakt — radši se jde o krok dál
+    // v kaskádě a nakonec se přizná, že teplotu nikdo nehlásí.
+    let ok = |c: f32| (5.0..=120.0).contains(&c).then_some(c);
     let (celsius, source) = hwinfo_cpu_temp()
+        .and_then(ok)
         .map(|c| (Some(c), TempSource::Hwinfo))
-        .or_else(|| lhm_cpu_temp().map(|c| (Some(c), TempSource::Lhm)))
-        .or_else(|| acpi_temp().map(|c| (Some(c), TempSource::Acpi)))
+        .or_else(|| lhm_cpu_temp().and_then(ok).map(|c| (Some(c), TempSource::Lhm)))
+        .or_else(|| acpi_temp().and_then(ok).map(|c| (Some(c), TempSource::Acpi)))
         .unwrap_or((None, TempSource::Unavailable));
     CpuThermal {
         celsius,
