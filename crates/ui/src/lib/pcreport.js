@@ -18,6 +18,72 @@
 const SEP = '='.repeat(72);
 const SUB = '-'.repeat(72);
 
+// ── Skrývání identifikujících údajů ────────────────────────────────
+//
+// Záznam se posílá dál, takže z něj musí ven to, co identifikuje
+// uživatele nebo jeho síť — ale tak, aby zbytek zůstal analyzovatelný.
+// Proto se maskuje, nemaže: „192.168.x.x → 151.101.x.x, port 443,
+// established" pořád říká, co se dělo, jen už ne komu to patří.
+//
+// Co se maskuje a proč:
+//   · IP adresy — vlastní i protistrany. Vlastní veřejná IP je přímý
+//     identifikátor, lokální prozrazuje topologii sítě.
+//   · MAC — zůstává první polovina (výrobce karty, ta se hodí),
+//     zbytek pryč: celá MAC je jedinečné číslo zařízení.
+//   · SSID Wi-Fi — jméno sítě jde v databázích wardrivingu přeložit
+//     na adresu domu. Tohle je z celého záznamu nejcitlivější údaj.
+//   · SID účtu — část pro stroj pryč, RID zůstává (500 = Administrator,
+//     1001 = první uživatel), protože ten nese význam.
+//   · cesty do profilu — jméno složky uživatele nahrazeno.
+//   · celá jména účtů — skutečné jméno člověka do záznamu nepatří.
+
+const RE_IPV4 = /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b/g;
+const RE_IPV6 = /\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{0,4}\b/g;
+const RE_MAC = /\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b/g;
+const RE_SID = /\bS-1-5-21-\d+-\d+-\d+-(\d+)\b/g;
+const RE_PROFILE = /([A-Za-z]:\\Users\\)[^\\/:*?"<>|\s]+/g;
+
+/// Adresy, které nikoho neidentifikují — nechávají se celé.
+const KEEP_IP = new Set(['0.0.0.0', '255.255.255.255', '::', '::1']);
+
+function maskIp(v) {
+	const s = String(v ?? '').trim();
+	if (!s) return s;
+	if (KEEP_IP.has(s) || s.startsWith('127.')) return s;
+	if (s.includes(':')) {
+		// IPv6: první dvě skupiny (rozsah poskytovatele) a zbytek pryč.
+		const parts = s.split(':');
+		return `${parts[0]}:${parts[1] ?? ''}:…`;
+	}
+	const o = s.split('.');
+	return o.length === 4 ? `${o[0]}.${o[1]}.x.x` : s;
+}
+
+function maskMac(v) {
+	const s = String(v ?? '').trim();
+	if (!s) return s;
+	const p = s.split(/[:-]/);
+	return p.length === 6 ? `${p[0]}:${p[1]}:${p[2]}:xx:xx:xx` : 'xx:xx:xx:xx:xx:xx';
+}
+
+/// Volný text (příkazy, hlášení o pádech, cíle zásahů). Prochází
+/// všemi vzory naráz — do těchhle řetězců nevidíme dopředu, takže se
+/// spoléhat na strukturu nedá.
+function clean(v) {
+	let s = String(v ?? '');
+	if (!s) return s;
+	s = s.replace(RE_MAC, (m) => maskMac(m));
+	s = s.replace(RE_IPV6, (m) => (m.includes('::') && m.length < 4 ? m : maskIp(m)));
+	s = s.replace(RE_IPV4, (m) => maskIp(m));
+	s = s.replace(RE_SID, (_m, rid) => `S-1-5-21-<stroj>-${rid}`);
+	s = s.replace(RE_PROFILE, '$1<uživatel>');
+	return s;
+}
+
+function maskList(a) {
+	return (a ?? []).map(maskIp).join(', ');
+}
+
 function ts(t) {
 	if (!t) return '—';
 	const d = new Date(t * 1000);
@@ -110,9 +176,25 @@ export function reportText(d) {
 		L.push('Služba:     NEBĚŽÍ — živé hodnoty v tomhle záznamu chybí');
 	}
 	L.push('');
-	L.push('Co v záznamu ZÁMĚRNĚ není: obsah disku. Žádné cesty k souborům,');
-	L.push('seznamy složek, duplicity ani mapy instalací. Z disků jde do');
-	L.push('záznamu jen technika — model, zdraví, teplota, kapacita.');
+	L.push('CO V ZÁZNAMU ZÁMĚRNĚ NENÍ');
+	L.push(SUB);
+	L.push('Obsah disku: žádné cesty k souborům, seznamy složek, duplicity');
+	L.push('ani mapy instalací. Z disků jde do záznamu jen technika —');
+	L.push('model, zdraví, teplota, kapacita.');
+	L.push('');
+	L.push('Identifikující údaje jsou maskované, ne smazané, aby zbytek šel');
+	L.push('pořád analyzovat:');
+	L.push('  · IP adresy    192.168.1.20 → 192.168.x.x   (vlastní i protistrany)');
+	L.push('  · MAC adresa   zůstává jen výrobce karty, zbytek xx:xx:xx');
+	L.push('  · Wi-Fi        jména sítí vynechána úplně — v databázích');
+	L.push('                 wardrivingu se dají přeložit na adresu domu');
+	L.push('  · SID účtu     část pro stroj pryč, RID zůstává (nese význam)');
+	L.push('  · cesty        C:\\Users\\Jméno → C:\\Users\\<uživatel>');
+	L.push('  · celá jména   skutečné jméno člověka u účtu vynecháno');
+	L.push('');
+	L.push('V záznamu naopak ZŮSTÁVAJÍ: přihlašovací jména účtů (o tom je celá');
+	L.push('sekce ÚČTY), jména nainstalovaných programů a jména serverů, se');
+	L.push('kterými aplikace mluví — bez nich by síťová část nedávala smysl.');
 	if (d.errors?.length) {
 		L.push('');
 		L.push('Části, které se nepodařilo přečíst:');
@@ -336,14 +418,14 @@ export function reportText(d) {
 				.filter(Boolean)
 				.join(', ');
 			L.push(
-				`  ${pad(a.name, 24)} ${pad(a.full_name, 24)} ${pad(flags, 40)} ${pad(a.last_logon ? ts(a.last_logon) : 'nikdy', 21)} ${num(a.logons, 6)}`
+				`  ${pad(a.name, 24)} ${pad(a.full_name ? "(skryto)" : "", 24)} ${pad(flags, 40)} ${pad(a.last_logon ? ts(a.last_logon) : 'nikdy', 21)} ${num(a.logons, 6)}`
 			);
 		}
 		if ((u.foreign_admins ?? []).length) {
 			L.push('');
 			L.push('Správci, kteří nejsou lokálním účtem (doména, Entra):');
 			for (const f of u.foreign_admins) {
-				L.push(`  ${pad(f.name, 40)} ${pad(f.kind, 16)} ${f.sid}`);
+				L.push(`  ${pad(f.name, 40)} ${pad(f.kind, 16)} ${clean(f.sid)}`);
 			}
 		}
 	}
@@ -357,24 +439,25 @@ export function reportText(d) {
 				`  ${pad(a.name, 34)} ${pad(a.kind, 10)} ${a.up ? 'nahoře' : 'dole'}  ${a.link_mbps ? a.link_mbps + ' Mb/s' : ''}  ${a.dhcp ? 'DHCP' : 'statická'}`
 			);
 			if (a.description) L.push(`      ${a.description}`);
-			if (a.mac) L.push(`      MAC ${a.mac}`);
-			if ((a.ips ?? []).length) L.push(`      IP: ${a.ips.join(', ')}`);
-			if ((a.gateways ?? []).length) L.push(`      brána: ${a.gateways.join(', ')}`);
-			if ((a.dns ?? []).length) L.push(`      DNS: ${a.dns.join(', ')}`);
+			if (a.mac) L.push(`      MAC ${maskMac(a.mac)}`);
+			if ((a.ips ?? []).length) L.push(`      IP: ${maskList(a.ips)}`);
+			if ((a.gateways ?? []).length) L.push(`      brána: ${maskList(a.gateways)}`);
+			if ((a.dns ?? []).length) L.push(`      DNS: ${maskList(a.dns)}`);
 		}
+		// Jméno Wi-Fi sítě se v záznamu neobjeví vůbec. V databázích
+		// wardrivingu se dá přeložit na adresu domu — je to nejcitlivější
+		// údaj z celého souboru a k diagnostice není potřeba.
 		if (c.wifi_connection) {
 			const w = c.wifi_connection;
 			L.push(
-				`  Wi-Fi: ${w.ssid}, signál ${w.signal_pct} %, ${w.secured ? 'zabezpečená' : 'NEZABEZPEČENÁ'}`
+				`  Wi-Fi: připojeno k ${w.secured ? 'zabezpečené' : 'NEZABEZPEČENÉ'} síti (jméno skryto), signál ${w.signal_pct} %`
 			);
 		}
 		if ((c.wifi_networks ?? []).length) {
-			L.push(`  V dosahu ${c.wifi_networks.length} sítí:`);
-			for (const w of c.wifi_networks) {
-				L.push(
-					`      ${pad(w.ssid, 32)} ${num(w.signal_pct, 4)} %  ${w.secured ? 'zabezpečená' : 'otevřená'}${w.connected ? '  [připojeno]' : ''}`
-				);
-			}
+			const open = c.wifi_networks.filter((w) => !w.secured).length;
+			L.push(
+				`  V dosahu ${c.wifi_networks.length} sítí (${open} nezabezpečených) — jména skryta`
+			);
 		}
 	}
 	if (d.net?.length) {
@@ -385,8 +468,11 @@ export function reportText(d) {
 				`  ${pad(a.app_name, 30)} ${num(a.proc_count, 7)} ${num(a.established, 8)} ${num(a.listening, 10)} ${num(a.rx_bps, 9)} ${num(a.tx_bps, 9)}`
 			);
 			for (const k of a.conns ?? []) {
+				// Jméno protistrany zůstává — říká, s jakou SLUŽBOU se
+				// mluví, což je jádro téhle sekce, a o uživateli samo
+				// o sobě nevypovídá. Adresy jsou maskované.
 				L.push(
-					`      ${pad(k.proto, 5)} ${pad(k.local + ':' + k.local_port, 24)} → ${pad((k.remote ?? '') + (k.remote_port ? ':' + k.remote_port : ''), 24)} ${k.state ?? ''} ${k.remote_name ?? ''}`
+					`      ${pad(k.proto, 5)} ${pad(maskIp(k.local) + ':' + k.local_port, 22)} → ${pad(maskIp(k.remote) + (k.remote_port ? ':' + k.remote_port : ''), 22)} ${pad(k.state, 12)} ${k.remote_name ?? ''}`
 				);
 			}
 		}
@@ -399,13 +485,13 @@ export function reportText(d) {
 		H(`PO SPUŠTĚNÍ (${third.length} třetích stran, ${sys.length} systémových)`);
 		L.push('  zdroj          stav     položka');
 		for (const x of third) {
-			L.push(`  ${pad(x.source, 14)} ${pad(x.enabled ? 'zapnuto' : 'vypnuto', 8)} ${x.name}`);
-			L.push(`      ${x.command}`);
+			L.push(`  ${pad(x.source, 14)} ${pad(x.enabled ? 'zapnuto' : 'vypnuto', 8)} ${clean(x.name)}`);
+			L.push(`      ${clean(x.command)}`);
 		}
 		L.push('');
 		L.push('Systémové položky (jen výčet, přepnout je Winsent nedovolí):');
 		for (const x of sys) {
-			L.push(`  ${pad(x.source, 14)} ${pad(x.enabled ? 'zapnuto' : 'vypnuto', 8)} ${x.name} — ${x.system_reason ?? ''}`);
+			L.push(`  ${pad(x.source, 14)} ${pad(x.enabled ? 'zapnuto' : 'vypnuto', 8)} ${clean(x.name)} — ${x.system_reason ?? ''}`);
 		}
 	}
 
@@ -440,7 +526,7 @@ export function reportText(d) {
 		L.push(`Vlastní záznamy hlídače (${d.incidents.length}):`);
 		for (const i of d.incidents) {
 			L.push(`  ${ts(i.ts)}  ${pad(i.kind, 12)} viník: ${i.culprit ?? '—'}`);
-			if (i.detail) L.push(`      ${i.detail}`);
+			if (i.detail) L.push(`      ${clean(i.detail)}`);
 		}
 	} else {
 		L.push('Vlastní záznamy hlídače: žádné.');
@@ -450,8 +536,8 @@ export function reportText(d) {
 		L.push(`Hlášení o pádech z protokolu Windows (${d.crashes.length}):`);
 		for (const c of d.crashes) {
 			L.push(`  ${ts(c.ts)}  ${c.app}${c.repeats > 1 ? `  (${c.repeats}x)` : ''}`);
-			if (c.summary) L.push(`      ${c.summary}`);
-			if (c.detail) L.push(`      ${c.detail}`);
+			if (c.summary) L.push(`      ${clean(c.summary)}`);
+			if (c.detail) L.push(`      ${clean(c.detail)}`);
 		}
 	}
 
@@ -459,7 +545,7 @@ export function reportText(d) {
 	if (d.events?.length) {
 		H(`UDÁLOSTI ZA POSLEDNÍCH 24 HODIN (${d.events.length})`);
 		for (const e of d.events) {
-			L.push(`  ${ts(e.ts)}  ${pad(e.kind, 16)} ${e.pid != null ? 'pid ' + e.pid : ''}  ${e.detail ?? ''}`);
+			L.push(`  ${ts(e.ts)}  ${pad(e.kind, 16)} ${e.pid != null ? 'pid ' + e.pid : ''}  ${clean(e.detail)}`);
 		}
 	}
 	if (d.audit?.length) {
@@ -467,9 +553,9 @@ export function reportText(d) {
 		L.push('  kdy                   akce            třída  verdikt  výsledek  cíl');
 		for (const a of d.audit) {
 			L.push(
-				`  ${pad(ts(a.ts), 21)} ${pad(a.action, 15)} ${pad(a.class, 6)} ${pad(a.verdict, 8)} ${pad(a.outcome ?? '', 9)} ${a.target}`
+				`  ${pad(ts(a.ts), 21)} ${pad(a.action, 15)} ${pad(a.class, 6)} ${pad(a.verdict, 8)} ${pad(a.outcome ?? '', 9)} ${clean(a.target)}`
 			);
-			if (a.deny_reason) L.push(`      důvod odmítnutí: ${a.deny_reason}`);
+			if (a.deny_reason) L.push(`      důvod odmítnutí: ${clean(a.deny_reason)}`);
 		}
 	}
 
@@ -480,7 +566,7 @@ export function reportText(d) {
 		L.push(`  procesů ve vzorku: ${h.proc_count}`);
 		L.push(`  poslední vzorek:   ${ts(h.last_sample_ts)}`);
 		L.push(`  uptime služby:     ${h.uptime_s} s`);
-		L.push(`  protokol o běhu:   ${h.log_path}`);
+		L.push(`  protokol o běhu:   ${clean(h.log_path)}`);
 		if ((h.degraded ?? []).length) {
 			L.push('  omezené sběrače:');
 			for (const [what, why] of h.degraded) L.push(`      ${pad(what, 24)} ${why}`);
