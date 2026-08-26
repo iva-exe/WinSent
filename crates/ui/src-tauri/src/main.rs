@@ -205,14 +205,14 @@ fn query_perm_use(app: String, capability: String, days: u32) -> Result<PermUseD
 
 
 
-/// Uloží textový záznam incidentu a vrátí celou cestu.
+/// Uloží textový záznam (incident nebo celý počítač) a vrátí cestu.
 ///
 /// Píše se tudy, ne stažením přes prohlížeč: jen tak víme, KAM to
 /// spadlo, a můžeme pak otevřít složku. Blob download v Tauri cestu
 /// nevrací, takže by se uživateli řeklo „uloženo" a on by pak soubor
 /// hledal.
 #[tauri::command(async)]
-fn save_incident_report(name: String, text: String) -> Result<String, String> {
+fn save_report(name: String, text: String) -> Result<String, String> {
     // Jméno souboru skládá UI, ale ověřuje se tady: cesta v něm nemá
     // co dělat a přepsat něco mimo Stažené soubory už vůbec ne.
     if name.contains([char::from(92u8), '/', ':']) || name.contains("..") {
@@ -947,7 +947,7 @@ fn main() {
             query_drivers,
             query_collector_health,
             query_crash_reports,
-            save_incident_report,
+            save_report,
             query_incident_dumps,
             query_perm_use,
             query_perm_use_totals,

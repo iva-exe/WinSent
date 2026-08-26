@@ -521,7 +521,7 @@
 			const name = `winsent-incident-${stamp}.txt`;
 			// Ukládá se přes službu, ne stažením přes prohlížeč: jen tak
 			// víme, kam soubor spadl, a můžeme rovnou otevřít složku.
-			exportPath = await invoke('save_incident_report', {
+			exportPath = await invoke('save_report', {
 				name,
 				text: reportText(row, extras)
 			});

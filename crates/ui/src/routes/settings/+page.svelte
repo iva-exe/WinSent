@@ -8,8 +8,48 @@
 	import { prefs, setPref } from '$lib/prefs.svelte.js';
 
 	import { updater, checkUpdate, runUpdate } from '$lib/updater.svelte.js';
-
+	import { gatherAll, reportText } from '$lib/pcreport.js';
+	import { Download, RefreshCw, ShieldCheck } from 'lucide-svelte';
 	// Kdy naposledy. Přesný čas nikoho nezajímá, „před chvílí" ano.
+
+	// ── Záznam o celém počítači ──
+	// Stejný účel i tvar jako záznam o incidentu: textový soubor, který
+	// se dá poslat člověku nebo modelu. Sběr trvá — bere se stav ze všech
+	// sekcí plus záznamy za posledních 24 hodin —, takže tlačítko musí
+	// průběžně říkat, co zrovna dělá.
+	let pcState = $state('idle'); // idle | busy | done | error
+	let pcStep = $state('');
+	let pcPath = $state('');
+
+	async function downloadPcReport() {
+		if (pcState === 'busy') return;
+		pcState = 'busy';
+		pcStep = 'začínám';
+		try {
+			const data = await gatherAll(invoke, (s) => (pcStep = s));
+			const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+			pcStep = 'skládám soubor';
+			const name = `winsent-pocitac-${stamp}.txt`;
+			pcPath = await invoke('save_report', { name, text: reportText(data) });
+			pcState = 'done';
+			// Otevřít složku a soubor v ní označit — uživatel ho nemusí hledat.
+			try {
+				await invoke('open_path', { path: pcPath });
+			} catch {
+				/* Průzkumník se neotevřel; cesta zůstane vypsaná */
+			}
+			setTimeout(() => {
+				if (pcState === 'done') pcState = 'idle';
+			}, 12000);
+		} catch (e) {
+			pcStep = String(e);
+			pcState = 'error';
+			setTimeout(() => {
+				if (pcState === 'error') pcState = 'idle';
+			}, 12000);
+		}
+	}
+
 	let lastCheck = $derived.by(() => {
 		if (!updater.checkedAt) return 'zatím ne';
 		const s = Math.round((Date.now() - updater.checkedAt) / 1000);
@@ -168,6 +208,42 @@
 		</div>
 	</section>
 
+
+	<section class="card">
+		<header class="card-head">
+			<span class="label-tech">// settings / záznam o počítači</span>
+		</header>
+		<p class="note">
+			Textový soubor s kompletním stavem počítače: sestava, hardware, ovladače,
+			ochrana, oprávnění, účty, síť, programy, procesy, položky po spuštění
+			a všechny záznamy za posledních 24 hodin. Určený k analýze — ať už ho
+			čte odborník, nebo model.
+		</p>
+		<p class="note pc-priv">
+			<ShieldCheck size={15} />
+			<span>
+				Obsah disku v něm <b>není</b>. Žádné cesty k souborům, seznamy složek,
+				duplicity ani mapy instalací — z disků jde do záznamu jen technika:
+				model, zdraví, teplota, kapacita. Soubor se uloží do Stažených souborů
+				a nikam se neodesílá.
+			</span>
+		</p>
+		{#if pcState === 'done'}
+			<p class="note pc-done">Uloženo: <span class="value-mono">{pcPath}</span></p>
+		{:else if pcState === 'error'}
+			<p class="note pc-err">Nepodařilo se: {pcStep}</p>
+		{/if}
+		<div class="ver-actions">
+			<button class="v-btn primary" disabled={pcState === 'busy'} onclick={downloadPcReport}>
+				{#if pcState === 'busy'}
+					<RefreshCw size={14} class="pc-spin" /> sbírám — {pcStep}…
+				{:else}
+					<Download size={14} /> Stáhnout záznam o počítači
+				{/if}
+			</button>
+		</div>
+	</section>
+
 	<section class="card">
 		<header class="card-head">
 			<span class="label-tech">// settings / konfigurace</span>
@@ -298,6 +374,41 @@
 	.ver-err {
 		margin: 0 0 0.7rem;
 		color: var(--danger);
+	}
+	/* Poznámka o soukromí — modrý štít, ne varování. Je to ujištění,
+	   ne problém. */
+	.pc-priv {
+		display: flex;
+		align-items: flex-start;
+		gap: 9px;
+		padding: 9px 12px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	.pc-priv :global(svg) {
+		flex: none;
+		margin-top: 2px;
+		color: var(--net-down);
+	}
+	.pc-done {
+		color: var(--ok);
+		word-break: break-all;
+	}
+	.pc-err {
+		color: var(--danger);
+	}
+	.v-btn :global(svg) {
+		vertical-align: -2px;
+		margin-right: 5px;
+	}
+	:global(.pc-spin) {
+		animation: pc-spin 1.1s linear infinite;
+	}
+	@keyframes pc-spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 	.ver-actions {
 		display: flex;
