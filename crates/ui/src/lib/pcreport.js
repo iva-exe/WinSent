@@ -141,6 +141,14 @@ function runLabel(x) {
 // Prázdný SMART není čisté vysvědčení. „ne" ve sloupci kritické se dalo
 // číst jako „disk je v pořádku", i když jsme ho ve skutečnosti vůbec
 // nepřečetli (SATA, externí disk, řadič bez průchodu).
+function parseJson(s) {
+	try {
+		return JSON.parse(s ?? '');
+	} catch {
+		return null;
+	}
+}
+
 function critLabel(k) {
 	if (k.critical == null) return 'nezjištěno';
 	return k.critical ? 'ANO' : 'ne';
@@ -436,6 +444,27 @@ export function reportText(d) {
 	// ── Bezpečnost ──
 	if (d.security) {
 		const p = d.security.protection ?? {};
+		// Nejzákladnější údaj o stroji v záznamu dosud vůbec nebyl:
+		// bez verze a sestavení se nedá posoudit ani to, jestli je
+		// systém po podpoře, ani jestli chybějící funkce chybí právem.
+		const o = p.os;
+		if (o?.build) {
+			H('SYSTÉM');
+			L.push(
+				`Windows:    ${o.product}${o.display_version ? ' ' + o.display_version : ''} ${o.arch}, sestavení ${o.build}.${o.ubr}`
+			);
+			L.push(`Nainstalován: ${o.install_ts ? ts(o.install_ts) : '—'}`);
+			const svc = { 2: 'automaticky', 3: 'ručně', 4: 'ZAKÁZANÁ' };
+			L.push(
+				`Aktualizace: služba ${svc[o.update_service_start] ?? '—'}${o.update_disabled_by_policy ? ', VYPNUTÉ ZÁSADOU' : ''}`
+			);
+			L.push(
+				`  naposledy hledáno: ${o.update_last_search ? ts(o.update_last_search) : 'nezjištěno'}`
+			);
+			L.push(
+				`  naposledy instalováno: ${o.update_last_install ? ts(o.update_last_install) : 'nezjištěno (novější Windows tenhle záznam nevedou)'}`
+			);
+		}
 		H('OCHRANA SYSTÉMU');
 		for (const a of p.av ?? []) {
 			const [name, enabled, fresh, leftover] = a;
@@ -610,6 +639,13 @@ export function reportText(d) {
 		L.push(`Vlastní záznamy hlídače (${d.incidents.length}):`);
 		for (const i of d.incidents) {
 			L.push(`  ${ts(i.ts)}  ${pad(i.kind, 12)} viník: ${i.culprit ?? '—'}`);
+			// U pádu se čte hlavně kód, a ten byl v surovém JSONu jen
+			// desítkově — tedy jako nepoužitelné záporné číslo.
+			const dd = parseJson(i.detail);
+			if (dd?.exit_code != null) {
+				const hex = dd.exit_hex ?? '0x' + (dd.exit_code >>> 0).toString(16).toUpperCase().padStart(8, '0');
+				L.push(`      kód ${hex}${dd.meaning ? ` — ${dd.meaning}` : ''}`);
+			}
 			if (i.detail) L.push(`      ${clean(i.detail)}`);
 		}
 	} else {

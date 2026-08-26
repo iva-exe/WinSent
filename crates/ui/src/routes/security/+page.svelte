@@ -24,6 +24,7 @@
 		Mic,
 		MapPin,
 		MonitorUp,
+		RefreshCw,
 		Shield,
 		ShieldCheck,
 		ShieldAlert,
@@ -181,8 +182,52 @@
 				tone: on.length ? 'ok' : 'dim'
 			});
 		}
+
+		// Stav aktualizací. Neinstaluje se odsud nic — je to informace
+		// o tom, jestli si systém záplaty vůbec bere. Čas poslední
+		// instalace novější Windows v registru nevedou, a tak se místo
+		// vymyšleného data přizná, že se nezjistil.
+		const o = p.os;
+		if (o?.build) {
+			const svcOff = o.update_service_start === 4 || o.update_disabled_by_policy;
+			const days =
+				o.update_last_search != null
+					? Math.floor((Date.now() / 1000 - o.update_last_search) / 86400)
+					: null;
+			rows.push({
+				icon: RefreshCw,
+				name: 'Aktualizace Windows',
+				state: svcOff
+					? 'VYPNUTÉ'
+					: days == null
+						? 'nezjištěno'
+						: days === 0
+							? 'kontrolováno dnes'
+							: `kontrolováno před ${days} dny`,
+				detail: [
+					o.update_disabled_by_policy ? 'zakázané zásadou' : null,
+					o.update_service_start === 4 ? 'služba zakázaná' : null,
+					o.update_last_install ? `instalováno ${fmtDay(o.update_last_install)}` : null
+				]
+					.filter(Boolean)
+					.join(' · '),
+				tone: svcOff ? 'warn' : days != null && days > 30 ? 'warn' : days == null ? 'dim' : 'ok'
+			});
+		}
 		return rows;
 	});
+
+	// Verze systému do hlavičky — nejzákladnější údaj o stroji,
+	// který v aplikaci dosud nikde nebyl.
+	const osLine = $derived.by(() => {
+		const o = report?.protection?.os;
+		if (!o?.build) return null;
+		return `${o.product}${o.display_version ? ' ' + o.display_version : ''} · ${o.arch} · sestavení ${o.build}.${o.ubr}`;
+	});
+
+	function fmtDay(t) {
+		return new Date(t * 1000).toLocaleDateString('cs-CZ');
+	}
 
 	// Vysvětlivky k dlaždicím: co to je a proč na tom záleží.
 	//
@@ -199,7 +244,9 @@
 			'Ptá se, než program změní systém. Vypnuté UAC znamená, že se ptát nikdo nebude.',
 		'Šifrování disku (BitLocker)':
 			'Bez šifrování si obsah disku přečte kdokoliv, kdo ho vyndá z počítače. Na stolním počítači doma to spousta lidí vědomě nemá.',
-		Antivirus: 'Žádný antivirus systém nehlásí — Windows Defender bývá vypnutý, když je nainstalovaný jiný.'
+		Antivirus: 'Žádný antivirus systém nehlásí — Windows Defender bývá vypnutý, když je nainstalovaný jiný.',
+		'Aktualizace Windows':
+			'Záplaty zavírají díry, kterými se do systému dostávají útoky. Winsent odsud nic neinstaluje ani nemění — jen ukazuje, kdy systém naposledy kontroloval.'
 	};
 
 	// Vysvětlivka k antiviru je společná bez ohledu na jeho jméno.
@@ -379,6 +426,9 @@
 		<span class="label-tech">
 			{permCount} aplikací · {permGroups.length} kategorií
 		</span>
+		{#if osLine}
+			<span class="os-line label-tech">{osLine}</span>
+		{/if}
 		{#if liveNow.length}
 			<span class="live-warn">
 				<span class="live-dot"></span>
@@ -738,6 +788,14 @@
 		font-size: 1.2rem;
 		font-weight: 600;
 		margin: 0;
+	}
+	/* Verze systému vpravo — kontext, ne titulek. */
+	.os-line {
+		margin-left: auto;
+		opacity: 0.7;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 	/* Živé použití kamery/mikrofonu patří do hlavičky — je to ta
 	   nejdůležitější informace celé sekce. */

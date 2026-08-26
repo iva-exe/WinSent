@@ -145,6 +145,52 @@ pub fn is_crash_exit(code: u32) -> bool {
     (code >> 28) == 0xC && code != 0xC000_013A
 }
 
+/// Co ten NTSTATUS znamená, česky. `None` = kód, který nepoznáváme —
+/// pak stačí hexa zápis a nic si nevymýšlíme.
+///
+/// Detail incidentu nesl exit kód jen desítkově, tedy `-1073741819`.
+/// To je pro čtenáře záznamu nepoužitelné číslo; přitom právě tenhle
+/// kód je nejčastější pád vůbec a jmenuje se ACCESS_VIOLATION.
+pub fn ntstatus_meaning(code: u32) -> Option<&'static str> {
+    Some(match code {
+        0xC000_0005 => "sáhnutí do paměti, která procesu nepatří (ACCESS_VIOLATION)",
+        0xC000_0006 => "stránka souboru nešla načíst (IN_PAGE_ERROR) — často vadný disk",
+        0xC000_0017 => "došla paměť (NO_MEMORY)",
+        0xC000_001D => "procesor dostal neplatnou instrukci (ILLEGAL_INSTRUCTION)",
+        0xC000_0025 => "výjimku nešlo předat dál (NONCONTINUABLE_EXCEPTION)",
+        0xC000_0026 => "chybný stav výjimky (INVALID_DISPOSITION)",
+        0xC000_008C => "sáhnutí za konec pole (ARRAY_BOUNDS_EXCEEDED)",
+        0xC000_008E => "dělení nulou v plovoucí čárce (FLOAT_DIVIDE_BY_ZERO)",
+        0xC000_0094 => "dělení nulou (INTEGER_DIVIDE_BY_ZERO)",
+        0xC000_0095 => "přetečení celého čísla (INTEGER_OVERFLOW)",
+        0xC000_00FD => "přetečení zásobníku (STACK_OVERFLOW)",
+        0xC000_0135 => "chybí knihovna DLL (DLL_NOT_FOUND)",
+        0xC000_0142 => "knihovnu se nepodařilo inicializovat (DLL_INIT_FAILED)",
+        0xC000_0374 => "poškozená halda (HEAP_CORRUPTION)",
+        0xC000_0409 => "přepsaný zásobník, zásah ochrany (STACK_BUFFER_OVERRUN)",
+        0xC000_041D => "výjimka uvnitř obsluhy zpětného volání",
+        0xC000_0602 => "program se ukončil sám kvůli poškozenému stavu (FAIL_FAST)",
+        0xC000_0022 => "přístup odepřen (ACCESS_DENIED)",
+        _ => return None,
+    })
+}
+
+/// Detail pádu jako JSON: kód desítkově i hexa, jméno procesu a
+/// aplikace zachycené v okamžiku detekce, a pokud kód známe, i český
+/// popis. Vzniklo kvůli tomu, že v záznamu stálo jen holé záporné číslo.
+pub fn crash_detail(exit_code: u32, name: &str, app: &str) -> String {
+    let mut s = format!(
+        "{{\"exit_code\":{exit_code},\"exit_hex\":\"0x{exit_code:08X}\",\"name\":\"{}\",\"app\":\"{}\"",
+        json_str(name),
+        json_str(app)
+    );
+    if let Some(m) = ntstatus_meaning(exit_code) {
+        s.push_str(&format!(",\"meaning\":\"{}\"", json_str(m)));
+    }
+    s.push('}');
+    s
+}
+
 /// Minimální JSON escape pro řetězce do detail polí.
 pub fn json_str(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")

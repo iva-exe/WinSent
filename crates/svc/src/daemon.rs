@@ -161,7 +161,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         std::thread::Builder::new()
             .name("sampler".into())
             .spawn(move || {
-                use crate::incidents::{classify_stall, is_crash_exit, json_str, StoreMsg};
+                use crate::incidents::{classify_stall, crash_detail, is_crash_exit, json_str, StoreMsg};
                 // Jména/identity naposledy viděných PIDů — proces, který
                 // umřel, už v aktuálním vzorku není a jeho stop event
                 // navíc dorazí z ETW bufferů až o pár sekund později.
@@ -220,11 +220,8 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                                         if is_crash_exit(exit_code) {
                                             let (name, app, key, _) =
                                                 seen.get(&pid).cloned().unwrap_or_default();
-                                            let detail = format!(
-                                                "{{\"exit_code\":{exit_code},\"name\":\"{}\",\"app\":\"{}\"}}",
-                                                json_str(&name),
-                                                json_str(&app)
-                                            );
+                                            let detail =
+                                                crash_detail(exit_code, &name, &app);
                                             let _ = sample_tx.try_send(StoreMsg::Event {
                                                 ts,
                                                 kind: "proc_crash",

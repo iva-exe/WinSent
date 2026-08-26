@@ -37,6 +37,7 @@ pub fn protection() -> ProtectionReport {
             .into_iter()
             .map(|v| (v.letter, v.protection))
             .collect(),
+        os: os_info(),
     }
 }
 
@@ -196,6 +197,25 @@ pub fn report(running: &RunningApps) -> SecurityReport {
     SecurityReport {
         protection: protection(),
         permissions: permissions(running),
+    }
+}
+
+/// Verze systému a stav aktualizací. SPEC kap. 13.1 je má na obrazovce
+/// „jsem chráněný?" vypsané, ale nikdo je dosud nesbíral — v záznamu
+/// o počítači tak chybělo i to, jaké Windows na něm vlastně běží.
+fn os_info() -> core_types::proc::OsInfoRow {
+    let i = win_sys::osinfo::os_info();
+    core_types::proc::OsInfoRow {
+        product: i.product,
+        display_version: i.display_version,
+        build: i.build,
+        ubr: i.ubr,
+        arch: i.arch,
+        install_ts: i.install_ts,
+        update_last_search: i.update_last_search,
+        update_last_install: i.update_last_install,
+        update_service_start: i.update_service_start,
+        update_disabled_by_policy: i.update_disabled_by_policy,
     }
 }
 

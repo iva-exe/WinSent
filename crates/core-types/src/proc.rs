@@ -553,6 +553,32 @@ pub struct ProtectionReport {
     pub tpm: Option<(bool, String)>,
     /// BitLocker per svazek: (písmeno, 0 nešifrováno / 1 chráněno / 2 jiné).
     pub encryption: Vec<(String, u32)>,
+    /// Verze systému a stav aktualizací (SPEC kap. 13.1).
+    pub os: OsInfoRow,
+}
+
+/// Verze Windows a stav aktualizací. Samé čtení z registru — žádné
+/// hledání aktualizací po síti (to trvá desítky sekund a umí se zaseknout).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OsInfoRow {
+    /// „Windows 11 Pro".
+    pub product: String,
+    /// „24H2" — označení funkční aktualizace.
+    pub display_version: Option<String>,
+    pub build: u32,
+    pub ubr: u32,
+    pub arch: String,
+    /// Kdy byl systém nainstalován (unix).
+    pub install_ts: Option<i64>,
+    /// Poslední úspěšné hledání aktualizací (unix).
+    pub update_last_search: Option<i64>,
+    /// Poslední úspěšná instalace aktualizace (unix). `None` = nezjištěno,
+    /// ne „nikdy" — novější sestavení tenhle záznam nevedou.
+    pub update_last_install: Option<i64>,
+    /// Typ spuštění služby wuauserv: 2 automaticky, 3 ručně, 4 zakázáno.
+    pub update_service_start: Option<u32>,
+    /// Automatické aktualizace vypnuté zásadou.
+    pub update_disabled_by_policy: bool,
 }
 
 /// Oprávnění jedné aplikace k jedné schopnosti (v9, SPEC kap. 13.4).

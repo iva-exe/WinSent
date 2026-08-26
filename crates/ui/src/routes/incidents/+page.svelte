@@ -320,6 +320,7 @@
 				L.push(
 					`Exit kód:   0x${d.exit_code.toString(16).toUpperCase().padStart(8, '0')} (${d.exit_code})`
 				);
+				if (d.meaning) L.push(`Význam:     ${d.meaning}`);
 				L.push(`Proces:     ${d.name || '—'}`);
 			}
 			if (i.kind === 'bsod') {
@@ -746,6 +747,15 @@
 								<span class="d-label">Proces</span>
 								<span class="d-value mono">{d.name || '—'}</span>
 							</div>
+							<!-- Holý exit kód nic neříká ani člověku, který ví,
+							     kam se dívat. Význam chodí ze služby jen u kódů,
+							     které opravdu známe — nic se nedomýšlí. -->
+							{#if d.meaning}
+								<div class="d-item wide">
+									<span class="d-label">Význam</span>
+									<span class="d-value">{d.meaning}</span>
+								</div>
+							{/if}
 						{/if}
 						{#if selected.kind === 'bsod'}
 							<div class="d-item">

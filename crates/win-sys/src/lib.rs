@@ -22,6 +22,7 @@ pub mod ipcfg;
 pub mod msi;
 pub mod msix;
 pub mod net;
+pub mod osinfo;
 pub mod pdhq;
 pub mod proc;
 pub mod procinfo;
