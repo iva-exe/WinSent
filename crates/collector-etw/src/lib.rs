@@ -13,7 +13,19 @@ pub use win_sys::etw::ProcEvent;
 /// Jméno realtime session.
 const RT_SESSION: &str = "syswatch-rt";
 /// Jméno autologger session (černá skříňka).
-const BB_SESSION: &str = "syswatch-blackbox";
+pub const BB_SESSION: &str = "syswatch-blackbox";
+
+/// Vynutí zápis rozepsaných bufferů černé skříňky na disk.
+///
+/// Buffery se jinak zapisují až plné (šetří to desítky gigabajtů
+/// zápisů denně), takže posledních pár minut leží v paměti. Před
+/// archivací okna incidentu se musí dostat na disk — jinak by
+/// v archivu chybělo právě to, co se dělo těsně předtím.
+pub fn flush_blackbox() {
+    if let Err(e) = win_sys::etw::flush_session(BB_SESSION) {
+        tracing::warn!(error = %e, "vyprázdnění černé skříňky selhalo");
+    }
+}
 
 /// Chyby této crate.
 #[derive(Debug, thiserror::Error)]

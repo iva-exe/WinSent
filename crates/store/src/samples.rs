@@ -14,6 +14,62 @@ pub fn upsert_disk_names(conn: &Connection, disks: &[DiskDesc]) -> Result<(), ru
     Ok(())
 }
 
+/// Co už je v `proc_names` zapsané — aby se nepřepisovalo pořád dokola.
+///
+/// Tabulka mapuje pid na jméno a identitu procesu. Zapisovala se celá
+/// při KAŽDÉM ticku, tedy 250 řádků každou sekundu, přestože se jméno
+/// procesu za jeho život prakticky nezmění. `INSERT OR REPLACE` přitom
+/// řádek pokaždé opravdu přepíše a zanese do WAL celé stránky —
+/// z toho vycházely desítky gigabajtů zápisů denně na systémový disk.
+///
+/// Drží se v zapisovacím vlákně, takže žádný zámek nepotřebuje.
+#[derive(Default)]
+pub struct NameCache {
+    seen: std::collections::HashMap<u32, (String, String, String, Option<String>, i64)>,
+}
+
+/// Jak často se řádek přepíše, i když se nic nezměnilo — kvůli
+/// `last_ts`, podle kterého se pozná, že pid ještě žije.
+const NAME_REFRESH_S: i64 = 300;
+
+impl NameCache {
+    /// Má se řádek zapsat? Zároveň si zapamatuje, co se zapisuje.
+    fn needs_write(&mut self, p: &ProcRow, ts: i64) -> bool {
+        let now = (
+            p.name.clone(),
+            p.identity_key.clone(),
+            p.app_name.clone(),
+            p.publisher.clone(),
+            ts,
+        );
+        match self.seen.get(&p.pid) {
+            Some((n, k, a, pubr, last))
+                if *n == now.0
+                    && *k == now.1
+                    && *a == now.2
+                    && *pubr == now.3
+                    && ts - *last < NAME_REFRESH_S =>
+            {
+                false
+            }
+            _ => {
+                self.seen.insert(p.pid, now);
+                true
+            }
+        }
+    }
+
+    /// Zapomene pidy, které v aktuálním vzorku nejsou — jinak by mapa
+    /// rostla s každým procesem, který kdy běžel.
+    fn retain(&mut self, procs: &[ProcRow]) {
+        if self.seen.len() <= procs.len() * 2 {
+            return;
+        }
+        let live: std::collections::HashSet<u32> = procs.iter().map(|p| p.pid).collect();
+        self.seen.retain(|pid, _| live.contains(pid));
+    }
+}
+
 /// Zapíše jeden tick sampleru (systém + všechny procesy) v transakci.
 /// CPU se ukládá v promile (INTEGER), paměti v kB — dle SPEC kap. 8.
 pub fn insert_tick(
@@ -21,6 +77,7 @@ pub fn insert_tick(
     ts: i64,
     sys: &SystemSnapshot,
     procs: &[ProcRow],
+    names: &mut NameCache,
 ) -> Result<(), rusqlite::Error> {
     let tx = conn.transaction()?;
     {
@@ -88,15 +145,18 @@ pub fn insert_tick(
                 p.disk_w_bps as i64,
                 (p.gpu_pct * 10.0) as i64,
             ])?;
-            name_stmt.execute(params![
-                p.pid as i64,
-                p.name,
-                ts,
-                p.identity_key,
-                p.app_name,
-                p.publisher,
-            ])?;
+            if names.needs_write(p, ts) {
+                name_stmt.execute(params![
+                    p.pid as i64,
+                    p.name,
+                    ts,
+                    p.identity_key,
+                    p.app_name,
+                    p.publisher,
+                ])?;
+            }
         }
     }
+    names.retain(procs);
     tx.commit()
 }

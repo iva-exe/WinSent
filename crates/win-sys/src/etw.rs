@@ -21,7 +21,8 @@ use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_SUCCESS};
 use windows::Win32::System::Diagnostics::Etw::{
     CloseTrace, ControlTraceW, EnableTraceEx2, OpenTraceW, ProcessTrace, StartTraceW,
     CONTROLTRACE_HANDLE, EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_RECORD,
-    EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_FILE_MODE_CIRCULAR, EVENT_TRACE_LOGFILEW,
+    EVENT_TRACE_CONTROL_FLUSH, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_FILE_MODE_CIRCULAR,
+    EVENT_TRACE_LOGFILEW,
     EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, PROCESS_TRACE_MODE_EVENT_RECORD,
     PROCESS_TRACE_MODE_REAL_TIME, WNODE_FLAG_TRACED_GUID,
 };
@@ -78,12 +79,21 @@ fn build_props(file: Option<&str>) -> (Vec<u8>, usize, usize) {
     props.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
     props.Wnode.ClientContext = 1; // QPC
     props.BufferSize = 64; // KB na buffer
-    props.FlushTimer = 1; // s — realtime doručení bez čekání na plný buffer
     props.LoggerNameOffset = name_off as u32;
     match file {
         Some(path) => {
             props.LogFileMode = EVENT_TRACE_FILE_MODE_CIRCULAR;
             props.MaximumFileSize = 64; // MB — rotující ring (SPEC 16.3)
+            // Černou skříňku nikdo nečte za běhu — čte se až po incidentu.
+            //
+            // Sekundový flush tady byl draho zaplacený zvyk z realtime
+            // session: ETW při něm zapíše na disk nedoplněný buffer za
+            // KAŽDÉ jádro, tedy 64 kB × počet jader každou sekundu.
+            // Na dvanáctijádrovém stroji to je skoro 800 kB/s trvale,
+            // což odpovídá naměřeným ~550 kB/s zápisu služby — a protože
+            // skříňka sbírá i diskové události, částečně se tím krmila
+            // sama. Šedesát sekund znamená, že se buffery zapíšou plné.
+            props.FlushTimer = 60;
             props.LogFileNameOffset = file_off as u32;
             let wide: Vec<u16> = path.encode_utf16().take(MAX_CHARS - 1).collect();
             let dst = &mut buf[file_off..file_off + wide.len() * 2];
@@ -94,10 +104,46 @@ fn build_props(file: Option<&str>) -> (Vec<u8>, usize, usize) {
         }
         None => {
             props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
+            // Realtime doručení bez čekání na plný buffer — tady je
+            // sekunda na místě, nic se přitom nezapisuje na disk.
+            props.FlushTimer = 1;
             props.LogFileNameOffset = 0;
         }
     }
     (buf, name_off, file_off)
+}
+
+/// Vynutí zápis rozepsaných bufferů session do souboru.
+///
+/// Černá skříňka zapisuje buffery až plné (viz `build_props`), takže
+/// posledních pár minut událostí leží v paměti. Před archivací okna
+/// incidentu je potřeba je dostat na disk — jinak by v archivu chybělo
+/// právě to, co se dělo těsně před událostí.
+pub fn flush_session(name: &str) -> Result<(), Error> {
+    let (mut buf, name_off, _) = build_props(None);
+    let mut wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let dst = &mut buf[name_off..name_off + wide.len() * 2];
+    // SAFETY: kopie u16 → bajty do rezervovaného úseku bufferu.
+    dst.copy_from_slice(unsafe {
+        std::slice::from_raw_parts(wide.as_ptr() as *const u8, wide.len() * 2)
+    });
+    // SAFETY: props buffer má správnou velikost; jméno je nul-ukončené.
+    let rc = unsafe {
+        ControlTraceW(
+            CONTROLTRACE_HANDLE::default(),
+            PWSTR(wide.as_mut_ptr()),
+            buf.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES,
+            EVENT_TRACE_CONTROL_FLUSH,
+        )
+    };
+    if rc == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(Error::Win32 {
+            call: "ControlTraceW(flush)",
+            code: rc.0 as i32,
+        })
+    }
 }
 
 /// Zastaví session daného jména (úklid po pádu / před restartem).

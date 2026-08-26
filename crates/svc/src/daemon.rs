@@ -1597,10 +1597,12 @@ fn store_loop(
     }
 
     let mut last_retention = Instant::now();
+    // Jména procesů se přepisovala každou sekundu, přestože se nemění.
+    let mut names = store::samples::NameCache::default();
     loop {
         match rx.recv_timeout(Duration::from_millis(250)) {
             Ok(msg) => {
-                if let Err(e) = store_msg(&mut conn, msg) {
+                if let Err(e) = store_msg(&mut conn, msg, &mut names) {
                     // Chyba zápisu nesmí shodit službu (SPEC kap. 22).
                     tracing::error!(error = %e, "zápis do store selhal");
                 }
@@ -1624,7 +1626,7 @@ fn store_loop(
         if stop.load(Ordering::SeqCst) {
             // Doprázdnit kanál, ať poslední vzorky nezmizí, pak konec.
             while let Ok(msg) = rx.try_recv() {
-                if let Err(e) = store_msg(&mut conn, msg) {
+                if let Err(e) = store_msg(&mut conn, msg, &mut names) {
                     tracing::error!(error = %e, "zápis při ukončení selhal");
                 }
             }
@@ -1641,10 +1643,11 @@ fn store_loop(
 fn store_msg(
     conn: &mut store::Connection,
     msg: crate::incidents::StoreMsg,
+    names: &mut store::samples::NameCache,
 ) -> Result<(), store::SqlError> {
     use crate::incidents::StoreMsg;
     match msg {
-        StoreMsg::Tick(ts, procs, sys) => store::samples::insert_tick(conn, ts, &sys, &procs),
+        StoreMsg::Tick(ts, procs, sys) => store::samples::insert_tick(conn, ts, &sys, &procs, names),
         StoreMsg::PermUse(entries) => {
             // Jedna transakce na celou dávku — dvě stě samostatných
             // zápisů by zbytečně mlelo diskem.
@@ -1816,6 +1819,10 @@ fn archive_blackbox(ts: i64) -> Option<String> {
     if !src.exists() {
         return None;
     }
+    // Buffery se zapisují až plné, takže poslední minuty leží v paměti.
+    // Bez tohohle by v archivu chybělo právě to, co se dělo těsně
+    // před incidentem — tedy jediné, kvůli čemu se archivuje.
+    collector_etw::flush_blackbox();
     let dst = dir.join(format!("incident-{ts}.etl"));
     let out = match std::fs::rename(&src, &dst) {
         Ok(()) => Some(dst.to_string_lossy().into_owned()),
