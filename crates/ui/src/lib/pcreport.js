@@ -141,6 +141,21 @@ function runLabel(x) {
 // Prázdný SMART není čisté vysvědčení. „ne" ve sloupci kritické se dalo
 // číst jako „disk je v pořádku", i když jsme ho ve skutečnosti vůbec
 // nepřečetli (SATA, externí disk, řadič bez průchodu).
+// Ovladač od Microsoftu je součást Windows — v seznamu zařízení je to
+// šum, protože se nedá ani aktualizovat, ani za nic vinit.
+function isMicrosoftDriver(x) {
+	const m = (x.manufacturer ?? '').toLowerCase();
+	return m.includes('microsoft') || m === '' || m.includes('standard');
+}
+
+// Umí ten adaptér víc než stovku? Poznává se z popisu ovladače —
+// „Gigabit", „2.5G", „I219-V" a spol. Když si nejsme jistí, mlčíme.
+function gigabitCapable(a) {
+	const d = `${a.description ?? ''} ${a.name ?? ''}`.toLowerCase();
+	if (a.kind && a.kind.toLowerCase().includes('wi')) return false;
+	return /gigabit|gbe|\b2\.5g|\b5g\b|10gb|i21[0-9]|rtl81(1|6)|killer e/.test(d);
+}
+
 function parseJson(s) {
 	try {
 		return JSON.parse(s ?? '');
@@ -292,11 +307,29 @@ export function reportText(d) {
 			`CPU:   ${s.cpu_name ?? '—'}  (${s.physical_cores ?? '?'} jader / ${s.logical_cores ?? '?'} vláken, základní takt ${s.cpu_base_mhz ?? '?'} MHz)`
 		);
 		L.push(`GPU:   ${s.gpu_name ?? '—'}`);
-		L.push(`RAM:   ${s.ram_modules?.length ?? 0} modulů ze ${s.ram_slots ?? '?'} slotů`);
-		for (const m of s.ram_modules ?? []) {
+		const mods = s.ram_modules ?? [];
+		L.push(`RAM:   ${mods.length} modulů ze ${s.ram_slots ?? '?'} slotů`);
+		for (const m of mods) {
 			L.push(
 				`       ${m.size_mb} MB @ ${m.configured_mts ?? '?'} MT/s (umí ${m.speed_mts ?? '?'})  slot ${m.slot ?? '?'}  ${m.manufacturer ?? ''} ${m.part_number ?? ''}`
 			);
+		}
+		// Jeden modul ve víceslotové desce = jednokanálový režim, tedy
+		// polovina propustnosti paměti. Data pro tenhle závěr v záznamu
+		// byla, závěr chyběl.
+		if (mods.length === 1 && (s.ram_slots ?? 0) > 1) {
+			L.push('       → jeden modul: paměť běží jednokanálově (poloviční propustnost)');
+		}
+		// Nakonfigurovaná rychlost přesně poloviční proti štítkové:
+		// buď na desce není zapnuté XMP/DOCP, nebo firmware do pole
+		// „MT/s" plete takt v MHz (3200 MT/s = 1600 MHz). Z dat se to
+		// rozhodnout nedá, tak se to nerozhoduje.
+		for (const m of mods) {
+			if (m.speed_mts && m.configured_mts && m.speed_mts === m.configured_mts * 2) {
+				L.push(
+					`       → ${m.slot ?? 'modul'}: běží na polovině štítkové rychlosti — buď je vypnuté XMP/DOCP, nebo deska hlásí takt v MHz místo MT/s`
+				);
+			}
 		}
 		for (const k of s.disks ?? []) L.push(`Disk:  [${k.index}] ${k.model}`);
 	}
@@ -320,7 +353,9 @@ export function reportText(d) {
 			`Procesů:    ${s.proc_count ?? '—'}   vláken ${s.threads_total ?? '—'}   handlů ${s.handles_total ?? '—'}`
 		);
 		L.push(`Takt CPU:   ${s.cpu_clock_mhz ?? '—'} / ${s.cpu_clock_max_mhz ?? '—'} MHz`);
-		L.push(`Uptime:     ${s.uptime_s ?? '—'} s`);
+		L.push(
+			`Uptime:     ${s.uptime_s != null ? dur(s.uptime_s) : '—'}${s.uptime_s != null ? ` (od ${ts(d.now - s.uptime_s)})` : ''}`
+		);
 		if (s.cores?.length) {
 			L.push('');
 			L.push('Zátěž jader (%):');
@@ -365,6 +400,14 @@ export function reportText(d) {
 				`CPU:    teplota ${c.celsius ?? '—'} °C (zdroj ${c.temp_source}), takt ${c.clock_mhz ?? '?'} / ${c.max_mhz ?? '?'} MHz, omezení: ${c.throttling ? 'ANO' : 'ne'}`
 			);
 		}
+		// Stránkovací soubor: když paměť dojde, tohle se používá místo ní
+		// — a je to jeden z hlavních důvodů, proč se počítač zdá pomalý.
+		if (h.pagefile?.size_mb) {
+			const pf = h.pagefile;
+			L.push(
+				`Stránkovací soubor: ${pf.path} — ${pf.used_mb} / ${pf.size_mb} MB využito, špička ${pf.peak_mb} MB`
+			);
+		}
 		if (h.battery) {
 			const b = h.battery;
 			L.push(
@@ -393,11 +436,27 @@ export function reportText(d) {
 			L.push(`  PROBLÉM ${x.problem_code}  ${x.name}  [${x.class}]  ${x.hardware_id ?? ''}`);
 		}
 		L.push('');
-		for (const x of h.devices ?? []) {
-			L.push(
-				`  ${pad(x.group_name || x.name, 44)} ${pad(x.manufacturer, 24)} ${pad(x.driver_version, 18)} ${x.driver_date ?? ''}`
-			);
-			L.push(`      ${x.class} · ${x.hardware_id ?? ''}`);
+		// Sto padesát bezproblémových zařízení po dvou řádcích tvořilo
+		// většinu délky celého souboru a čtenáři nedalo nic. Vypisují se
+		// tedy po třídách a jmenovitě jen to, co má vlastní ovladač
+		// třetí strany — u zbytku stačí počet.
+		const ok = (h.devices ?? []).filter((x) => !x.problem_code);
+		const byClass = new Map();
+		for (const x of ok) {
+			const k = x.class_desc || x.class || '(bez třídy)';
+			if (!byClass.has(k)) byClass.set(k, []);
+			byClass.get(k).push(x);
+		}
+		L.push('Bezproblémová zařízení po třídách (jmenovitě jen ta s vlastním ovladačem):');
+		for (const k of [...byClass.keys()].sort((a, b) => a.localeCompare(b, 'cs'))) {
+			const items = byClass.get(k);
+			const named = items.filter((x) => x.driver_version && !isMicrosoftDriver(x));
+			L.push(`  ${pad(k, 34)} ${String(items.length).padStart(3)}`);
+			for (const x of named) {
+				L.push(
+					`      ${pad(x.group_name || x.name, 42)} ${pad(x.manufacturer, 22)} ${pad(x.driver_version, 18)} ${x.driver_date ?? ''}`
+				);
+			}
 		}
 	}
 
@@ -594,6 +653,14 @@ export function reportText(d) {
 				`  ${pad(a.name, 34)} ${pad(a.kind, 10)} ${a.up ? 'nahoře' : 'dole'}  ${a.link_mbps ? a.link_mbps + ' Mb/s' : ''}  ${a.dhcp ? 'DHCP' : 'statická'}`
 			);
 			if (a.description) L.push(`      ${a.description}`);
+			// Gigabitový řadič běžící na stovce znamená vadný nebo
+			// špatně zapojený kabel, případně starý switch. Číslo
+			// v záznamu bylo, upozornění chybělo.
+			if (a.up && a.link_mbps && a.link_mbps <= 100 && gigabitCapable(a)) {
+				L.push(
+					`      → linka jede jen ${a.link_mbps} Mb/s, přestože adaptér umí gigabit — obvykle kabel nebo protějšek`
+				);
+			}
 			if (a.mac) L.push(`      MAC ${maskMac(a.mac)}`);
 			if ((a.ips ?? []).length) L.push(`      IP: ${maskList(a.ips)}`);
 			if ((a.gateways ?? []).length) L.push(`      brána: ${maskList(a.gateways)}`);

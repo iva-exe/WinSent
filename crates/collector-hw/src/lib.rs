@@ -194,8 +194,35 @@ pub fn report(
         disks,
         volumes,
         devices: devices(),
+        pagefile: pagefile(),
         ts,
     }
+}
+
+/// Stránkovací soubor přes WMI (`Win32_PageFileUsage`).
+///
+/// Chyběl. Na stroji, kde paměť špičkovala na 97 %, je to přitom
+/// podstatná část odpovědi na otázku „proč to jde pomalu" — počítač
+/// v takové chvíli odkládá stránky na disk. Hodnoty jsou v MB.
+fn pagefile() -> Option<core_types::proc::PagefileRow> {
+    let rows = win_sys::wmi::query(
+        r"root\CIMV2",
+        "SELECT Name, AllocatedBaseSize, CurrentUsage, PeakUsage FROM Win32_PageFileUsage",
+        &["Name", "AllocatedBaseSize", "CurrentUsage", "PeakUsage"],
+    );
+    let r = rows.first()?;
+    let mb = |k: &str| {
+        r.get(k)
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|v| v.max(0.0) as u64)
+            .unwrap_or(0)
+    };
+    Some(core_types::proc::PagefileRow {
+        path: r.get("Name").cloned().unwrap_or_default(),
+        size_mb: mb("AllocatedBaseSize"),
+        used_mb: mb("CurrentUsage"),
+        peak_mb: mb("PeakUsage"),
+    })
 }
 
 #[cfg(test)]

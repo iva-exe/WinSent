@@ -417,8 +417,22 @@ pub struct HardwareReport {
     pub volumes: Vec<VolumeRow>,
     /// Všechna přítomná zařízení — jméno, model, výrobce, ovladač.
     pub devices: Vec<DeviceRow>,
+    /// Stránkovací soubor: kolik ho je a kolik se ho používá.
+    pub pagefile: Option<PagefileRow>,
     /// Kdy byl přehled sestaven (unix).
     pub ts: i64,
+}
+
+/// Stránkovací soubor. Když paměť dojde, tohle je to, co se místo ní
+/// používá — a tím pádem i důvod, proč se počítač zdá pomalý.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PagefileRow {
+    /// Kde leží (`C:\pagefile.sys`).
+    pub path: String,
+    pub size_mb: u64,
+    pub used_mb: u64,
+    /// Nejvyšší naměřené využití od startu systému.
+    pub peak_mb: u64,
 }
 
 /// Jedno zařízení ze systémového stromu (v9, SPEC kap. 15.1) — tentýž
