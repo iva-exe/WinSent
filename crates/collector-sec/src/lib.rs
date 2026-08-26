@@ -40,9 +40,60 @@ pub fn protection() -> ProtectionReport {
     }
 }
 
+/// Co právě běží — podklad pro křížovou kontrolu „používá teď".
+///
+/// Sám registr na to nestačí. `LastUsedTimeStop == 0` znamená „relace
+/// neskončila", ne „aplikace žije": když program spadne nebo ho někdo
+/// odinstaluje, konec se nedopíše a záznam tvrdí „používá právě teď"
+/// donekonečna. Proto se ptáme i sampleru — a když daný program neběží,
+/// mikrofon držet nemůže.
+#[derive(Debug, Default, Clone)]
+pub struct RunningApps {
+    /// Jména běžících .exe, malými písmeny.
+    names: std::collections::HashSet<String>,
+    /// Rodiny balených aplikací (identity_key `msix:…`), malými písmeny.
+    families: std::collections::HashSet<String>,
+}
+
+impl RunningApps {
+    pub fn from_procs(procs: &[core_types::proc::ProcRow]) -> RunningApps {
+        let mut names = std::collections::HashSet::new();
+        let mut families = std::collections::HashSet::new();
+        for p in procs {
+            names.insert(p.name.to_ascii_lowercase());
+            if let Some(f) = p.identity_key.strip_prefix("msix:") {
+                families.insert(f.to_ascii_lowercase());
+            }
+        }
+        RunningApps { names, families }
+    }
+
+    /// Běží program, kterému ten souhlas patří?
+    ///
+    /// U balených aplikací se porovnává rodina balíčku, u klasických
+    /// jméno .exe z cesty v ConsentStore. Prázdný seznam procesů (sampler
+    /// ještě nedoběhl) znamená „nevím" — a tam se raději nic neshazuje,
+    /// aby živá tečka u kamery neproblikávala.
+    fn has(&self, app: &str, packaged: bool) -> bool {
+        if self.names.is_empty() && self.families.is_empty() {
+            return true;
+        }
+        if packaged {
+            let fam = app.to_ascii_lowercase();
+            return self.families.iter().any(|f| *f == fam);
+        }
+        let exe = app
+            .rsplit(char::from(92u8))
+            .next()
+            .unwrap_or(app)
+            .to_ascii_lowercase();
+        !exe.is_empty() && self.names.contains(&exe)
+    }
+}
+
 /// Oprávnění aplikací z ConsentStore. Levné (registr) — jde volat
 /// při každém dotazu.
-pub fn permissions() -> Vec<PermissionRow> {
+pub fn permissions(running: &RunningApps) -> Vec<PermissionRow> {
     // Registr se čte napříč hivemi VŠECH uživatelů, takže tentýž program
     // dorazí jednou za každý profil, ve kterém má záznam. Do seznamu
     // patří jednou — a to tou verzí, která o něm ví nejvíc: používá se
@@ -54,6 +105,7 @@ pub fn permissions() -> Vec<PermissionRow> {
     for c in win_sys::consent::consents() {
         let app_name = friendly_name(&c.app, c.packaged);
         let group_key = group_key(&c.app, c.packaged);
+        let live = c.in_use && running.has(&c.app, c.packaged);
         let row = PermissionRow {
             capability: c.capability,
             app: c.app,
@@ -61,7 +113,10 @@ pub fn permissions() -> Vec<PermissionRow> {
             group_key,
             enforced: c.packaged,
             allow: c.allow,
-            in_use: c.in_use,
+            // Registr říká jen „relace neskončila". Že aplikace opravdu
+            // žije, ví jen sampler — bez toho zůstane po pádu viset
+            // „používá právě teď" navždy.
+            in_use: live,
             last_used: c.last_used,
             last_start: c.last_start,
         };
@@ -137,10 +192,10 @@ fn friendly_name(app: &str, packaged: bool) -> String {
 }
 
 /// Celý report najednou.
-pub fn report() -> SecurityReport {
+pub fn report(running: &RunningApps) -> SecurityReport {
     SecurityReport {
         protection: protection(),
-        permissions: permissions(),
+        permissions: permissions(running),
     }
 }
 

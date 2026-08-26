@@ -30,19 +30,25 @@ pub fn record(
     capability: &str,
     start_ts: i64,
     stop_ts: Option<i64>,
+    // Kdy jsme relaci viděli — u otevřené je to strop pro počítání.
+    seen_ts: i64,
 ) -> Result<(), Error> {
     // Bez začátku není co zapsat — nulový čas znamená „nikdy nepoužito".
     if start_ts <= 0 {
         return Ok(());
     }
     conn.execute(
-        "INSERT INTO perm_use (app, capability, start_ts, stop_ts)
-         VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO perm_use (app, capability, start_ts, stop_ts, seen_ts)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(app, capability, start_ts)
          -- Konec se jen doplňuje. Přepsat vyplněný konec zpět na NULL
          -- by ze zavřeného sezení udělalo věčně běžící.
-         DO UPDATE SET stop_ts = COALESCE(excluded.stop_ts, perm_use.stop_ts)",
-        params![app, capability, start_ts, stop_ts],
+         --  se naopak posouvá pořád: je to poslední okamžik,
+         -- kdy jsme relaci viděli otevřenou, a u sezení bez konce
+         -- určuje, kam až se smí počítat.
+         DO UPDATE SET stop_ts = COALESCE(excluded.stop_ts, perm_use.stop_ts),
+                       seen_ts = MAX(COALESCE(perm_use.seen_ts, 0), excluded.seen_ts)",
+        params![app, capability, start_ts, stop_ts, seen_ts],
     )?;
     Ok(())
 }
@@ -80,9 +86,12 @@ pub fn total_seconds(
     now: i64,
 ) -> Result<i64, Error> {
     let mut st = conn.prepare(
-        "SELECT COALESCE(SUM(MIN(COALESCE(stop_ts, ?4), ?4) - MAX(start_ts, ?3)), 0)
+        // Stejné pravidlo jako v totals(): sezení bez konce se počítá
+        // jen po poslední pozorování, ne do teď.
+        "SELECT COALESCE(SUM(MIN(COALESCE(stop_ts, seen_ts, start_ts), ?4) - MAX(start_ts, ?3)), 0)
          FROM perm_use
-         WHERE app = ?1 AND capability = ?2 AND COALESCE(stop_ts, ?4) > ?3",
+         WHERE app = ?1 AND capability = ?2
+           AND COALESCE(stop_ts, seen_ts, start_ts) > ?3",
     )?;
     let secs: i64 = st.query_row(params![app, capability, from, now], |r| r.get(0))?;
     Ok(secs.max(0))
@@ -103,9 +112,9 @@ mod tests {
     #[test]
     fn repeated_reads_of_one_session_stay_one_row() {
         let c = db();
-        record(&c, "app", "microphone", 1000, None).expect("zápis");
-        record(&c, "app", "microphone", 1000, None).expect("zápis");
-        record(&c, "app", "microphone", 1000, Some(1600)).expect("zápis");
+        record(&c, "app", "microphone", 1000, None, 1100).expect("zápis");
+        record(&c, "app", "microphone", 1000, None, 1200).expect("zápis");
+        record(&c, "app", "microphone", 1000, Some(1600), 1600).expect("zápis");
         let h = history(&c, "app", "microphone", 10).expect("historie");
         assert_eq!(h.len(), 1);
         assert_eq!(h[0].stop_ts, Some(1600));
@@ -115,8 +124,8 @@ mod tests {
     #[test]
     fn closed_session_never_reopens() {
         let c = db();
-        record(&c, "app", "webcam", 500, Some(900)).expect("zápis");
-        record(&c, "app", "webcam", 500, None).expect("zápis");
+        record(&c, "app", "webcam", 500, Some(900), 900).expect("zápis");
+        record(&c, "app", "webcam", 500, None, 950).expect("zápis");
         let h = history(&c, "app", "webcam", 10).expect("historie");
         assert_eq!(h[0].stop_ts, Some(900));
     }
@@ -126,9 +135,10 @@ mod tests {
     #[test]
     fn total_counts_only_the_window() {
         let c = db();
-        record(&c, "a", "microphone", 100, Some(200)).expect("staré"); // mimo
-        record(&c, "a", "microphone", 900, Some(1100)).expect("přesah"); // 100 s v okně
-        record(&c, "a", "microphone", 1200, None).expect("běží"); // 300 s do teď
+        record(&c, "a", "microphone", 100, Some(200), 200).expect("staré"); // mimo
+        record(&c, "a", "microphone", 900, Some(1100), 1100).expect("přesah"); // 100 s v okně
+        // Běžící sezení: naposledy viděné v 1500, tedy 300 s v okně.
+        record(&c, "a", "microphone", 1200, None, 1500).expect("běží");
         let total = total_seconds(&c, "a", "microphone", 1000, 1500).expect("součet");
         assert_eq!(total, 400);
     }
@@ -137,7 +147,7 @@ mod tests {
     #[test]
     fn never_used_writes_nothing() {
         let c = db();
-        record(&c, "a", "location", 0, None).expect("zápis");
+        record(&c, "a", "location", 0, None, 100).expect("zápis");
         assert!(history(&c, "a", "location", 10).expect("historie").is_empty());
     }
 }
@@ -149,10 +159,13 @@ mod tests {
 /// dotazů kvůli tomu je zbytečné.
 pub fn totals(conn: &Connection, from: i64, now: i64) -> Result<Vec<(String, String, i64)>, Error> {
     let mut st = conn.prepare(
+        // U sezení bez konce se počítá jen po poslední pozorování.
+        // Kdyby se počítalo do teď, jedna relace, kterou Windows nikdy
+        // nezavřely, by spolkla celé okno.
         "SELECT app, capability,
-                SUM(MIN(COALESCE(stop_ts, ?2), ?2) - MAX(start_ts, ?1))
+                SUM(MIN(COALESCE(stop_ts, seen_ts, start_ts), ?2) - MAX(start_ts, ?1))
          FROM perm_use
-         WHERE COALESCE(stop_ts, ?2) > ?1
+         WHERE COALESCE(stop_ts, seen_ts, start_ts) > ?1
          GROUP BY app, capability",
     )?;
     let rows = st.query_map(params![from, now], |r| {

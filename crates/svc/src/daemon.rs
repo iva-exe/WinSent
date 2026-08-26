@@ -481,6 +481,9 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     // když se v registru něco hne (SPEC 13.4 to přímo předepisuje).
     let permwatch_handle = {
         let stop = Arc::clone(&stop);
+        // Vlákno potřebuje živý snímek procesů — bez něj by nešlo
+        // ověřit, že aplikace s otevřenou relací vůbec běží.
+        let live = Arc::clone(&live);
         let tx = perm_tx;
         std::thread::Builder::new()
             .name("permwatch".into())
@@ -500,8 +503,11 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 let mut due = true;
                 while !stop.load(Ordering::SeqCst) {
                     if due {
+                        let running = collector_sec::RunningApps::from_procs(
+                            &live.read().expect("live lock poisoned").procs,
+                        );
                         let batch: Vec<crate::incidents::PermUseEntry> =
-                            collector_sec::permissions()
+                            collector_sec::permissions(&running)
                                 .into_iter()
                                 .filter_map(|c| {
                                     Some(crate::incidents::PermUseEntry {
@@ -1116,7 +1122,13 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 let protection = cache.as_ref().map(|(_, p)| p.clone()).unwrap_or_default();
                 Response::Security(core_types::proc::SecurityReport {
                     protection,
-                    permissions: collector_sec::permissions(),
+                    // Křížová kontrola se sampleru: co neběží, mikrofon
+                    // držet nemůže (viz collector_sec::RunningApps).
+                    permissions: collector_sec::permissions(
+                        &collector_sec::RunningApps::from_procs(
+                            &live.read().expect("live lock poisoned").procs,
+                        ),
+                    ),
                 })
             }
             // Účty (v9E): kdo na tomhle počítači je a kdo je správce.
@@ -1616,10 +1628,18 @@ fn store_msg(
             // Jedna transakce na celou dávku — dvě stě samostatných
             // zápisů by zbytečně mlelo diskem.
             let tx = conn.transaction()?;
+            // Okamžik pozorování je pro celou dávku stejný — je to čas,
+            // kdy jsme registr přečetli.
+            let seen = unix_now();
             for e in &entries {
-                if let Err(err) =
-                    store::permuse::record(&tx, &e.app, &e.capability, e.start_ts, e.stop_ts)
-                {
+                if let Err(err) = store::permuse::record(
+                    &tx,
+                    &e.app,
+                    &e.capability,
+                    e.start_ts,
+                    e.stop_ts,
+                    seen,
+                ) {
                     tracing::warn!(app = %e.app, error = %err, "zápis použití oprávnění");
                 }
             }

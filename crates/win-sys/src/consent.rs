@@ -71,8 +71,31 @@ fn filetime_to_unix(ft: u64) -> Option<i64> {
     Some((ft / 10_000_000) as i64 - 11_644_473_600)
 }
 
+
+/// Okamžik posledního startu systému (unix).
+///
+/// Relace, která začala dřív, běžet nemůže: proces, který si mikrofon
+/// nebo kameru vzal, s restartem zanikl. Windows si po sobě takové
+/// záznamy neuklízejí — když aplikace spadne nebo počítač ztratí
+/// napájení, `LastUsedTimeStop` se nikdy nedopíše a záznam pak tvrdí
+/// „používá právě teď" klidně rok. Naměřeno: stroj nabootovaný týž den
+/// v 18:57 hlásil 32 aplikací, které prý drží mikrofon od února 2025.
+///
+/// Rezerva 120 s je na to, že `GetTickCount64` a systémový čas se
+/// mírně rozcházejí (úprava času, přechod z hibernace).
+fn boot_unix() -> i64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    now - crate::sysinfo::system_uptime_s() as i64
+}
+
+const BOOT_GRACE_S: i64 = 120;
+
 /// Přečte souhlasy všech reálných uživatelů (HKU\S-1-5-21-*).
 pub fn consents() -> Vec<Consent> {
+    let boot = boot_unix();
     let mut out = Vec::new();
     for sid in enum_subkeys(HKEY_USERS, "") {
         if !sid.starts_with("S-1-5-21") || sid.ends_with("_Classes") {
@@ -99,12 +122,13 @@ pub fn consents() -> Vec<Consent> {
                             &exe.replace('#', r"\"),
                             false,
                             Some(np_allow),
+                            boot,
                         ) {
                             out.push(c);
                         }
                     }
                 } else if let Some(c) =
-                    read_entry(&format!(r"{cap_key}\{entry}"), cap, &entry, true, None)
+                    read_entry(&format!(r"{cap_key}\{entry}"), cap, &entry, true, None, boot)
                 {
                     out.push(c);
                 }
@@ -123,6 +147,7 @@ fn read_entry(
     app: &str,
     packaged: bool,
     inherited_allow: Option<bool>,
+    boot: i64,
 ) -> Option<Consent> {
     let allow = match read_string(HKEY_USERS, key, "Value").as_deref() {
         Some("Allow") => true,
@@ -136,7 +161,11 @@ fn read_entry(
         app: app.to_string(),
         packaged,
         allow,
-        in_use: start != 0 && stop == 0,
+        // „Používá právě teď" jen tehdy, když relace začala po
+        // posledním startu systému. Viz boot_unix().
+        in_use: start != 0
+            && stop == 0
+            && filetime_to_unix(start).is_some_and(|s| s >= boot - BOOT_GRACE_S),
         last_used: filetime_to_unix(stop.max(start)),
         last_start: filetime_to_unix(start),
     })

@@ -205,6 +205,13 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE sample_10s ADD COLUMN gpu_pm_max INTEGER;
     ALTER TABLE sample_1m  ADD COLUMN gpu_pm INTEGER;
     ALTER TABLE sample_1m  ADD COLUMN gpu_pm_max INTEGER;",
+    // → kdy naposledy jsme relaci VIDĚLI otevřenou.
+    //
+    // Bez toho se otevřená relace počítala až do teď — a relace, která
+    // nikdy neskončí (aplikace spadla, Windows konec nedopsaly), pak
+    // hlásila 720 hodin mikrofonu za třicetidenní okno. Konec se bere
+    // z posledního pozorování, ne z aktuálního času.
+    "ALTER TABLE perm_use ADD COLUMN seen_ts INTEGER;",
 ];
 
 /// Aplikuje všechny dosud neaplikované migrace. Bezpečné volat při
