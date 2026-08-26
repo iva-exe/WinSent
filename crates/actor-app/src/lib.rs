@@ -54,6 +54,34 @@ pub fn verify(action: &Action) -> bool {
     validate::uninstall_command(name).is_none()
 }
 
+/// Předává odinstalační příkaz práci jinému programu?
+///
+/// Steam má u her `UninstallString` ve tvaru
+/// `steam.exe steam://uninstall/<appid>`: klient se vrátí okamžitě,
+/// odinstalaci provede až po potvrzení ve svém okně. Návratový kód ani
+/// registr hned po spuštění tedy nic neříkají — a Winsent to hlásil
+/// jako `failed`. Naměřeno na exportu jednoho stroje: dvanáct „selhání"
+/// téže odinstalace za jediný den, přitom se nikdy nic nepokazilo.
+///
+/// Poznává se podle protokolového odkazu v příkazu; stejně se chová
+/// i launcher Epicu a Heroic.
+pub fn hands_off(command: &str) -> Option<&'static str> {
+    let lc = command.to_ascii_lowercase();
+    for (needle, who) in [
+        ("steam://uninstall", "Steamu"),
+        ("com.epicgames.launcher://", "launcheru Epic Games"),
+        ("heroic://", "launcheru Heroic"),
+        ("goggalaxy://", "GOG Galaxy"),
+        ("ubisoftconnect://", "Ubisoft Connectu"),
+        ("eaclient://", "aplikaci EA"),
+    ] {
+        if lc.contains(needle) {
+            return Some(who);
+        }
+    }
+    None
+}
+
 /// Zbytky po odinstalaci: cesty z mapy souborů, které na disku pořád
 /// jsou. Volá se PO odinstalaci — čistě čtecí, nic nemaže.
 pub fn leftovers(paths: &[String]) -> Vec<String> {

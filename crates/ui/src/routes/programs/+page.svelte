@@ -457,6 +457,7 @@
 			uninstResult = {
 				app: run.app,
 				stillInstalled: r.still_installed,
+				handedOff: r.handed_off,
 				leftovers: r.leftovers
 			};
 			if (!r.still_installed) {
@@ -846,7 +847,18 @@
 			onkeydown={() => {}}
 		>
 			<div class="dlg" role="dialog" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
-				{#if uninstResult.stillInstalled}
+				{#if uninstResult.handedOff}
+					<!-- Steam a spol. se z odinstalace vrací okamžitě a
+					     práci udělají až po potvrzení ve svém okně. Hlásit
+					     tady „selhalo" znamenalo posílat člověka pořád
+					     dokola dělat něco, co se nikdy nepokazilo. -->
+					<h2>Odinstalaci převzal launcher</h2>
+					<p class="d-note">
+						{uninstResult.app.display_name} spravuje jiný program (Steam, Epic Games a podobně).
+						Winsent mu odinstalaci předal — dokonči ji v jeho okně. Až bude hotovo, zmizí
+						aplikace ze seznamu sama při dalším skenu.
+					</p>
+				{:else if uninstResult.stillInstalled}
 					<h2>{uninstResult.app.display_name} je pořád nainstalovaná</h2>
 					<p class="d-note">
 						V registru je dál — odinstalátor nejspíš skončil dřív, než odinstalaci dokončil

@@ -505,6 +505,9 @@ struct UninstallDone {
     still_installed: bool,
     /// Cesty aplikace, které na disku zůstaly.
     leftovers: Vec<String>,
+    /// Odinstalaci převzal launcher (Steam a spol.) a čeká na potvrzení
+    /// ve svém okně. Není to selhání — jen ještě není hotovo.
+    handed_off: bool,
 }
 
 /// Odinstalace, krok 3 — DOKONČIT: projít cesty aplikace, ověřit registr,
@@ -529,6 +532,7 @@ fn finish_uninstall(
     let _ = ipc::client::rescan_apps();
     Ok(UninstallDone {
         still_installed: res.outcome.as_deref() != Some("ok"),
+        handed_off: res.outcome.as_deref() == Some("handed"),
         leftovers,
     })
 }

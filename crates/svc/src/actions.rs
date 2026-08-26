@@ -245,10 +245,28 @@ impl Orchestrator {
             identity_key: identity_key.to_string(),
         };
         let verified = actor_app::verify(&action);
-        let outcome = if verified { "ok" } else { "failed" };
+        // Odinstalátor, který práci jen předal svému launcheru, se vrací
+        // hned a v registru je aplikace pořád — to není selhání, to je
+        // stav „čeká se na tebe v okně Steamu". Hlásit `failed` znamenalo
+        // posílat uživatele opakovaně dělat něco, co se ve skutečnosti
+        // nikdy nepokazilo.
+        let name = identity_key.strip_prefix("app:").unwrap_or(identity_key);
+        let handoff = (!verified)
+            .then(|| validate::uninstall_command(name))
+            .flatten()
+            .and_then(|c| actor_app::hands_off(&c));
+        let outcome = match (verified, handoff) {
+            (true, _) => "ok",
+            (false, Some(_)) => "handed",
+            (false, None) => "failed",
+        };
+        let detail = match handoff {
+            Some(who) => format!("předáno {who} — dokonči odinstalaci v jeho okně; {detail}"),
+            None => detail.to_string(),
+        };
         if audit_id > 0 {
             let conn = self.audit_conn.lock().expect("audit conn lock");
-            if let Err(e) = store::audit::set_outcome(&conn, audit_id, outcome, detail) {
+            if let Err(e) = store::audit::set_outcome(&conn, audit_id, outcome, &detail) {
                 tracing::error!(error = %e, "doplnění výsledku do auditu selhalo");
             }
         }

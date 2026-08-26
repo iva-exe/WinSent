@@ -494,16 +494,63 @@ export function reportText(d) {
 		const perms = d.security.permissions ?? [];
 		const totals = new Map();
 		for (const [app, cap, secs] of d.permTotals ?? []) totals.set(`${cap}|${app}`, secs);
+		// Sdruženo po schopnostech stejně jako v UI. Plochý seznam se
+		// stovkami řádků nutil čtenáře přebírat kameru z mikrofonu očima
+		// a odpověď na „kdo má přístup k mikrofonu" v něm nešla najít.
 		S(`Oprávnění aplikací (${perms.length} záznamů)`);
-		L.push(
-			'  schopnost            stav        používá  naposledy            30 dnů     aplikace'
-		);
+		const CAPS = {
+			webcam: 'Kamera',
+			microphone: 'Mikrofon',
+			location: 'Poloha',
+			contacts: 'Kontakty',
+			appointments: 'Kalendář',
+			email: 'E-mail',
+			phoneCall: 'Telefon',
+			phoneCallHistory: 'Historie hovorů',
+			userNotificationListener: 'Oznámení',
+			userDataTasks: 'Úkoly',
+			chat: 'Zprávy',
+			radios: 'Bluetooth a Wi-Fi',
+			bluetoothSync: 'Párování zařízení',
+			documentsLibrary: 'Dokumenty',
+			picturesLibrary: 'Obrázky',
+			videosLibrary: 'Videa',
+			broadFileSystemAccess: 'Celý souborový systém',
+			activity: 'Historie činnosti',
+			humanInterfaceDevice: 'Herní zařízení',
+			graphicsCaptureProgrammatic: 'Snímání obrazovky',
+			graphicsCaptureWithoutBorder: 'Snímání okna bez rámečku'
+		};
+		const byCap = new Map();
 		for (const x of perms) {
-			const t = totals.get(`${x.capability}|${x.app}`);
-			L.push(
-				`  ${pad(x.capability, 20)} ${pad(x.allow ? 'povoleno' : x.enforced ? 'zablokováno' : 'odepřeno*', 11)} ${pad(x.in_use ? 'ANO' : '', 8)} ${pad(x.last_used ? ts(x.last_used) : '—', 20)} ${pad(dur(t), 10)} ${x.app_name || x.app}`
-			);
+			if (!byCap.has(x.capability)) byCap.set(x.capability, []);
+			byCap.get(x.capability).push(x);
 		}
+		const caps = [...byCap.keys()].sort((a, b) =>
+			(CAPS[a] ?? a).localeCompare(CAPS[b] ?? b, 'cs')
+		);
+		for (const cap of caps) {
+			// Uvnitř kategorie napřed to, co se používá teď, pak podle
+			// posledního použití — nahoře je vždycky to zajímavé.
+			const rows = byCap.get(cap).sort((a, b) => {
+				if (a.in_use !== b.in_use) return a.in_use ? -1 : 1;
+				return (b.last_used ?? 0) - (a.last_used ?? 0);
+			});
+			const live = rows.filter((r) => r.in_use).length;
+			const allowed = rows.filter((r) => r.allow).length;
+			L.push('');
+			L.push(
+				`  ${CAPS[cap] ?? cap} (${cap}) — ${rows.length} aplikací, povoleno ${allowed}${live ? `, PRÁVĚ POUŽÍVÁ ${live}` : ''}`
+			);
+			L.push('    stav        používá  naposledy            30 dnů     aplikace');
+			for (const x of rows) {
+				const t = totals.get(`${x.capability}|${x.app}`);
+				L.push(
+					`    ${pad(x.allow ? 'povoleno' : x.enforced ? 'zablokováno' : 'odepřeno*', 11)} ${pad(x.in_use ? 'ANO' : '', 8)} ${pad(x.last_used ? ts(x.last_used) : '—', 20)} ${pad(dur(t), 10)} ${x.app_name || x.app}`
+				);
+			}
+		}
+		L.push('');
 		L.push('  * u klasických aplikací Windows „odepřeno" tvrdě nevynucují');
 	}
 
@@ -669,9 +716,21 @@ export function reportText(d) {
 		}
 	}
 	if (d.audit?.length) {
-		H(`ZÁSAHY DO SYSTÉMU (${d.audit.length})`);
+		// Sondy z bran (test_op, test_toggle, check_proc) vypadají
+		// v seznamu jako zásahy uživatele, přestože jsou to zkoušky
+		// validační vrstvy, které se schválně nikdy neprovedou.
+		// Z 406 záznamů jich byla značná část a analýza se v nich topila.
+		const PROBES = new Set(['test_op', 'test_toggle', 'check_proc']);
+		const real = d.audit.filter((a) => !PROBES.has(a.action));
+		const probes = d.audit.length - real.length;
+		H(`ZÁSAHY DO SYSTÉMU (${real.length})`);
+		if (probes) {
+			L.push(`(skryto ${probes} zkušebních volání z vlastních kontrol — nic neprovádějí)`);
+		}
+		L.push('(verdikt „deny" znamená, že se akce neprovedla vůbec)');
+		L.push('');
 		L.push('  kdy                   akce            třída  verdikt  výsledek  cíl');
-		for (const a of d.audit) {
+		for (const a of real) {
 			L.push(
 				`  ${pad(ts(a.ts), 21)} ${pad(a.action, 15)} ${pad(a.class, 6)} ${pad(a.verdict, 8)} ${pad(a.outcome ?? '', 9)} ${clean(a.target)}`
 			);
