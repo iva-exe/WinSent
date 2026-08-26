@@ -42,10 +42,11 @@ pub fn tick(conn: &Connection) -> Result<(), rusqlite::Error> {
                CAST(AVG(cpu_clock_mhz) AS INTEGER)
         FROM system_1s WHERE ts < {cut} GROUP BY ts/10;
         INSERT OR IGNORE INTO sample_10s
-            (ts, proc_id, cpu_pm, cpu_pm_max, ws_kb, io_r, io_w)
+            (ts, proc_id, cpu_pm, cpu_pm_max, ws_kb, io_r, io_w, gpu_pm, gpu_pm_max)
         SELECT (ts/10)*10, proc_id, CAST(AVG(cpu_pm) AS INTEGER), MAX(cpu_pm),
                CAST(AVG(ws_kb) AS INTEGER),
-               CAST(AVG(io_r) AS INTEGER), CAST(AVG(io_w) AS INTEGER)
+               CAST(AVG(io_r) AS INTEGER), CAST(AVG(io_w) AS INTEGER),
+               CAST(AVG(gpu_pm) AS INTEGER), MAX(gpu_pm)
         FROM sample_1s WHERE ts < {cut} GROUP BY ts/10, proc_id;
         INSERT OR IGNORE INTO disk_10s (ts, disk, r_bps, w_bps)
         SELECT (ts/10)*10, disk, CAST(AVG(r_bps) AS INTEGER),
@@ -73,10 +74,11 @@ pub fn tick(conn: &Connection) -> Result<(), rusqlite::Error> {
                CAST(AVG(cpu_clock_mhz) AS INTEGER)
         FROM system_10s WHERE ts < {cut} GROUP BY ts/60;
         INSERT OR IGNORE INTO sample_1m
-            (ts, proc_id, cpu_pm, cpu_pm_max, ws_kb, io_r, io_w)
+            (ts, proc_id, cpu_pm, cpu_pm_max, ws_kb, io_r, io_w, gpu_pm, gpu_pm_max)
         SELECT (ts/60)*60, proc_id, CAST(AVG(cpu_pm) AS INTEGER), MAX(cpu_pm_max),
                CAST(AVG(ws_kb) AS INTEGER),
-               CAST(AVG(io_r) AS INTEGER), CAST(AVG(io_w) AS INTEGER)
+               CAST(AVG(io_r) AS INTEGER), CAST(AVG(io_w) AS INTEGER),
+               CAST(AVG(gpu_pm) AS INTEGER), MAX(gpu_pm_max)
         FROM sample_10s WHERE ts < {cut} GROUP BY ts/60, proc_id;
         INSERT OR IGNORE INTO disk_1m (ts, disk, r_bps, w_bps)
         SELECT (ts/60)*60, disk, CAST(AVG(r_bps) AS INTEGER),

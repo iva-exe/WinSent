@@ -173,7 +173,7 @@ pub fn procs_at(
 
         let mut stmt = conn.prepare_cached(&format!(
             "SELECT s.proc_id, COALESCE(n.name, '(pid ' || s.proc_id || ')'),
-                    s.cpu_pm, s.ws_kb, s.io_r, s.io_w,
+                    s.cpu_pm, s.ws_kb, s.io_r, s.io_w, s.gpu_pm,
                     n.identity_key, n.app_name, n.publisher
              FROM {table} s LEFT JOIN proc_names n ON n.pid = s.proc_id
              WHERE s.ts = ?1"
@@ -187,9 +187,12 @@ pub fn procs_at(
                     ws_bytes: r.get::<_, Option<i64>>(3)?.unwrap_or(0).max(0) as u64 * 1024,
                     disk_r_bps: r.get::<_, Option<i64>>(4)?.unwrap_or(0).max(0) as u64,
                     disk_w_bps: r.get::<_, Option<i64>>(5)?.unwrap_or(0).max(0) as u64,
-                    identity_key: r.get(6)?,
-                    app_name: r.get(7)?,
-                    publisher: r.get(8)?,
+                    // NULL = vzorek z doby před přidáním sloupce; „neznámo" je
+                    // něco jiného než „nula procent" a UI to rozlišuje.
+                    gpu_pct: r.get::<_, Option<i64>>(6)?.map(|v| v as f32 / 10.0),
+                    identity_key: r.get(7)?,
+                    app_name: r.get(8)?,
+                    publisher: r.get(9)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

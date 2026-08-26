@@ -195,6 +195,16 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (app, capability, start_ts)
     ) WITHOUT ROWID;
     CREATE INDEX ix_perm_use_ts ON perm_use(start_ts DESC);",
+    // → GPU v historii procesů. Sloupec chyběl od začátku: živý
+    // list GPU ukazoval, ale do vzorků se nikdy nezapisovalo, takže
+    // náhled minulosti měl u každého procesu prázdno. Per mille
+    // stejně jako cpu_pm — 0,1 % je jemnější, než jaká je vůbec
+    // přesnost čítače.
+    "ALTER TABLE sample_1s  ADD COLUMN gpu_pm INTEGER;
+    ALTER TABLE sample_10s ADD COLUMN gpu_pm INTEGER;
+    ALTER TABLE sample_10s ADD COLUMN gpu_pm_max INTEGER;
+    ALTER TABLE sample_1m  ADD COLUMN gpu_pm INTEGER;
+    ALTER TABLE sample_1m  ADD COLUMN gpu_pm_max INTEGER;",
 ];
 
 /// Aplikuje všechny dosud neaplikované migrace. Bezpečné volat při

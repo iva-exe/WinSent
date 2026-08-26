@@ -261,6 +261,21 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
             confidence: id.confidence,
         });
     }
+    // Obecné hostitelské procesy patří aplikaci, která je spustila.
+    //
+    // WebView2 běží jako `msedgewebview2.exe` mimo instalaci hostitele,
+    // takže mu kaskáda identity dá vlastní klíč a v Tasks z toho vznikne
+    // řádek „Microsoft Edge WebView2" — zatímco veškerá práce (a hlavně
+    // GPU, protože vykresluje) patří aplikaci nad ním. Správce úloh ho
+    // ukazuje vnořený pod hostitelem a my jsme u téhož procesu měli GPU
+    // u cizího řádku: naše vlastní aplikace hlásila 0 %, zatímco Správce
+    // úloh u ní ukazoval 8,6 %.
+    //
+    // Seznam je schválně krátký. `svchost`, `dllhost` ani `rundll32` sem
+    // NEPATŘÍ — ty hostí služby a COM objekty a Správce úloh je taky
+    // ukazuje samostatně.
+    reparent_hosts(&mut rows);
+
     state.prev_cpu = next_cpu;
 
     // Úklid identity cache od zaniklých procesů (levné, jednou za tick).
@@ -454,4 +469,65 @@ pub fn shutdown(_state: State) {}
 /// Co ze sběru na tomhle stroji nefunguje — pro diagnostiku v UI.
 pub fn degraded(state: &State) -> Vec<(String, String)> {
     state.degraded.list()
+}
+
+/// Image, které jsou jen běhovým prostředím jiné aplikace.
+const GENERIC_HOSTS: &[&str] = &["msedgewebview2.exe"];
+
+fn is_generic_host(name: &str) -> bool {
+    GENERIC_HOSTS.iter().any(|h| name.eq_ignore_ascii_case(h))
+}
+
+/// Přepíše identitu hostitelských procesů na identitu předka, který
+/// hostitel není.
+///
+/// Chodí se po rodičích, protože WebView2 si spouští vlastní potomky
+/// (renderer, GPU proces) — jejich rodičem je zase `msedgewebview2.exe`.
+/// Hloubka je omezená a navštívené PIDy se hlídají: kdyby PID recykloval
+/// tak nešťastně, že vznikne cyklus, nesmí to zaseknout celý sampler.
+/// Když se předek nenajde (skončil), zůstane hostiteli vlastní identita —
+/// vymýšlet si vlastníka by bylo horší než ho přiznat jako neznámého.
+fn reparent_hosts(rows: &mut [ProcRow]) {
+    let hosts: Vec<u32> = rows
+        .iter()
+        .filter(|r| is_generic_host(&r.name))
+        .map(|r| r.pid)
+        .collect();
+    if hosts.is_empty() {
+        return;
+    }
+    let by_pid: HashMap<u32, usize> = rows.iter().enumerate().map(|(i, r)| (r.pid, i)).collect();
+
+    let mut fixes: Vec<(usize, String, String, Option<String>)> = Vec::new();
+    for pid in hosts {
+        let Some(&idx) = by_pid.get(&pid) else { continue };
+        let mut cur = rows[idx].parent_pid;
+        let mut seen = 0u8;
+        let mut visited: Vec<u32> = vec![pid];
+        while seen < 8 {
+            seen += 1;
+            if visited.contains(&cur) {
+                break;
+            }
+            visited.push(cur);
+            let Some(&pidx) = by_pid.get(&cur) else { break };
+            if is_generic_host(&rows[pidx].name) {
+                cur = rows[pidx].parent_pid;
+                continue;
+            }
+            let owner = &rows[pidx];
+            fixes.push((
+                idx,
+                owner.identity_key.clone(),
+                owner.app_name.clone(),
+                owner.publisher.clone(),
+            ));
+            break;
+        }
+    }
+    for (idx, key, app, publisher) in fixes {
+        rows[idx].identity_key = key;
+        rows[idx].app_name = app;
+        rows[idx].publisher = publisher;
+    }
 }

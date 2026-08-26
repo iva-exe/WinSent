@@ -2,10 +2,16 @@
 //! Qualcomm — cokoliv s WDDM ovladačem). Stejná data čte Správce úloh.
 //!
 //! `\GPU Engine(*)\Utilization Percentage` (SPEC kap. 3.1): jméno
-//! instance nese `pid_<PID>_..._engtype_<typ>`. Per-proces % = součet
-//! engine instancí daného PID; celkové GPU % = maximum přes součty
-//! jednotlivých engine typů (metodika Správce úloh — 3D vs Copy vs
-//! VideoDecode se nesčítají, bere se nejvytíženější).
+//! instance nese `pid_<PID>_..._engtype_<typ>`.
+//!
+//! Per-proces i celkové % se počítají STEJNĚ: hodnoty se sečtou uvnitř
+//! jednoho typu enginu a přes typy se bere MAXIMUM. Enginy běží
+//! souběžně — 3D, Copy a VideoDecode jsou oddělené jednotky téhož
+//! čipu a jejich součet neodpovídá tomu, „kolik GPU zabírá".
+//!
+//! Změřeno na Discordu: součet přes enginy 17,2 %, maximum 9,0 %,
+//! Správce úloh u téhož procesu ve stejnou chvíli 6,8 % (Video
+//! Decode). Součet nafukoval čísla zhruba dvojnásobně.
 //!
 //! `\GPU Adapter Memory(*)\Dedicated Usage`: obsazená dedikovaná VRAM
 //! per adaptér — bere se maximum (největší = diskrétní GPU).
@@ -26,7 +32,7 @@ use windows::Win32::System::Performance::{
 /// Jeden vzorek GPU čítačů.
 #[derive(Debug, Default)]
 pub struct GpuSample {
-    /// PID → GPU % (součet přes enginy procesu).
+    /// PID → GPU % (maximum přes typy enginů procesu).
     pub per_pid: HashMap<u32, f32>,
     /// Celkové GPU % (max přes engine typy). None dokud není primed.
     pub total_pct: Option<f32>,
@@ -110,15 +116,20 @@ impl GpuPerProc {
                 return out; // rate ještě není platný
             }
 
-            // Engine utilization: per-PID součet + per-engtype součty.
+            // Uvnitř typu enginu se sčítá (proces má běžně několik
+            // instancí téhož typu), přes typy se bere maximum.
             let mut by_engtype: HashMap<String, f64> = HashMap::new();
+            let mut per_pid_eng: HashMap<(u32, String), f64> = HashMap::new();
             for (name, val) in read_counter_array(self.counter) {
+                let eng = engtype_from_instance(&name).unwrap_or("").to_string();
                 if let Some(pid) = pid_from_instance(&name) {
-                    *out.per_pid.entry(pid).or_insert(0.0) += val as f32;
+                    *per_pid_eng.entry((pid, eng.clone())).or_insert(0.0) += val;
                 }
-                if let Some(eng) = engtype_from_instance(&name) {
-                    *by_engtype.entry(eng.to_string()).or_insert(0.0) += val;
-                }
+                *by_engtype.entry(eng).or_insert(0.0) += val;
+            }
+            for ((pid, _), v) in per_pid_eng {
+                let e = out.per_pid.entry(pid).or_insert(0.0);
+                *e = e.max(v as f32);
             }
             out.total_pct = by_engtype
                 .values()

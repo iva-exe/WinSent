@@ -66,8 +66,9 @@ pub fn insert_tick(
         }
 
         let mut stmt = tx.prepare_cached(
-            "INSERT OR REPLACE INTO sample_1s (ts, proc_id, cpu_pm, ws_kb, priv_kb, io_r, io_w)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR REPLACE INTO sample_1s
+                 (ts, proc_id, cpu_pm, ws_kb, priv_kb, io_r, io_w, gpu_pm)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
         // Jména + identita pro čtení historie (pid → poslední stav) —
         // náhled minulosti tak seskupuje a ikonuje stejně jako živý list.
@@ -85,6 +86,7 @@ pub fn insert_tick(
                 (p.priv_bytes / 1024) as i64,
                 p.disk_r_bps as i64,
                 p.disk_w_bps as i64,
+                (p.gpu_pct * 10.0) as i64,
             ])?;
             name_stmt.execute(params![
                 p.pid as i64,

@@ -344,6 +344,9 @@ pub struct HistProcRow {
     pub ws_bytes: u64,
     pub disk_r_bps: u64,
     pub disk_w_bps: u64,
+    /// Využití GPU v % v tom okamžiku. `None` u vzorků z doby, kdy se
+    /// GPU do historie ještě nezapisovalo.
+    pub gpu_pct: Option<f32>,
     /// Identita aplikace (v2) — náhled minulosti seskupuje a ikonuje
     /// stejně jako živý list. Prázdné u vzorků před migrací 5.
     pub identity_key: Option<String>,
