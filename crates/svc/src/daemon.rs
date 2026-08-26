@@ -1501,6 +1501,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             source: it.source.as_str().to_string(),
                             command: it.command,
                             enabled: it.enabled,
+                            running: it.running,
                             toggleable: it.source.toggleable() && system_reason.is_none(),
                             system: system_reason.is_some(),
                             system_reason,

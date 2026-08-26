@@ -93,7 +93,10 @@ pub struct BootItem {
     pub source: Source,
     /// Příkaz / cesta k binárce.
     pub command: String,
+    /// Nastartuje se položka automaticky (u služby typ spuštění).
     pub enabled: bool,
+    /// Běží služba právě teď? `None` u všeho, co službou není.
+    pub running: Option<bool>,
     /// Cesta k .exe (pro spárování s aplikací a ikonou).
     pub exe_path: Option<String>,
 }
@@ -165,6 +168,7 @@ fn run_keys(out: &mut Vec<BootItem>) {
                 exe_path: exe_from_command(&cmd),
                 command: cmd,
                 enabled,
+                running: None,
             });
         }
     }
@@ -212,6 +216,7 @@ fn startup_folders(out: &mut Vec<BootItem>) {
                 command: p.to_string_lossy().into_owned(),
                 exe_path: None,
                 enabled,
+                running: None,
             });
         }
     }
@@ -231,6 +236,7 @@ fn tasks(out: &mut Vec<BootItem>) {
             command: t.command.clone().unwrap_or_else(|| t.path.clone()),
             exe_path: t.command,
             enabled: t.enabled,
+            running: None,
         });
     }
 }
@@ -255,6 +261,7 @@ fn services(out: &mut Vec<BootItem>) {
             exe_path: image.as_deref().and_then(exe_from_command),
             command: image.unwrap_or_else(|| s.name.clone()),
             enabled: s.auto_start,
+            running: Some(s.running),
         });
     }
 }
@@ -283,6 +290,7 @@ fn shell_hooks(out: &mut Vec<BootItem>) {
             exe_path: exe_from_command(&v),
             command: v,
             enabled: true,
+            running: None,
         });
     }
 }

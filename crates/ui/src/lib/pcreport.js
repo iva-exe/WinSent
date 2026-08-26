@@ -126,6 +126,18 @@ function pad(s, n) {
 	return String(s ?? '').padEnd(n).slice(0, n);
 }
 
+// U služeb se „zapnuto" četlo jako „běží". Typ spuštění a aktuální stav
+// jsou přitom dvě nezávislé věci, takže mají i dvě různá slova.
+function startLabel(x) {
+	if (x.source !== 'service') return x.enabled ? 'zapnuto' : 'vypnuto';
+	return x.enabled ? 'auto' : 'ručně';
+}
+
+function runLabel(x) {
+	if (x.running == null) return '—';
+	return x.running ? 'běží' : 'stojí';
+}
+
 function num(v, n, dec = 0) {
 	return (v == null ? '—' : Number(v).toFixed(dec)).padStart(n);
 }
@@ -540,15 +552,20 @@ export function reportText(d) {
 		const third = d.startup.filter((x) => !x.system);
 		const sys = d.startup.filter((x) => x.system);
 		H(`PO SPUŠTĚNÍ (${third.length} třetích stran, ${sys.length} systémových)`);
-		L.push('  zdroj          stav     položka');
+		L.push('(„start" je nastavený typ spuštění, „běží" je stav právě teď —');
+		L.push(' u služeb to nejsou totéž: automatická služba může být zastavená)');
+		L.push('');
+		L.push('  zdroj          start    běží     položka');
 		for (const x of third) {
-			L.push(`  ${pad(x.source, 14)} ${pad(x.enabled ? 'zapnuto' : 'vypnuto', 8)} ${clean(x.name)}`);
+			L.push(`  ${pad(x.source, 14)} ${pad(startLabel(x), 8)} ${pad(runLabel(x), 8)} ${clean(x.name)}`);
 			L.push(`      ${clean(x.command)}`);
 		}
 		L.push('');
 		L.push('Systémové položky (jen výčet, přepnout je Winsent nedovolí):');
 		for (const x of sys) {
-			L.push(`  ${pad(x.source, 14)} ${pad(x.enabled ? 'zapnuto' : 'vypnuto', 8)} ${clean(x.name)} — ${x.system_reason ?? ''}`);
+			L.push(
+				`  ${pad(x.source, 14)} ${pad(startLabel(x), 8)} ${pad(runLabel(x), 8)} ${clean(x.name)} — ${x.system_reason ?? ''}`
+			);
 		}
 	}
 

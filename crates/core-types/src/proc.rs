@@ -251,7 +251,16 @@ pub struct StartupRow {
     /// service | msix | shell
     pub source: String,
     pub command: String,
+    /// Nastartuje se položka automaticky? U služby je to typ spuštění
+    /// (automaticky × ručně), NE informace o tom, jestli teď běží.
     pub enabled: bool,
+    /// Běží služba právě teď? `None` u všeho, co službou není.
+    ///
+    /// Odděleno od `enabled`, protože „zapnuto" se dá číst obojím
+    /// způsobem a čtenář záznamu si to spletl: služba nastavená na
+    /// automatický start může být zastavená a naopak ručně spouštěná
+    /// služba může běžet.
+    pub running: Option<bool>,
     /// Lze přepínat? (Winlogon hooky ne — jen varování.)
     pub toggleable: bool,
     /// Patří položka Windows? Rozhoduje se JEDNOU ve validační vrstvě

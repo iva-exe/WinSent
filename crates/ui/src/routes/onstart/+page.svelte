@@ -249,6 +249,21 @@
 									<span class="i-cmd mono" title={i.command}>{i.command}</span>
 								</span>
 								<span class="i-srclabel label-tech">{s.label}</span>
+								<!-- U služby přepínač mění typ spuštění, ne aktuální
+								     stav. Automatická služba může být zastavená, ručně
+								     spouštěná může běžet — bez tohohle štítku se to
+								     z řádku nedalo poznat a četlo se to obráceně. -->
+								{#if i.running != null}
+									<span
+										class="i-run label-tech"
+										class:live={i.running}
+										title={i.running
+											? 'Služba právě běží'
+											: 'Služba je zastavená'}
+									>
+										{i.running ? 'běží' : 'stojí'}
+									</span>
+								{/if}
 								{#if i.toggleable}
 									<button
 										class="sw"
@@ -593,6 +608,17 @@
 	.i-srclabel {
 		font-size: var(--fs-2xs);
 		white-space: nowrap;
+	}
+	.i-run {
+		font-size: var(--fs-2xs);
+		white-space: nowrap;
+		min-width: 34px;
+		text-align: right;
+		opacity: 0.55;
+	}
+	.i-run.live {
+		color: var(--ok);
+		opacity: 1;
 	}
 	/* Přepínač — vratná akce, žádný dialog (T0). */
 	.sw {

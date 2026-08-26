@@ -94,6 +94,35 @@ fn main() {
         }
     }
 
+    // 4. Typ spuštění se nesmí plést s tím, jestli služba běží.
+    //    Čtenář záznamu si „zapnuto" u služby přeložil jako „běží",
+    //    takže od protokolu 45 chodí obojí zvlášť. Služba musí mít
+    //    `running` vyplněné, cokoli jiného ho mít nesmí.
+    let svc: Vec<_> = items.iter().filter(|i| i.source == "service").collect();
+    let bez = svc.iter().filter(|i| i.running.is_none()).count();
+    let navic = items
+        .iter()
+        .filter(|i| i.source != "service" && i.running.is_some())
+        .count();
+    if bez > 0 {
+        println!("CHYBA: {bez} služeb nemá stav běhu");
+        fails += 1;
+    }
+    if navic > 0 {
+        println!("CHYBA: {navic} nesložbových položek má stav běhu");
+        fails += 1;
+    }
+    if !svc.is_empty() {
+        let bezi = svc.iter().filter(|i| i.running == Some(true)).count();
+        let auto = svc.iter().filter(|i| i.enabled).count();
+        println!("  služeb {}: automatických {auto}, běžících {bezi}", svc.len());
+        // Kdyby obě čísla vždycky seděla, znamenalo by to, že se
+        // někde pořád opisuje jedno z druhého.
+        if svc.len() > 20 && auto == bezi {
+            println!("  POZOR: typ spuštění a stav běhu sedí úplně přesně");
+        }
+    }
+
     println!(
         "\nBRÁNA onstartcheck: {}",
         if fails == 0 { "PASS" } else { "FAIL" }
