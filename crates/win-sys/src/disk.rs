@@ -175,7 +175,15 @@ fn query_model_ioctl(handle: HANDLE) -> Option<String> {
     if ok.is_err() {
         return None;
     }
-    // STORAGE_DEVICE_DESCRIPTOR: VendorIdOffset @8, ProductIdOffset @12.
+    // STORAGE_DEVICE_DESCRIPTOR — skutečné rozložení:
+    //   0  Version, 4 Size,
+    //   8  DeviceType, 9 DeviceTypeModifier,
+    //   10 RemovableMedia, 11 CommandQueueing,   ← čtyři BAJTY, ne offset
+    //   12 VendorIdOffset, 16 ProductIdOffset, 20 ProductRevisionOffset.
+    //
+    // Čtlo se od 8 a od 12, tedy o čtyři bajty vedle: jako „vendor" se
+    // bral shluk příznaků a jako „produkt" vendor. Model disku pak
+    // v záznamu chyběl nebo z něj zbyla jen značka.
     let read_str = |off_pos: usize| -> String {
         let Ok(bytes) = buf[off_pos..off_pos + 4].try_into() else {
             return String::new();
@@ -191,9 +199,16 @@ fn query_model_ioctl(handle: HANDLE) -> Option<String> {
             .unwrap_or(buf.len());
         String::from_utf8_lossy(&buf[off..end]).trim().to_string()
     };
-    let vendor = read_str(8);
-    let product = read_str(12);
-    let s = format!("{vendor} {product}").trim().to_string();
+    let vendor = read_str(12);
+    let product = read_str(16);
+    // Řada disků má vendor prázdný a celý název v produktu; jiné ho mají
+    // na začátku produktu ještě jednou („Samsung" + „Samsung SSD 990").
+    let s = if product.to_lowercase().starts_with(&vendor.to_lowercase()) {
+        product
+    } else {
+        format!("{vendor} {product}")
+    };
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
     (!s.is_empty()).then_some(s)
 }
 

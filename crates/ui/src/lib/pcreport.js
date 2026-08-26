@@ -138,6 +138,14 @@ function runLabel(x) {
 	return x.running ? 'běží' : 'stojí';
 }
 
+// Prázdný SMART není čisté vysvědčení. „ne" ve sloupci kritické se dalo
+// číst jako „disk je v pořádku", i když jsme ho ve skutečnosti vůbec
+// nepřečetli (SATA, externí disk, řadič bez průchodu).
+function critLabel(k) {
+	if (k.critical == null) return 'nezjištěno';
+	return k.critical ? 'ANO' : 'ne';
+}
+
 function num(v, n, dec = 0) {
 	return (v == null ? '—' : Number(v).toFixed(dec)).padStart(n);
 }
@@ -356,10 +364,12 @@ export function reportText(d) {
 			);
 		}
 		S('Fyzické disky (SMART)');
+		L.push('(SMART se čte z NVMe health logu; u SATA disků ho Winsent zatím');
+		L.push(' nepřečte — pomlčka znamená „nevíme", ne „v pořádku")');
 		L.push('  # model                                    tepl.  opotř.  rezerva  provoz h  kritické');
 		for (const k of h.disks ?? []) {
 			L.push(
-				`  ${String(k.index).padStart(1)} ${pad(k.model, 40)} ${num(k.temp_c, 5)}  ${num(k.used_pct, 5)}  ${num(k.spare_pct, 7)}  ${num(k.power_on_hours, 8)}  ${k.critical ? 'ANO' : 'ne'}`
+				`  ${String(k.index).padStart(1)} ${pad(k.model, 40)} ${num(k.temp_c, 5)}  ${num(k.used_pct, 5)}  ${num(k.spare_pct, 7)}  ${num(k.power_on_hours, 8)}  ${critLabel(k)}`
 			);
 		}
 		S('Svazky');
@@ -406,7 +416,7 @@ export function reportText(d) {
 		L.push('');
 		for (const k of d.volumes.health ?? []) {
 			L.push(
-				`  disk ${k.index}: ${k.model} — teplota ${k.temp_c ?? '—'} °C, opotřebení ${k.used_pct ?? '—'} %, rezerva ${k.spare_pct ?? '—'} %, provoz ${k.power_on_hours ?? '—'} h${k.critical ? '  KRITICKÉ' : ''}`
+				`  disk ${k.index}: ${k.model} — teplota ${k.temp_c ?? '—'} °C, opotřebení ${k.used_pct ?? '—'} %, rezerva ${k.spare_pct ?? '—'} %, provoz ${k.power_on_hours ?? '—'} h${k.critical ? '  KRITICKÉ' : k.critical == null ? '  (SMART nečitelný)' : ''}`
 			);
 		}
 	}
