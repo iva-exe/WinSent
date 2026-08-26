@@ -17,6 +17,10 @@ pub struct NetTotals {
 const IF_TYPE_SOFTWARE_LOOPBACK: u32 = 24;
 // MIB_IF_ROW2.OperStatus — IfOperStatusUp.
 const IF_OPER_STATUS_UP: i32 = 1;
+// MIB_IF_ROW2.InterfaceAndOperStatusFlags — bit 0 HardwareInterface,
+// bit 1 FilterInterface.
+const FLAG_HARDWARE: u8 = 1;
+const FLAG_FILTER: u8 = 2;
 
 /// Sečte InOctets/OutOctets všech aktivních nesmyčkových rozhraní.
 pub fn net_totals() -> Result<NetTotals, Error> {
@@ -32,6 +36,10 @@ pub fn net_totals() -> Result<NetTotals, Error> {
         }
 
         let mut totals = NetTotals::default();
+        // Záchranný součet pro případ, že se žádné rozhraní neoznačí za
+        // hardwarové (virtuální stroje, exotické ovladače). Lepší číslo
+        // s filtry než nula.
+        let mut fallback = NetTotals::default();
         let count = (*table).NumEntries as usize;
         // Řádky leží inline za hlavičkou tabulky.
         let rows = std::slice::from_raw_parts((*table).Table.as_ptr(), count);
@@ -39,10 +47,32 @@ pub fn net_totals() -> Result<NetTotals, Error> {
             if row.Type == IF_TYPE_SOFTWARE_LOOPBACK || row.OperStatus.0 != IF_OPER_STATUS_UP {
                 continue;
             }
+            let flags = row.InterfaceAndOperStatusFlags._bitfield;
+            // NDIS filtry (QoS Packet Scheduler, WFP MAC Layer, Npcap,
+            // antivirové filtry) se v tabulce tváří jako ethernetová
+            // rozhraní se stejným ifType i stavem — a nesou KOPII čítačů
+            // adaptéru, na kterém sedí. Na tomhle stroji jsou tři, takže
+            // se celkový provoz počítal čtyřikrát: 52,7 GB místo 13,2 GB.
+            // Rozliší je jen bitfield.
+            //
+            // Zároveň se přeskočí virtuální adaptéry (Wi-Fi Direct,
+            // tunely, VPN) — jejich provoz už prošel fyzickou linkou
+            // a započítal by se podruhé.
+            if flags & FLAG_FILTER != 0 {
+                continue;
+            }
+            fallback.rx_bytes = fallback.rx_bytes.saturating_add(row.InOctets);
+            fallback.tx_bytes = fallback.tx_bytes.saturating_add(row.OutOctets);
+            if flags & FLAG_HARDWARE == 0 {
+                continue;
+            }
             totals.rx_bytes = totals.rx_bytes.saturating_add(row.InOctets);
             totals.tx_bytes = totals.tx_bytes.saturating_add(row.OutOctets);
         }
         FreeMibTable(table as *const _);
+        if totals.rx_bytes == 0 && totals.tx_bytes == 0 {
+            return Ok(fallback);
+        }
         Ok(totals)
     }
 }

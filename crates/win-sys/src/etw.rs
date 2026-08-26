@@ -304,8 +304,9 @@ pub struct Consumer {
 
 impl Consumer {
     /// Odebere nasčítané síťové bajty per PID od minulého volání.
-    /// Mapa se vymění za prázdnou — volá se 1×/s ze sampleru a delta
-    /// za tu sekundu je rovnou B/s.
+    /// Mapa se vymění za prázdnou. Vrací BAJTY za uplynulý interval,
+    /// ne B/s — dělení časem patří volajícímu, protože smyčka sampleru
+    /// neběží pořád stejně rychle (burst 10 Hz po záseku).
     pub fn take_net(&self) -> NetTotalsByPid {
         let mut net = self._ctx.net.lock().expect("net totals lock");
         std::mem::take(&mut *net)

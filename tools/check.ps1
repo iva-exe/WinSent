@@ -26,7 +26,7 @@ $all = @(
     'iconcheck', 'incidents', 'v8check', 'v8dcheck', 'v9check', 'v9netcheck',
     'v9conncheck', 'v9seccheck', 'v9usercheck', 'permusecheck', 'v10check', 'memcheck',
     'onstartcheck', 'updatecheck', 'purgecheck', 'gpucheck', 'permlive',
-    'hwgroupcheck', 'idcheck'
+    'hwgroupcheck', 'idcheck', 'netcheck'
 )
 $gates = if ($Only) { $Only } else { $all }
 
@@ -34,7 +34,7 @@ Write-Host "Winsent — brány ($($gates.Count))" -ForegroundColor Cyan
 
 # ── Build (jednou, pro všechny) ────────────────────────────────────
 $t0 = [Diagnostics.Stopwatch]::StartNew()
-& cargo build -q -p ipc -p identity --examples
+& cargo build -q -p ipc -p identity -p win-sys --examples
 if ($LASTEXITCODE -ne 0) { throw "build bran selhal ($LASTEXITCODE)" }
 Write-Host ("  build {0:N0} s" -f $t0.Elapsed.TotalSeconds) -ForegroundColor DarkGray
 

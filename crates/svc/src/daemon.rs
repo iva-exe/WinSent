@@ -177,16 +177,39 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 // Po záseku 10 s burst na 10 Hz (SPEC 3.3) — jemnější
                 // živý obraz okna; do DB jde pořád max 1 vzorek/s.
                 let mut burst_until = Instant::now();
+                // Kdy se naposledy odebrala síťová statistika z ETW —
+                // interval smyčky není konstantní (viz burst níž).
+                let mut last_net_take = Instant::now();
 
                 while !stop.load(Ordering::SeqCst) {
                     match collector_proc::tick(&mut state) {
                         Ok((procs, system)) => {
                             let ts = unix_now();
-                            // Trafik per PID od minulého ticku (v9):
-                            // tick je 1 s, takže delta je rovnou B/s.
+                            // Trafik per PID od minulého ticku (v9).
+                            //
+                            // Nasčítané bajty je nutné vydělit skutečně
+                            // uplynulým časem, ne konstantní sekundou:
+                            // po záseku jede smyčka 10 Hz a rychlosti by
+                            // vyšly desetkrát nižší — přesně v okamžiku,
+                            // kdy se uživatel dívá, co systém brzdí.
                             if let Some(etw_state) = etw.as_ref() {
-                                *net_rates.lock().expect("net rates lock") =
-                                    collector_etw::take_net(etw_state);
+                                let now = Instant::now();
+                                let secs = now.duration_since(last_net_take).as_secs_f64();
+                                last_net_take = now;
+                                let raw = collector_etw::take_net(etw_state);
+                                let scale = if secs > 0.05 { 1.0 / secs } else { 1.0 };
+                                *net_rates.lock().expect("net rates lock") = raw
+                                    .into_iter()
+                                    .map(|(pid, (rx, tx))| {
+                                        (
+                                            pid,
+                                            (
+                                                (rx as f64 * scale) as u64,
+                                                (tx as f64 * scale) as u64,
+                                            ),
+                                        )
+                                    })
+                                    .collect();
                             }
                             // Pády procesů z ETW exit kódů (SPEC 16.1).
                             if let Some(etw_state) = etw.as_mut() {
