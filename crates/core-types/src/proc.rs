@@ -522,7 +522,10 @@ pub struct ConnectionReport {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProtectionReport {
     /// Antiviry ze Security Center: (jméno, běží, aktuální definice).
-    pub av: Vec<(String, bool, bool)>,
+    /// (jméno, běží realtime, aktuální definice, osiřelá registrace).
+    /// Osiřelá = program, který se registroval, na disku není — Security
+    /// Center registraci po odinstalaci nemusí uklidit.
+    pub av: Vec<(String, bool, bool, bool)>,
     /// Defender detaily, když je aktivní: (realtime, stáří definic
     /// ve dnech, stáří rychlého skenu ve dnech).
     pub defender: Option<(bool, Option<u32>, Option<u32>)>,

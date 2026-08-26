@@ -359,28 +359,58 @@
 		purgeBusy = false;
 	}
 
+	// Průběh úklidu: { app, phase } — phase 'work' | 'scan' | 'done' | 'fail'.
+	// Okno drží, dokud není inventář přeskenovaný. Bez toho by uživatel
+	// viděl smazanou položku dál v seznamu a myslel si, že se nic
+	// nestalo — seznam totiž čte databázi, ne registr, a ta se sama
+	// obnovuje až po hodinách.
+	let purgeRun = $state(null);
+
 	async function confirmPurge() {
 		if (!purgePlan?.plan || purgeBusy) return;
 		const app = purgePlan.app;
 		const planId = purgePlan.plan.plan_id;
 		purgeBusy = true;
 		purgePlan = null;
+		purgeRun = { app, phase: 'work', detail: '' };
 		try {
 			const r = await invoke('execute_plan', { planId });
 			const ok = r.verdict === 'allow' && r.outcome === 'ok';
-			uninstToast = {
-				kind: ok ? 'ok' : 'deny',
-				text: ok
-					? `${app.display_name}: záznam z registru odstraněn`
-					: (r.deny_reason ?? `nepodařilo se (${r.outcome ?? 'chyba'})`)
-			};
-			if (ok && selected?.identity_key === app.identity_key) selected = null;
-			load();
+			if (!ok) {
+				purgeRun = {
+					app,
+					phase: 'fail',
+					detail: r.deny_reason ?? `nepodařilo se (${r.outcome ?? 'chyba'})`
+				};
+				purgeBusy = false;
+				return;
+			}
+			// Zápis inventáře do databáze jde přes frontu, takže razítko
+			// „sken hotový" může dorazit o kousek dřív než samotná data.
+			// Čekáme proto na to, co nás zajímá — až položka ze seznamu
+			// zmizí — a ne jen na razítko.
+			purgeRun = { app, phase: 'scan', detail: '' };
+			try {
+				const before = (await invoke('query_inv_status')).last_scan_ts;
+				await invoke('rescan_apps');
+				await waitForScan(before);
+			} catch {
+				/* sken se nepovedlo vyžádat — seznam se srovná sám později */
+			}
+			await load();
+			for (let i = 0; i < 10 && apps.some((a) => a.identity_key === app.identity_key); i++) {
+				await new Promise((r) => setTimeout(r, 700));
+				await load();
+			}
+			if (selected?.identity_key === app.identity_key) {
+				selected = null;
+				map = [];
+			}
+			purgeRun = { app, phase: 'done', detail: '' };
 		} catch (e) {
-			uninstToast = { kind: 'deny', text: String(e) };
+			purgeRun = { app, phase: 'fail', detail: String(e) };
 		}
 		purgeBusy = false;
-		setTimeout(() => (uninstToast = null), 6000);
 	}
 
 	// Hlídá, jestli odinstalátor pořád běží. Odinstalátory se často samy
@@ -502,7 +532,7 @@
 		</div>
 		<button
 			class="refresh"
-			class:spin={rescanning}
+			class:spinning={rescanning}
 			onclick={rescan}
 			disabled={rescanning}
 			title={rescanning ? 'Skenuji inventář…' : 'Přeskenovat inventář'}
@@ -742,6 +772,51 @@
 		</div>
 	{/if}
 
+
+	<!-- ── Úklid běží: okno drží, dokud se seznam nesrovná ── -->
+	{#if purgeRun}
+		<div class="dlg-backdrop" role="presentation">
+			<div class="dlg" role="dialog">
+				{#if purgeRun.phase === 'fail'}
+					<h2>Úklid se nepovedl</h2>
+					<p class="d-why">{purgeRun.detail}</p>
+					<div class="d-actions">
+						<button class="d-btn" onclick={() => (purgeRun = null)}>Zavřít</button>
+					</div>
+				{:else if purgeRun.phase === 'done'}
+					<h2>Hotovo</h2>
+					<p class="d-note">
+						Po programu <b>{purgeRun.app.display_name}</b> už v registru nic není a seznam
+						je srovnaný s realitou.
+					</p>
+					<div class="d-actions">
+						<button class="d-btn primary" onclick={() => (purgeRun = null)}>Zavřít</button>
+					</div>
+				{:else}
+					<h2>Uklízím záznam po {purgeRun.app.display_name}</h2>
+					<ul class="d-steps">
+						<li class:d-active={purgeRun.phase === 'work'}>
+							{#if purgeRun.phase === 'work'}
+								<RefreshCw size={14} class="ico-spin" />
+							{:else}✓{/if}
+							mažu zápis v registru a prázdné složky
+						</li>
+						<li class:d-active={purgeRun.phase === 'scan'}>
+							{#if purgeRun.phase === 'scan'}
+								<RefreshCw size={14} class="ico-spin" />
+							{:else}·{/if}
+							přeskenovávám seznam programů
+						</li>
+					</ul>
+					<p class="d-note">
+						Zavřít to nejde — seznam programů čte databázi, ne registr, takže dokud se
+						nepřeskenuje, ukazoval by smazanou položku dál. Chvilku to trvá.
+					</p>
+				{/if}
+			</div>
+		</div>
+	{/if}
+
 	<!-- ── Běžící odinstalátor: okno má uživatel, my jen čekáme ── -->
 	{#if uninstRunning}
 		<div class="dlg-backdrop" role="presentation">
@@ -872,7 +947,10 @@
 	.refresh:disabled {
 		cursor: default;
 	}
-	.refresh.spin :global(svg) {
+	/* Točí se JEN ikona. Třída se schválně nejmenuje „spin" — tak se
+	   jmenuje globální pravidlo ve Files a to by roztočilo celý rámeček
+	   tlačítka. */
+	.refresh.spinning :global(svg) {
 		animation: refresh-spin 1.1s linear infinite;
 	}
 	@keyframes refresh-spin {
@@ -988,6 +1066,24 @@
 	.dlg h2 {
 		font-size: 1.05rem;
 		margin-bottom: 10px;
+	}
+	/* Krok, který zrovna běží — zbytek zůstává tlumený. */
+	.d-steps li.d-active {
+		color: var(--text);
+	}
+	.d-steps li {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+	:global(.d-steps .ico-spin) {
+		animation: purge-spin 1.1s linear infinite;
+		flex: none;
+	}
+	@keyframes purge-spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 	.d-steps {
 		list-style: none;

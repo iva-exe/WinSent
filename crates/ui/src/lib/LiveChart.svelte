@@ -5,7 +5,6 @@
 	//  • kolečko        = posun v čase (dolů = do minulosti); u přítomnosti
 	//                     snap na živě — v minulosti se view nehýbe
 	//  • Ctrl+kolečko   = zoom (30 s – 1 h)
-	//  • dvojklik       = přiblížit na místo pod kurzorem
 	//  • klik na šipku  = přejít na incident v Incidents
 	//  • klik do grafu  = zámek na bod v čase (linka + tečka na křivce,
 	//                     nezávislé na myši); přepíše se dalším klikem,
@@ -374,30 +373,6 @@
 		}
 	}
 
-	// Dvojklik přiblíží na místo, kam uživatel klikl: rozsah na polovinu
-	// a okno posunuté tak, aby ten okamžik zůstal pod kurzorem. Bez
-	// druhé části by se zoom táhl k pravému okraji a hledané místo by
-	// z obrazu uteklo.
-	function onDblClick(e) {
-		if (!u) return;
-		// Na šipce incidentu dvojklik nezoomuje — první klik už odešel
-		// na stránku incidentu.
-		if (markerAt(e.clientX, e.clientY)) return;
-		e.preventDefault();
-		const last = lastTs();
-		if (last == null) return;
-		const rect = u.over.getBoundingClientRect();
-		const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / Math.max(rect.width, 1)));
-		const at = u.posToVal(e.clientX - rect.left, 'x');
-		const next = Math.round(Math.max(SPAN_MIN, span / 2));
-		if (next === span) return;
-		span = next;
-		// Konec okna = bod pod kurzorem + kolik z nového rozsahu má být
-		// napravo od něj.
-		setEnd(at + next * (1 - frac));
-		applyScale();
-	}
-
 	// Tažení spodní čáry (pan indikátoru) — grab & scroll historií.
 	let trackEl;
 	let trackDrag = false;
@@ -520,7 +495,6 @@
 		u.over.appendChild(pinLabelEl);
 		u.over.addEventListener('wheel', onWheel, { passive: false });
 		u.over.addEventListener('click', onClick);
-		u.over.addEventListener('dblclick', onDblClick);
 		u.over.addEventListener('mousedown', onMouseDown);
 		u.over.addEventListener('mousemove', onMouseMove);
 		u.over.addEventListener('mouseup', onMouseUp);

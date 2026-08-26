@@ -35,8 +35,15 @@ fn main() {
     if p.av.is_empty() {
         println!("--  Security Center nehlásí žádný AV (server edice?)");
     } else {
-        for (name, enabled, fresh) in &p.av {
-            println!("OK  AV: {name} — běží: {enabled}, aktuální: {fresh}");
+        for (name, enabled, fresh, leftover) in &p.av {
+            println!(
+                "OK  AV: {name} — běží: {enabled}, aktuální: {fresh}{}",
+                if *leftover {
+                    " · POZOR: zbytek po odinstalaci, program na disku není"
+                } else {
+                    ""
+                }
+            );
         }
     }
     if p.fw_private.is_none() && p.fw_public.is_none() {

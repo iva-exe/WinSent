@@ -13,9 +13,9 @@ pub fn protection() -> ProtectionReport {
     let p = win_sys::security::protection();
     // Security Center vrací tentýž produkt klidně třikrát (registrace
     // per komponenta) — duplicity jsou šum, ne informace.
-    let mut av: Vec<(String, bool, bool)> = Vec::new();
+    let mut av: Vec<(String, bool, bool, bool)> = Vec::new();
     for a in p.av {
-        let row = (a.name, a.enabled, a.up_to_date);
+        let row = (a.name, a.enabled, a.up_to_date, a.leftover);
         if !av.contains(&row) {
             av.push(row);
         }

@@ -12,6 +12,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { daemon, startDaemonPolling } from '$lib/daemon.svelte.js';
+	import { updater, startUpdateChecks, runUpdate } from '$lib/updater.svelte.js';
 	import {
 		House,
 		Activity,
@@ -122,38 +123,6 @@
 	}
 
 
-	// ── Aktualizace aplikace ──
-	// Kontroluje se při startu a pak jednou za šest hodin. Upozornění
-	// je trvalé, ne mizící bublina: nová verze je stav, ne událost —
-	// a kdo si toho zrovna nevšiml, nemá se to dozvědět jen jednou.
-	let update = $state(null); // { current, latest }
-	let updateBusy = $state(false);
-	let updateError = $state('');
-
-	async function checkUpdate() {
-		try {
-			const r = await invoke('check_update');
-			update = r.available ? { current: r.current, latest: r.latest } : null;
-		} catch {
-			// Bez sítě se prostě nic nenabídne — křičet o tom nemá smysl.
-		}
-	}
-
-	async function doUpdate() {
-		if (updateBusy) return;
-		updateBusy = true;
-		updateError = '';
-		try {
-			// Instalátor si sám zastaví službu, zavře tohle okno, přepíše
-			// binárky a aplikaci zase spustí. Odsud se tedy nedočkáme
-			// odpovědi — okno zmizí dřív.
-			await invoke('run_update');
-		} catch (e) {
-			updateError = String(e);
-			updateBusy = false;
-		}
-	}
-
 	onMount(() => {
 		startDaemonPolling();
 		async function pollUptime() {
@@ -166,14 +135,12 @@
 		}
 		pollUptime();
 		pollBadges();
-		checkUpdate();
+		startUpdateChecks();
 		const t = setInterval(pollUptime, 5000);
 		const t2 = setInterval(pollBadges, 60000);
-		const t3 = setInterval(checkUpdate, 6 * 3600 * 1000);
 		return () => {
 			clearInterval(t);
 			clearInterval(t2);
-			clearInterval(t3);
 		};
 	});
 </script>
@@ -272,21 +239,21 @@
 	     Nemizí samo a nedá se odkliknout: stará verze je stav, který
 	     platí, dokud se neaktualizuje. Zavírací křížek by z toho udělal
 	     oznámení, které si člověk odbaví a zapomene. -->
-	{#if update}
+	{#if updater.available}
 		<div class="upd" transition:fade={{ duration: 200 }}>
 			<Download size={17} />
 			<div class="upd-text">
 				<b>Je dostupná nová verze</b>
 				<span class="upd-ver">
-					máš <span class="mono">{update.current}</span> · nová
-					<span class="mono">{update.latest}</span>
+					máš <span class="mono">{updater.current}</span> · nová
+					<span class="mono">{updater.latest}</span>
 				</span>
-				{#if updateError}
-					<span class="upd-err">{updateError}</span>
+				{#if updater.runError}
+					<span class="upd-err">{updater.runError}</span>
 				{/if}
 			</div>
-			<button class="upd-btn" disabled={updateBusy} onclick={doUpdate}>
-				{updateBusy ? 'stahuji…' : 'Aktualizovat'}
+			<button class="upd-btn" disabled={updater.busy} onclick={runUpdate}>
+				{updater.busy ? 'stahuji…' : 'Aktualizovat'}
 			</button>
 		</div>
 	{/if}

@@ -26,6 +26,8 @@
 		MonitorUp,
 		Shield,
 		ShieldCheck,
+		ShieldAlert,
+		ShieldOff,
 		TriangleAlert,
 		UserCheck
 	} from 'lucide-svelte';
@@ -59,8 +61,13 @@
 
 		// Antivirus.
 		const av = p.av.filter(([n]) => n);
-		if (av.length) {
-			for (const [name, enabled, fresh] of av) {
+		// Osiřelé registrace se nepočítají za ochranu. Security Center
+		// po odinstalaci registraci nemusí uklidit, takže tam roky visí
+		// antivirus, který na počítači není — a tvrdí, že běží.
+		const live = av.filter(([, , , leftover]) => !leftover);
+		const gone = av.filter(([, , , leftover]) => leftover);
+		if (live.length) {
+			for (const [name, enabled, fresh] of live) {
 				const d = p.defender;
 				const extra =
 					d && name.toLowerCase().includes('defender')
@@ -84,6 +91,30 @@
 				state: 'nenalezen',
 				detail: 'Security Center žádný nehlásí',
 				tone: 'warn'
+			});
+		}
+		// Dva současně běžící antiviry si navzájem berou soubory pod
+		// rukama — je to informace, ne příkaz: který z nich odejde, je
+		// rozhodnutí uživatele.
+		const active = live.filter(([, enabled]) => enabled).map(([n]) => n);
+		if (active.length > 1) {
+			rows.push({
+				icon: ShieldAlert,
+				name: 'Dva antiviry naráz',
+				state: `${active.length} současně`,
+				detail: `${active.join(' + ')} — oba hlídají soubory v reálném čase`,
+				tone: 'warn'
+			});
+		}
+		// Zbytek po odinstalovaném antiviru: ne poplach, ale vysvětlení,
+		// proč ho Windows možná pořád někde uvádějí.
+		for (const [name] of gone) {
+			rows.push({
+				icon: ShieldOff,
+				name,
+				state: 'zbytek po odinstalaci',
+				detail: 'registrace ve Windows zůstala, program na disku není — nechrání nic',
+				tone: 'dim'
 			});
 		}
 

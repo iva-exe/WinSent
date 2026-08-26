@@ -7,6 +7,17 @@
 	import Num from '$lib/Num.svelte';
 	import { prefs, setPref } from '$lib/prefs.svelte.js';
 
+	import { updater, checkUpdate, runUpdate } from '$lib/updater.svelte.js';
+
+	// Kdy naposledy. Přesný čas nikoho nezajímá, „před chvílí" ano.
+	let lastCheck = $derived.by(() => {
+		if (!updater.checkedAt) return 'zatím ne';
+		const s = Math.round((Date.now() - updater.checkedAt) / 1000);
+		if (s < 90) return 'před chvílí';
+		const m = Math.round(s / 60);
+		return m < 90 ? `před ${m} min` : `před ${Math.round(m / 60)} h`;
+	});
+
 	let usage = $state(null);
 	let error = $state('');
 
@@ -111,6 +122,52 @@
 			</span>
 		</button>
 	</section>
+
+	<section class="card">
+		<header class="card-head">
+			<span class="label-tech">// settings / verze a aktualizace</span>
+		</header>
+		<div class="ver-grid">
+			<div>
+				<span class="label-tech">nainstalovaná verze</span>
+				<span class="ver-val value-mono">{updater.current || '—'}</span>
+			</div>
+			<div>
+				<span class="label-tech">verze k dispozici</span>
+				<span class="ver-val value-mono" class:new={updater.available}>
+					{updater.latest || '—'}
+				</span>
+			</div>
+			<div>
+				<span class="label-tech">naposledy zjištěno</span>
+				<span class="ver-val value-mono small">{lastCheck}</span>
+			</div>
+		</div>
+		<p class="note ver-note">
+			{#if updater.available}
+				Nová verze je připravená. Aktualizace zavře aplikaci i hlídače na pozadí, přepíše
+				soubory a spustí to znovu — Windows se cestou zeptají na práva správce.
+			{:else if updater.error}
+				Zjistit verzi se nepodařilo: {updater.error}
+			{:else if updater.current}
+				Máš aktuální verzi. Kontroluje se při startu a pak jednou za šest hodin.
+			{:else}
+				Aplikace neběží z instalace (vývojový strom) — aktualizace se tu nenabízí.
+			{/if}
+		</p>
+		{#if updater.runError}
+			<p class="note ver-err">{updater.runError}</p>
+		{/if}
+		<div class="ver-actions">
+			<button class="v-btn" onclick={checkUpdate}>Zkontrolovat teď</button>
+			{#if updater.available}
+				<button class="v-btn primary" disabled={updater.busy} onclick={runUpdate}>
+					{updater.busy ? 'stahuji…' : 'Aktualizovat'}
+				</button>
+			{/if}
+		</div>
+	</section>
+
 	<section class="card">
 		<header class="card-head">
 			<span class="label-tech">// settings / konfigurace</span>
@@ -209,6 +266,69 @@
 		font-size: var(--fs-md);
 		color: var(--text-dim);
 		line-height: 1.5;
+	}
+	/* Verze: tři údaje vedle sebe, popisky ve stejném jazyce jako
+	   jinde v aplikaci (mono verzálky). */
+	.ver-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+		gap: 0.8rem;
+		margin-bottom: 0.7rem;
+	}
+	.ver-grid > div {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+	.ver-val {
+		font-size: var(--fs-lg);
+		color: var(--text);
+	}
+	.ver-val.small {
+		font-size: var(--fs-sm);
+		color: var(--text-dim);
+	}
+	/* Jantarová jen když je co stáhnout — jinak by to křičelo pořád. */
+	.ver-val.new {
+		color: var(--warn);
+	}
+	.ver-note {
+		margin: 0 0 0.7rem;
+	}
+	.ver-err {
+		margin: 0 0 0.7rem;
+		color: var(--danger);
+	}
+	.ver-actions {
+		display: flex;
+		gap: 0.5rem;
+	}
+	.v-btn {
+		padding: 6px 13px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--surface);
+		color: var(--text-dim);
+		font: inherit;
+		font-size: var(--fs-sm);
+		cursor: pointer;
+	}
+	.v-btn:hover:not(:disabled) {
+		background: var(--surface-hover);
+		color: var(--text);
+	}
+	.v-btn.primary {
+		background: var(--warn);
+		border-color: var(--warn);
+		color: #1b1200;
+		font-weight: 600;
+	}
+	.v-btn.primary:hover:not(:disabled) {
+		filter: brightness(1.12);
+	}
+	.v-btn:disabled {
+		opacity: 0.6;
+		cursor: wait;
 	}
 	.tiles {
 		display: flex;

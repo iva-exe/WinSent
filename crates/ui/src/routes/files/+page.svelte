@@ -351,14 +351,14 @@
 			<span class="label-tech">// úklid disků</span>
 			{#if cleanup?.indexing?.length && !indexingDone}
 				<span class="c-status">
-					<Loader size={15} class="spin" />
+					<Loader size={15} class="ico-spin" />
 					indexuji disky —
 					{#each cleanup.indexing as [l, n, done, err] (l)}
 						<span class="mono" class:err={!!err}>{l}: {done ? '✓' : n.toLocaleString('cs-CZ')}</span>
 					{/each}
 				</span>
 			{:else if cleanup?.running}
-				<span class="c-status"><Loader size={15} class="spin" /> analyzuji obsah disků…</span>
+				<span class="c-status"><Loader size={15} class="ico-spin" /> analyzuji obsah disků…</span>
 			{:else if cleanup?.report}
 				<span class="c-status dim">
 					analýza hotová · v duplicitách zbytečně ~{fmtSize(dupWaste)}
@@ -616,7 +616,10 @@
 		background: var(--surface-hover);
 		color: var(--text);
 	}
-	:global(.spin) {
+	/* Scoped, ne :global(.spin): globální pravidlo téhle třídy točilo
+	   i tlačítko obnovení v Programs, které má tutéž třídu — a tam se
+	   měla točit jen ikona, ne celý rámeček. */
+	:global(.c-status .ico-spin) {
 		animation: spin 1.1s linear infinite;
 	}
 	@keyframes spin {

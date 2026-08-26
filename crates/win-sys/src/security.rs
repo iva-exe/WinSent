@@ -13,6 +13,14 @@ pub struct AvProduct {
     pub enabled: bool,
     /// Jsou definice aktuální? (bit 0x10 = zastaralé)
     pub up_to_date: bool,
+    /// Program, který se registroval, na disku NENÍ.
+    ///
+    /// Security Center registraci po odinstalaci nemusí uklidit, takže
+    /// tam roky visí antivirus, který na počítači dávno není — a hlásí
+    /// se jako běžící. Bez tohohle příznaku bychom uživateli tvrdili,
+    /// že má zapnutou ochranu, kterou nemá, a ještě ho strašili dvěma
+    /// antiviry naráz.
+    pub leftover: bool,
 }
 
 /// Detaily Defenderu z jeho vlastního WMI (jen když je aktivní).
@@ -81,8 +89,8 @@ pub fn protection() -> Protection {
 fn av_products() -> Vec<AvProduct> {
     crate::wmi::query(
         r"root\SecurityCenter2",
-        "SELECT displayName, productState FROM AntiVirusProduct",
-        &["displayName", "productState"],
+        "SELECT displayName, productState, pathToSignedProductExe FROM AntiVirusProduct",
+        &["displayName", "productState", "pathToSignedProductExe"],
     )
     .into_iter()
     .filter_map(|r| {
@@ -92,9 +100,31 @@ fn av_products() -> Vec<AvProduct> {
             // Dokumentované bity WSC_SECURITY_PRODUCT_STATE.
             enabled: state & 0x1000 != 0,
             up_to_date: state & 0x10 == 0,
+            leftover: product_gone(r.get("pathToSignedProductExe").map(|s| s.as_str())),
         })
     })
     .collect()
+}
+
+/// Je registrace osiřelá — binárka, kterou uvádí, na disku není?
+///
+/// Defender se registruje jako `windowsdefender://`, což cesta k souboru
+/// není; tam se nic netvrdí. Když cesta chybí nebo je nečitelná, taky
+/// mlčíme — prohlásit ochranu za neexistující kvůli neznalosti by bylo
+/// horší než ji nechat být.
+fn product_gone(path: Option<&str>) -> bool {
+    let Some(p) = path.map(str::trim).filter(|p| !p.is_empty()) else {
+        return false;
+    };
+    // Cesta k souboru = svazek a lomítko. Cokoliv jiného (URI schéma)
+    // neumíme ověřit.
+    let looks_like_path = p.len() > 3
+        && p.as_bytes().get(1) == Some(&b':')
+        && (p.contains(char::from(92u8)) || p.contains('/'));
+    if !looks_like_path {
+        return false;
+    }
+    matches!(std::path::Path::new(p).try_exists(), Ok(false))
 }
 
 /// Detaily Defenderu (root\Microsoft\Windows\Defender) — potřebuje
