@@ -50,8 +50,14 @@ fn main() {
     println!("  součet z win-sys:    {} B rx", totals.rx_bytes);
     println!("  hardware bez filtrů: {hw_rx} B rx");
 
-    if totals.rx_bytes != hw_rx && hw_rx > 0 {
-        println!("FAIL: součet neodpovídá hardwarovým rozhraním");
+    // Obě čísla vznikla ze dvou různých čtení tabulky, mezi kterými
+    // stihl protéct provoz — čítače jsou kumulativní a rostou pořád.
+    // Porovnává se proto s tolerancí; hledá se násobek, ne bajt.
+    // (Naměřeno: brána padala na rozdílu 66 bajtů.)
+    let rozdil = totals.rx_bytes.abs_diff(hw_rx);
+    let tolerance = (hw_rx / 100).max(1_000_000);
+    if hw_rx > 0 && rozdil > tolerance {
+        println!("FAIL: součet neodpovídá hardwarovým rozhraním (rozdíl {rozdil} B)");
         std::process::exit(1);
     }
     // Dvojnásobek nejsilnějšího rozhraní by znamenal, že se něco počítá
