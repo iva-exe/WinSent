@@ -165,24 +165,42 @@
 		padding: 5px;
 		border: 1px solid var(--border-strong, var(--border));
 		border-radius: var(--radius-lg);
-		/* Podklad se bere z `--bg`, ne z `--surface`.
-		   `--surface` je světlý závoj (bílá na 4 %), takže menu z něj
-		   vycházelo skoro průhledné a text pod ním prosvítal.
-		   Za menu nemá být nic čitelného: samotné rozostření na to
-		   nestačí, velký text zůstane rozpoznatelný i při 40 px, proto
-		   nese hlavní práci krytí a rozostření jen změkčuje okraje. */
-		background: color-mix(in srgb, var(--bg) 97%, transparent);
-		backdrop-filter: blur(40px) saturate(150%);
-		-webkit-backdrop-filter: blur(40px) saturate(150%);
+		/* Za menu nemá být nic čitelného.
+		   Okno aplikace je průhledné (`transparent: true` v tauri.conf)
+		   a `body` nemá pozadí — spoléhá se na blur okna. Prvek nad ním
+		   proto musí mít vlastní krytí; rozostření samo nestačí, velký
+		   text zůstane rozpoznatelný i při 40 px.
+		   Nejdřív plná barva jako záchrana, pak průsvitná varianta:
+		   kdyby `color-mix` cokoli odmítlo, zůstane aspoň neprůhledné
+		   pozadí místo skla, přes které je vidět všechno. */
+		background: #14151a;
+		background: color-mix(in srgb, var(--bg) 96%, transparent);
+		backdrop-filter: blur(64px) saturate(160%);
+		-webkit-backdrop-filter: blur(64px) saturate(160%);
 		box-shadow:
-			0 12px 32px rgba(0, 0, 0, 0.45),
-			0 2px 8px rgba(0, 0, 0, 0.3);
-		animation: mi-in 0.09s ease-out;
+			0 12px 32px rgba(0, 0, 0, 0.55),
+			0 2px 8px rgba(0, 0, 0, 0.4);
+		animation: mi-in 0.09s ease-out both;
 	}
+	/* Obě krajní snímky vypsané schválně.
+	   S pouhým `from` a bez `fill-mode` zůstane prvek na `opacity: 0`
+	   vždycky, když se animace nerozběhne nebo se zasekne na začátku —
+	   naměřeno ve vývojovém serveru: playState "running", currentTime 0,
+	   computed opacity 0. Menu pak není průhledné, ale rovnou neviditelné. */
 	@keyframes mi-in {
 		from {
 			opacity: 0;
 			transform: translateY(-3px) scale(0.985);
+		}
+		to {
+			opacity: 1;
+			transform: none;
+		}
+	}
+	/* Kdo si vypnul animace, nesmí přijít o menu. */
+	@media (prefers-reduced-motion: reduce) {
+		.menu {
+			animation: none;
 		}
 	}
 	.head {

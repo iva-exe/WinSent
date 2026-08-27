@@ -102,3 +102,27 @@ Write-Host ""
 Write-Host "Vydáno: $version" -ForegroundColor Green
 Write-Host "Testeři dostanou aktualizaci spuštěním WinsentSetup.exe."
 Write-Host "Instalátor k rozeslání: $(Join-Path $rel 'WinsentSetup.exe')"
+
+# ── Co je NAINSTALOVANÉ ────────────────────────────────────────────
+# Tenhle skript nic neinstaluje: staví, kopíruje do release\ a pushuje.
+# Do C:\Program Files\Winsent zapisuje jen WinsentSetup.exe. Mezi
+# „vydáno" a „nainstalováno" tak bylo slepé místo a skript mlčky končil
+# nad zastaralou instalací.
+#
+# Stálo to dvě kola ladění naslepo: dvě opravy vzhledu se vydaly,
+# nenainstalovaly a hodnotil se pořád tentýž starý build. Binárky mají
+# navíc shodnou velikost, takže ani ruční porovnání nic neodhalilo —
+# liší se až hash.
+$instVer = Join-Path ${env:ProgramFiles} 'Winsent\version.txt'
+if (Test-Path $instVer) {
+    $ted = (Get-Content $instVer -Raw).Trim()
+    if ($ted -ne $version) {
+        Write-Host ""
+        Write-Host "POZOR: nainstalovaná verze je pořád $ted" -ForegroundColor Yellow
+        Write-Host "       Dokud nespustíš instalátor, testuješ starou binárku." -ForegroundColor Yellow
+    } else {
+        Write-Host "Nainstalovaná verze souhlasí." -ForegroundColor DarkGray
+    }
+} else {
+    Write-Host "Winsent tu není nainstalovaný — není co porovnávat." -ForegroundColor DarkGray
+}
