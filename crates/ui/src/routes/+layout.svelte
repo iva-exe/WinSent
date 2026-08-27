@@ -19,6 +19,7 @@
 		Activity,
 		Blocks,
 		Files,
+		Search,
 		ListStart,
 		Users,
 		Cpu,
@@ -44,6 +45,7 @@
 		{ href: '/incidents', label: 'Incidents', icon: TriangleAlert },
 		{ href: '/programs', label: 'Programs', icon: Blocks },
 		{ href: '/files', label: 'Files', icon: Files },
+		{ href: '/search', label: 'Vyhledávání', icon: Search },
 		{ href: '/onstart', label: 'On start', icon: ListStart },
 		{ href: '/users', label: 'Users', icon: Users },
 		{ href: '/hardware', label: 'Hardware', icon: Cpu },
@@ -146,6 +148,14 @@
 	});
 </script>
 
+<!-- Spotlight lišta je samostatné okno, ne sekce v aplikaci: nemá kolem
+     sebe nic z jejího rámu — žádnou navigaci, titulek ani stavový řádek.
+     Rozhoduje se to tady, ne přes reset layoutu SvelteKitu, protože
+     styly aplikace (app.css) potřebuje i lišta. -->
+{#if page.url.pathname.startsWith('/spotlight')}
+	{@render children()}
+	<ItemMenu />
+{:else}
 <div class="app">
 	<!-- ── Titlebar (vlastní, drag region) ─────────────────────── -->
 	<header class="titlebar" data-tauri-drag-region>
@@ -263,6 +273,7 @@
 		</div>
 	{/if}
 </div>
+{/if}
 
 <style>
 	/* Upozornění na novou verzi — vpravo dole, nad obsahem, trvale.

@@ -77,6 +77,55 @@
 		return () => clearTimeout(id);
 	});
 
+	// ── Klávesová zkratka vyhledávací lišty ──
+	//
+	// Snímá se skutečné zmáčknutí, ne psaní do políčka: nikdo nechce
+	// hádat, jestli se píše „Ctrl", „Control", nebo „ctrl". Zápis se
+	// skládá tady a hostitel ho stejně ještě ověří, než ho uloží.
+	let zkratka = $state('');
+	let hkSnimam = $state(false);
+	let hkChyba = $state('');
+
+	function zacniSnimat() {
+		hkSnimam = true;
+		hkChyba = '';
+		window.addEventListener('keydown', snimej, true);
+	}
+
+	async function snimej(e) {
+		e.preventDefault();
+		e.stopPropagation();
+		// Samotný modifikátor ještě není zkratka — čeká se na klávesu.
+		if (['Control', 'Alt', 'Shift', 'Meta', 'OS'].includes(e.key)) return;
+		if (e.key === 'Escape') {
+			konecSnimani();
+			return;
+		}
+		const casti = [];
+		if (e.ctrlKey) casti.push('Ctrl');
+		if (e.altKey) casti.push('Alt');
+		if (e.shiftKey) casti.push('Shift');
+		if (e.metaKey) casti.push('Win');
+		if (!casti.length) {
+			hkChyba = 'Zkratka bez modifikátoru by zabrala klávesu celému systému.';
+			return;
+		}
+		casti.push(e.code === 'Space' ? 'Space' : e.key.length === 1 ? e.key.toUpperCase() : e.key);
+		const novy = casti.join('+');
+		konecSnimani();
+		try {
+			await invoke('set_spotlight_hotkey', { accel: novy });
+			zkratka = novy;
+		} catch (err) {
+			hkChyba = String(err);
+		}
+	}
+
+	function konecSnimani() {
+		hkSnimam = false;
+		window.removeEventListener('keydown', snimej, true);
+	}
+
 	// ── Kam se ukládá databáze ──
 	//
 	// Přesun se NEDĚJE odsud: databáze je otevřená a stěhovat ji pod
@@ -155,6 +204,9 @@
 	onMount(() => {
 		refresh();
 		nacistDb();
+		invoke('get_spotlight_hotkey')
+			.then((h) => (zkratka = h))
+			.catch(() => (zkratka = ''));
 		const t = setInterval(refresh, 2000);
 		// Vlastní tikot pro 'naposledy zjištěno' — bez něj by text
 		// zamrzl na hodnotě z posledního překreslení.
@@ -200,6 +252,31 @@
 			</span>
 			<span class="sw" class:on={prefs.showSystemStartup}><span class="knob"></span></span>
 		</button>
+	</section>
+
+	<section class="card">
+		<header class="card-head"><span class="label-tech">// vyhledávací lišta</span></header>
+
+		<div class="row">
+			<span class="row-main">
+				<span class="row-name">Klávesová zkratka</span>
+				<span class="row-why">
+					{#if hkChyba}
+						{hkChyba}
+					{:else if hkSnimam}
+						Zmáčkni novou kombinaci. Musí mít modifikátor (Alt, Ctrl, Shift, Win).
+					{:else}
+						Vyvolá vyhledávání kdekoli ve Windows, i když je aplikace zavřená.
+					{/if}
+				</span>
+			</span>
+			<span class="row-act">
+				<kbd class="hk" class:snimam={hkSnimam}>{hkSnimam ? '…' : zkratka || '—'}</kbd>
+				<button class="v-btn" onclick={zacniSnimat} disabled={hkSnimam}>
+					{hkSnimam ? 'čekám…' : 'Změnit'}
+				</button>
+			</span>
+		</div>
 	</section>
 
 	<section class="card">
@@ -492,6 +569,19 @@
 		color: var(--accent, var(--text));
 	}
 	/* Verze: současná, a když je co, i ta nová za šipkou. */
+	.hk {
+		padding: 3px 9px;
+		border: 1px solid var(--border-strong);
+		border-radius: 5px;
+		background: var(--surface);
+		font-family: 'Fira Mono', monospace;
+		font-size: var(--fs-sm);
+		color: var(--text);
+	}
+	.hk.snimam {
+		color: var(--ok);
+		border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+	}
 	.ver-vals {
 		gap: 0.35rem;
 	}

@@ -4,9 +4,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod display;
+mod hotkey;
 mod repair;
+mod spotlight;
 mod uninstall;
 use serde::Serialize;
+
+/// Sekce, kterou zkratka vyvolává. Spotlight modul umí libovolnou
+/// cestu — až přibude druhá, přidá se sem výběr.
+const SPOTLIGHT_ROUTE: &str = "spotlight";
 
 /// Odpověď pro frontend na ping služby.
 #[derive(Debug, Serialize)]
@@ -756,6 +762,33 @@ fn open_settings_page(page: String) -> Result<(), String> {
     }
 }
 
+/// Jaká zkratka vyvolává vyhledávací lištu.
+#[tauri::command]
+fn get_spotlight_hotkey() -> String {
+    hotkey::load()
+}
+
+/// Změní zkratku. Projeví se hned, ne až po restartu.
+#[tauri::command]
+fn set_spotlight_hotkey(accel: String) -> Result<(), String> {
+    hotkey::save(&accel)?;
+    hotkey::set(&accel);
+    Ok(())
+}
+
+/// Schová vyhledávací lištu. Volá ji samotná lišta při Escape —
+/// okno nemá křížek, takže tohle je jediná cesta ven zevnitř.
+#[tauri::command]
+fn hide_spotlight(app: tauri::AppHandle) {
+    spotlight::hide(&app);
+}
+
+/// Otevře lištu i bez zkratky (z hlavního okna).
+#[tauri::command]
+fn show_spotlight(app: tauri::AppHandle) -> Result<(), String> {
+    spotlight::toggle(&app, SPOTLIGHT_ROUTE)
+}
+
 /// Procentní kódování pro dotaz v URL. Vlastní, protože kvůli jedné
 /// funkci nemá smysl přidávat závislost.
 fn url_encode(s: &str) -> String {
@@ -1077,6 +1110,10 @@ fn main() {
             query_db_location,
             search_web,
             open_settings_page,
+            get_spotlight_hotkey,
+            set_spotlight_hotkey,
+            hide_spotlight,
+            show_spotlight,
             set_db_dir,
             pick_folder,
             query_system_history,
@@ -1133,10 +1170,24 @@ fn main() {
         ])
         .setup(|app| {
             setup_tray(app)?;
+            // Globální zkratka pro vyhledávací lištu. Registruje se ve
+            // vlastním vlákně (viz hotkey) a jen posílá práci sem.
+            let handle = app.handle().clone();
+            hotkey::start(&hotkey::load(), move || {
+                let h = handle.clone();
+                // Okna se smějí obsluhovat jen z hlavního vlákna.
+                let _ = handle.run_on_main_thread(move || {
+                    if let Err(e) = spotlight::toggle(&h, SPOTLIGHT_ROUTE) {
+                        spotlight::log(&format!("toggle selhal: {e}"));
+                    }
+                });
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
             // Zavření okna = schovat do tray, UI běží dál (ikona zůstává).
+            // Spotlight se jen schovává — zavřít ho znamená zahodit
+            // webview a příští vyvolání by se zdrželo jeho stavbou.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
