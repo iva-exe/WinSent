@@ -14,6 +14,7 @@
 	// pocit ochrany je horší než žádný.
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
+	import { openMenu, akceKopirovat, akceOtevritUmisteni, oddelovac } from '$lib/itemmenu.svelte.js';
 	import {
 		Camera,
 		ChevronRight,
@@ -262,6 +263,37 @@
 	}
 
 	// ── Oprávnění seskupená podle schopnosti ──
+	// Kontextové menu oprávnění.
+	//
+	// Vyhledává se jméno aplikace, ne cesta k .exe — cesta je pro
+	// vyhledávač šum a navíc nese jméno uživatele. Když je jméno obecné
+	// („javaw", „Update"), přidá `openMenu` cestu jako druhý kandidát
+	// až po ní, takže se použije jen když samotné jméno nestačí.
+	function menuOpravneni(e, p, g) {
+		const jmeno = p.app_name || p.app;
+		const cesta = p.app?.includes('\\') ? p.app : '';
+		openMenu(e, {
+			title: jmeno,
+			subtitle: `${g.label} · ${p.allow ? 'povoleno' : 'odepřeno'}`,
+			hledat: [jmeno],
+			kontext: 'aplikace',
+			items: [
+				{
+					label: 'Nastavení soukromí ve Windows',
+					icon: 'shield',
+					hint: g.label,
+					// Winsent oprávnění nepřepíná — otevře stránku, kde to
+					// udělá uživatel sám (SPEC 13.4: my ukazujeme, on mačká).
+					run: () => invoke('open_settings_page', { page: `privacy-${p.capability}` })
+				},
+				cesta ? akceOtevritUmisteni(cesta) : null,
+				oddelovac,
+				akceKopirovat(jmeno),
+				cesta ? akceKopirovat(cesta, 'Kopírovat cestu') : null
+			]
+		});
+	}
+
 	const CAPS = {
 		webcam: { label: 'Kamera', icon: Camera },
 		microphone: { label: 'Mikrofon', icon: Mic },
@@ -505,7 +537,7 @@
 				{#each g.items as p (g.cap + p.key)}
 					{@const okey = g.cap + p.key}
 					{@const open = openVersions.has(okey)}
-					<article class="item slim" class:live={p.in_use && p.allow}>
+					<article class="item slim" class:live={p.in_use && p.allow} oncontextmenu={(e) => menuOpravneni(e, p, g)}>
 						<div class="info">
 							<h3 class="perm-name">
 								{p.app_name}

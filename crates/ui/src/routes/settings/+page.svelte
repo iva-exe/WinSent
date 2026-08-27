@@ -522,25 +522,6 @@
 			border-radius: 4px;
 		}
 	}
-	/* Řádek s přepínačem. Celý řádek je tlačítko — mířit na malý
-	   obdélníček je zbytečná práce navíc. */
-	.opt {
-		display: flex;
-		align-items: flex-start;
-		gap: 0.8rem;
-		width: 100%;
-		padding: 0.7rem 0.8rem;
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		background: var(--surface);
-		color: var(--text);
-		font: inherit;
-		text-align: left;
-		cursor: pointer;
-	}
-	.opt:hover {
-		background: var(--surface-hover);
-	}
 	/* Přepínač — geometrie 1:1 s tím v Po spuštění, ať je to napříč
 	   aplikací tentýž prvek, ne dva podobné. */
 	.sw {

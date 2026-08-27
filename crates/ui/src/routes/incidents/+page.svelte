@@ -3,6 +3,7 @@
 	// jedním modelem. Seznam + detail s křivkou okna T-5min..T+30s.
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
+	import { openMenu, akceKopirovat, akceOtevritUmisteni, oddelovac } from '$lib/itemmenu.svelte.js';
 	import {
 		TriangleAlert,
 		Zap,
@@ -53,6 +54,68 @@
 	function fmtTs(ts) {
 		const d = new Date(ts * 1000);
 		return d.toLocaleDateString('cs-CZ') + ' ' + d.toLocaleTimeString('cs-CZ');
+	}
+
+	// Kontextové menu incidentu.
+	//
+	// Tady se „Co to je?" ptá na PŘÍČINU, ne na jméno položky: u pádu
+	// je to kód výjimky, u BSODu jméno bugchecku, u záseku příčina.
+	// Vyhledat „Discord" nikomu nepomůže, vyhledat „0xC0000005
+	// ACCESS_VIOLATION" ano.
+	function menuIncident(e, row) {
+		const i = row.incident;
+		const d = i ? parseDetail(i) : {};
+		const c = row.report;
+		const hex =
+			d.exit_hex ??
+			(d.exit_code != null
+				? '0x' + (d.exit_code >>> 0).toString(16).toUpperCase().padStart(8, '0')
+				: null);
+		const bug =
+			d.bugcheck != null
+				? '0x' + d.bugcheck.toString(16).toUpperCase().padStart(8, '0')
+				: null;
+
+		// Co se má vyhledat, podle druhu incidentu.
+		const hledat = i?.kind === 'bsod'
+			? [d.human, bug ? `BSOD ${bug}` : null, 'modrá obrazovka Windows']
+			: i?.kind === 'stall'
+				? [causes[d.cause] ?? 'zásek systému Windows']
+				: [hex ? `${hex} ${d.meaning ? '' : 'exception'}`.trim() : null, c?.module, i?.culprit];
+
+		openMenu(e, {
+			title: i ? kindOf(i.kind).label : 'Hlášení Windows',
+			subtitle: [i?.culprit ?? c?.app, fmtTs(row.ts)].filter(Boolean).join(' · '),
+			hledat: hledat.filter(Boolean),
+			items: [
+				c?.module
+					? {
+							label: 'Hledat modul, ve kterém to spadlo',
+							icon: 'search',
+							hint: c.module,
+							run: () =>
+								invoke('search_web', { query: `${c.module} crash ${c.app ?? ''}`.trim() })
+						}
+					: null,
+				{
+					label: 'Stáhnout záznam incidentu',
+					icon: 'file',
+					run: () => downloadReport(row)
+				},
+				oddelovac,
+				akceKopirovat(i?.culprit ?? c?.app ?? '', 'Kopírovat viníka'),
+				hex ? akceKopirovat(hex, 'Kopírovat kód pádu') : null,
+				i && !row.report
+					? null
+					: {
+							label: 'Skrýt z přehledu',
+							icon: 'trash',
+							disabled: !!i,
+							hint: i ? 'vlastní záznam skrýt nejde' : '',
+							run: () => hideReport(row)
+						}
+			]
+		});
 	}
 
 	async function load() {
@@ -614,7 +677,7 @@
 					{@const i = row.incident}
 					{@const k = i ? kindOf(i.kind) : kinds.app_crash}
 					<li>
-						<button class="row" class:active={selRow?.key === row.key} onclick={() => selectRow(row)}>
+						<button class="row" class:active={selRow?.key === row.key} onclick={() => selectRow(row)} oncontextmenu={(e) => menuIncident(e, row)}>
 							<span class="kind-ico" style:color={k.color}><k.icon size={16} /></span>
 							<span class="row-main">
 								<span class="row-title">

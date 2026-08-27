@@ -683,6 +683,95 @@ fn query_self_usage() -> Result<SelfUsageDto, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Vyhledá text ve výchozím prohlížeči uživatele.
+///
+/// Slouží položce „Co to je?" v kontextovém menu: uživatel klikne pravým
+/// na „NVIDIA GeForce RTX 3070" a Windows otevřou jeho vyhledávač.
+/// Nic se nestahuje ani neinstaluje — jen se předá URL systému.
+///
+/// Dotaz se skládá TADY, ne v UI: do `ShellExecuteW` nesmí přijít nic
+/// jiného než https URL na známý vyhledávač. Kdyby URL sestavoval
+/// frontend, dalo by se přes tenhle příkaz otevřít cokoliv.
+#[tauri::command(async)]
+fn search_web(query: String) -> Result<(), String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Err("prázdný dotaz".into());
+    }
+    // Delší text než tohle není hledání, ale omyl (vlepená cesta,
+    // celý řádek logu). Ořízne se, ať se do prohlížeče nepošle román.
+    let q: String = q.chars().take(200).collect();
+    let url = format!("https://duckduckgo.com/?q={}", url_encode(&q));
+
+    use windows::core::HSTRING;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let open = HSTRING::from("open");
+    let file = HSTRING::from(url.as_str());
+    // SAFETY: oba řetězce žijí přes celé volání; ShellExecuteW vrací
+    // pseudohandle, který se nezavírá.
+    let rc = unsafe { ShellExecuteW(None, &open, &file, None, None, SW_SHOWNORMAL) };
+    if rc.0 as usize > 32 {
+        Ok(())
+    } else {
+        Err(format!("prohlížeč se nepodařilo otevřít (kód {})", rc.0 as usize))
+    }
+}
+
+/// Otevře stránku Nastavení Windows.
+///
+/// Winsent oprávnění ani systémová nastavení nepřepíná — jen doveze
+/// uživatele na místo, kde to udělá sám (SPEC 13.4: my ukazujeme,
+/// spoušť mačká on). Přijímá se jen známý seznam stránek, aby se přes
+/// tenhle příkaz nedalo spustit libovolné URI schéma.
+#[tauri::command(async)]
+fn open_settings_page(page: String) -> Result<(), String> {
+    let uri = match page.as_str() {
+        "privacy-webcam" => "ms-settings:privacy-webcam",
+        "privacy-microphone" => "ms-settings:privacy-microphone",
+        "privacy-location" => "ms-settings:privacy-location",
+        "privacy-general" => "ms-settings:privacy",
+        "windowsupdate" => "ms-settings:windowsupdate",
+        "windowsdefender" => "windowsdefender:",
+        "startupapps" => "ms-settings:startupapps",
+        "appsfeatures" => "ms-settings:appsfeatures",
+        "network" => "ms-settings:network-status",
+        "otherusers" => "ms-settings:otherusers",
+        // Neznámá schopnost → obecné soukromí. Lepší než nic neudělat.
+        p if p.starts_with("privacy-") => "ms-settings:privacy",
+        _ => return Err(format!("neznámá stránka nastavení: {page}")),
+    };
+
+    use windows::core::HSTRING;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let open = HSTRING::from("open");
+    let file = HSTRING::from(uri);
+    // SAFETY: oba řetězce žijí přes celé volání.
+    let rc = unsafe { ShellExecuteW(None, &open, &file, None, None, SW_SHOWNORMAL) };
+    if rc.0 as usize > 32 {
+        Ok(())
+    } else {
+        Err(format!("Nastavení se nepodařilo otevřít (kód {})", rc.0 as usize))
+    }
+}
+
+/// Procentní kódování pro dotaz v URL. Vlastní, protože kvůli jedné
+/// funkci nemá smysl přidávat závislost.
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// Kde leží databáze a kam by se dala přesunout.
 #[tauri::command(async)]
 fn query_db_location() -> Result<ipc::client::DbLocation, String> {
@@ -986,6 +1075,8 @@ fn main() {
             query_system,
             query_self_usage,
             query_db_location,
+            search_web,
+            open_settings_page,
             set_db_dir,
             pick_folder,
             query_system_history,

@@ -5,6 +5,8 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { invoke } from '@tauri-apps/api/core';
+	import { page } from '$app/state';
+	import { openMenu, akceKopirovat, oddelovac } from '$lib/itemmenu.svelte.js';
 	import {
 		RefreshCw,
 		Search,
@@ -28,7 +30,10 @@
 
 	let apps = $state([]);
 	let procs = $state([]);
-	let filter = $state('');
+	// Předvyplněné hledání z jiné sekce (pravý klik → Najít zde).
+	// Bez tohohle by odkaz jen přepnul stránku a uživatel by pak
+	// hledal ručně to, na co zrovna klikal.
+	let filter = $state(page.url.searchParams.get('q') ?? '');
 	let segment = $state('all'); // all | desktop | msix | running
 	let sortKey = $state('name'); // name | publisher | date | paths
 	let selected = $state(null);
@@ -296,6 +301,47 @@
 	let uninstToast = $state(null);
 	let uninstRunning = $state(null); // { app, auditId, exeName, paths }
 	let uninstResult = $state(null); // { app, stillInstalled, leftovers }
+
+	// Kontextové menu programu.
+	//
+	// Hledá se jméno aplikace; vydavatel se přidá jen tehdy, když je
+	// samotné jméno obecné („Launcher", „Update"). O tom rozhoduje
+	// `openMenu` podle pořadí kandidátů.
+	function menuProgram(e, a, run) {
+		openMenu(e, {
+			title: a.display_name,
+			subtitle: a.publisher ?? '',
+			hledat: [a.display_name, a.publisher],
+			items: [
+				{
+					label: 'Odinstalovat',
+					icon: 'trash',
+					danger: true,
+					disabled: isSystemApp(a),
+					hint: isSystemApp(a) ? 'patří Windows' : '',
+					run: () => askUninstall(a)
+				},
+				run
+					? {
+							label: `Zobrazit ${run} běžících procesů`,
+							icon: 'cpu',
+							run: () => goto(`/tasks?q=${encodeURIComponent(a.display_name)}`)
+						}
+					: null,
+				oddelovac,
+				akceKopirovat(a.display_name),
+				{
+					label: 'Hledat verzi ke stažení',
+					icon: 'web',
+					hint: a.version ?? '',
+					run: () =>
+						invoke('search_web', {
+							query: `${a.display_name} ${a.publisher ?? ''} download`.trim()
+						})
+				}
+			]
+		});
+	}
 
 	async function askUninstall(app) {
 		uninstBusy = true;
@@ -572,6 +618,7 @@
 								class="row"
 								class:active={selected?.identity_key === a.identity_key}
 								onclick={() => select(a)}
+								oncontextmenu={(e) => menuProgram(e, a, run)}
 							>
 								<AppIcon src={iconUrls[a.identity_key]} name={a.display_name} size={19} />
 								<span class="row-main">

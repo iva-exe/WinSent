@@ -1,7 +1,9 @@
 <script>
 	import { invoke } from '@tauri-apps/api/core';
+	import { openMenu, akceKopirovat, oddelovac } from '$lib/itemmenu.svelte.js';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { untrack } from 'svelte';
 	import { daemon } from '$lib/daemon.svelte.js';
 	import LiveChart from '$lib/LiveChart.svelte';
@@ -278,7 +280,8 @@
 	let sortKey = $state('sys_pct');
 	let sortDir = $state(-1);
 	// Filtr (v1 DoD: řazení + filtr) — jméno nebo PID.
-	let filter = $state('');
+	// Předvyplněné hledání z jiné sekce (pravý klik → Zobrazit procesy).
+	let filter = $state(page.url.searchParams.get('q') ?? '');
 	// Pohled: seskupené aplikace (default, v2) / plochý seznam procesů.
 	let viewMode = $state('apps');
 	// Byl předchozí obsah tabulky ze živých dat? (viz vyhlazování)
@@ -746,6 +749,53 @@
 	let killPlan = $state(null); // { plan, target } | { deny, target }
 	let killBusy = $state(false);
 	let killToast = $state(null);
+
+	// Kontextové menu procesu.
+	//
+	// Pravý klik dřív rovnou otevíral dialog ukončení — jediná akce,
+	// kterou řádek uměl. Teď je to nabídka a ukončení je jen jedna
+	// z položek; první je vždycky „Co to je?".
+	//
+	// Co vyhledat: jméno image je konkrétnější než jméno aplikace
+	// (`svchost.exe` řekne víc než `Windows`), ale samotné by u méně
+	// známých procesů nestačilo — proto se přidává slovo „proces".
+	function menuProc(e, p, tree, g = null) {
+		if (!p) return;
+		const jmeno = p.name ?? '';
+		const app = p.app_name ?? '';
+		const kolik = g && tree ? g.children.length : 1;
+		openMenu(e, {
+			title: app && app !== jmeno ? `${app} — ${jmeno}` : jmeno,
+			subtitle: p.publisher ?? '',
+			hledat: [jmeno, app, p.publisher],
+			kontext: 'proces',
+			items: [
+				{
+					label: kolik > 1 ? `Ukončit skupinu (${kolik} procesů)` : 'Ukončit proces',
+					icon: 'kill',
+					danger: true,
+					disabled: !p.create_time || p.protection === 'critical',
+					hint: p.protection === 'critical' ? 'kritický pro systém' : '',
+					run: () => askKill(p, tree)
+				},
+				oddelovac,
+				akceKopirovat(jmeno, 'Kopírovat název procesu'),
+				akceKopirovat(String(p.pid), `Kopírovat PID (${p.pid})`),
+				{
+					label: 'Najít v Programech',
+					icon: 'app',
+					disabled: !app,
+					run: () => goto(`/programs?q=${encodeURIComponent(app)}`)
+				},
+				{
+					label: 'Najít v Síti',
+					icon: 'web',
+					disabled: !app,
+					run: () => goto(`/network?q=${encodeURIComponent(app)}`)
+				}
+			]
+		});
+	}
 
 	async function askKill(p, tree) {
 		if (!p?.create_time) return;
@@ -1238,7 +1288,7 @@
 						{#each groups as g (g.key)}
 							{@const single = g.children.length === 1}
 							{@const open = expanded.has(g.key)}
-							<tr class="grp" data-idkey={g.key} class:hl={hlKey === g.key} class:clickable={!single} onclick={() => !single && toggleGroup(g.key)} oncontextmenu={(e) => { e.preventDefault(); askKill(g.children[0], !single); }}>
+							<tr class="grp" data-idkey={g.key} class:hl={hlKey === g.key} class:clickable={!single} onclick={() => !single && toggleGroup(g.key)} oncontextmenu={(e) => menuProc(e, g.children[0], !single, g)}>
 								<td class="t-dot">
 									<span
 										class="load-dot"
@@ -1277,7 +1327,7 @@
 							</tr>
 							{#if !single && open}
 								{#each g.children as p (p.pid)}
-									<tr class="child" class:hl={hlKey === g.key} class:crit={p.protection === "critical"} oncontextmenu={(e) => { e.preventDefault(); askKill(p, false); }}>
+									<tr class="child" class:hl={hlKey === g.key} class:crit={p.protection === "critical"} oncontextmenu={(e) => menuProc(e, p, false)}>
 										<td class="t-dot"></td>
 										<td class="t-name child-name">{p.name}</td>
 										<td class="t-pub"></td>
@@ -1301,7 +1351,7 @@
 					{:else}
 						<!-- Plochý seznam procesů (původní view) -->
 						{#each visibleRows as p (p.pid)}
-							<tr data-idkey={p.identity_key} class:hl={hlKey === p.identity_key} oncontextmenu={(e) => { e.preventDefault(); askKill(p, false); }}>
+							<tr data-idkey={p.identity_key} class:hl={hlKey === p.identity_key} oncontextmenu={(e) => menuProc(e, p, false)}>
 								<td class="t-dot">
 									<span
 										class="load-dot"

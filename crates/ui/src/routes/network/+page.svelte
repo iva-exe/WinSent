@@ -11,6 +11,8 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { invoke } from '@tauri-apps/api/core';
+	import { openMenu, akceKopirovat, akceOtevritUmisteni, oddelovac } from '$lib/itemmenu.svelte.js';
+	import { page } from '$app/state';
 	import {
 		Search,
 		ArrowDown,
@@ -23,7 +25,10 @@
 	import AppIcon from '$lib/AppIcon.svelte';
 
 	let rows = $state([]);
-	let filter = $state('');
+	// Předvyplněné hledání z jiné sekce (pravý klik → Najít zde).
+	// Bez tohohle by odkaz jen přepnul stránku a uživatel by pak
+	// hledal ručně to, na co zrovna klikal.
+	let filter = $state(page.url.searchParams.get('q') ?? '');
 	let selectedKey = $state(null);
 	let loadError = $state('');
 
@@ -94,6 +99,39 @@
 	// Stejný kontrakt jako v Programs: identity_key sem chodí z téhož
 	// sampleru, který ho počítá kaskádou (SPEC 4.1), takže je to přesně
 	// klíč skupiny v Tasks.
+	// Kontextové menu aplikace v síti.
+	//
+	// Vzdálené adresy se do vyhledávače neposílají — prozrazují, kam se
+	// uživatel připojuje, a v záznamu se maskují právě proto. Hledá se
+	// tedy aplikace, ne to, s čím mluví.
+	function menuSit(e, r) {
+		openMenu(e, {
+			title: r.app_name,
+			subtitle: r.publisher ?? '',
+			hledat: [r.app_name, r.publisher],
+			kontext: 'aplikace',
+			items: [
+				{
+					label: `Zobrazit ${r.proc_count} procesů`,
+					icon: 'cpu',
+					run: () => gotoRunning(r.identity_key)
+				},
+				{
+					label: 'Najít v Programech',
+					icon: 'app',
+					run: () => goto(`/programs?q=${encodeURIComponent(r.app_name)}`)
+				},
+				{
+					label: 'Nastavení sítě ve Windows',
+					icon: 'shield',
+					run: () => invoke('open_settings_page', { page: 'network' })
+				},
+				oddelovac,
+				akceKopirovat(r.app_name)
+			]
+		});
+	}
+
 	function gotoRunning(key) {
 		goto('/tasks?hl=' + encodeURIComponent(key));
 	}
@@ -197,6 +235,7 @@
 					<li>
 						<button
 							class="row"
+							oncontextmenu={(e) => menuSit(e, r)}
 							class:active={selectedKey === r.identity_key}
 							onclick={() => (selectedKey = r.identity_key)}
 						>

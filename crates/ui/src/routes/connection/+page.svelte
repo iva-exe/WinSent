@@ -8,6 +8,7 @@
 	// za potvrzením, ne v téhle čtecí verzi.
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
+	import { openMenu, akceKopirovat, akceOtevritUmisteni, oddelovac } from '$lib/itemmenu.svelte.js';
 	import { Cable, Globe, Lock, LockOpen, Network, Wifi, WifiOff } from 'lucide-svelte';
 
 	let report = $state(null);
@@ -38,6 +39,44 @@
 		(report?.adapters ?? []).filter((a) => a.kind !== 'ethernet' && a.kind !== 'wifi')
 	);
 	let showOther = $state(false);
+
+	// Kontextové menu adaptéru.
+	//
+	// Jméno adaptéru je uživatelské („Ethernet"), zajímavý je popis
+	// z ovladače („Realtek PCIe GbE Family Controller") — ten `openMenu`
+	// vybere sám, protože „Ethernet" je v seznamu obecných slov.
+	//
+	// IP adresy se do vyhledávače neposílají: prozrazují topologii sítě
+	// a v záznamu se maskují právě proto.
+	function menuAdapter(e, a) {
+		openMenu(e, {
+			title: a.name,
+			subtitle: a.description ?? '',
+			hledat: [a.name, a.description],
+			items: [
+				{
+					label: 'Nastavení sítě ve Windows',
+					icon: 'shield',
+					run: () => invoke('open_settings_page', { page: 'network' })
+				},
+				// Gigabitový řadič na stovce znamená kabel nebo protějšek.
+				a.up && a.link_mbps && a.link_mbps <= 100
+					? {
+							label: 'Proč jede linka jen 100 Mb/s?',
+							icon: 'search',
+							hint: `${a.link_mbps} Mb/s`,
+							run: () =>
+								invoke('search_web', {
+									query: 'gigabit ethernet běží jen 100 Mbps příčiny kabel'
+								})
+						}
+					: null,
+				oddelovac,
+				akceKopirovat(a.description || a.name),
+				akceKopirovat(a.mac, 'Kopírovat MAC adresu')
+			]
+		});
+	}
 
 	function kindLabel(k) {
 		return k === 'ethernet' ? 'kabel' : k === 'wifi' ? 'WiFi' : k === 'virtual' ? 'virtuální' : 'jiný';
@@ -72,7 +111,7 @@
 		<div class="body">
 			<!-- ── Fyzické adaptéry ── -->
 			{#each physical as a (a.name + a.mac)}
-				<article class="item" class:down={!a.up}>
+				<article class="item" class:down={!a.up} oncontextmenu={(e) => menuAdapter(e, a)}>
 					<div class="ico">
 						{#if a.kind === 'wifi'}<Wifi size={19} />{:else}<Cable size={19} />{/if}
 					</div>

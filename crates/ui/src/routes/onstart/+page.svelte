@@ -5,6 +5,7 @@
 	// oficiální mechanismus, stejný jako Správce úloh.
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
+	import { openMenu, akceKopirovat, akceOtevritUmisteni, oddelovac } from '$lib/itemmenu.svelte.js';
 	import {
 		Search,
 		KeyRound,
@@ -158,6 +159,39 @@
 		}
 	}
 
+	// Kontextové menu startovací položky.
+	//
+	// Vyhledává se jméno položky; když je obecné („Update", „Launcher"),
+	// vezme `openMenu` jméno aplikace nebo binárku z příkazu. Celý
+	// příkaz se neposílá — bývá v něm cesta se jménem uživatele.
+	function menuPolozka(e, i) {
+		const exe = (i.exe_path ?? i.command ?? '').split(/[\\/]/).pop() ?? '';
+		openMenu(e, {
+			title: i.name,
+			subtitle: i.app_name ?? srcOf(i.source).label,
+			hledat: [i.name, i.app_name, exe],
+			kontext: 'po spuštění Windows',
+			items: [
+				{
+					label: i.enabled ? 'Vypnout po spuštění' : 'Zapnout po spuštění',
+					icon: 'power',
+					disabled: !i.toggleable,
+					hint: i.toggleable ? '' : (i.system_reason ?? 'patří Windows'),
+					run: () => toggle(i)
+				},
+				{
+					label: 'Nastavení po spuštění ve Windows',
+					icon: 'shield',
+					run: () => invoke('open_settings_page', { page: 'startupapps' })
+				},
+				i.exe_path ? akceOtevritUmisteni(i.exe_path) : null,
+				oddelovac,
+				akceKopirovat(i.name),
+				akceKopirovat(i.command, 'Kopírovat příkaz')
+			]
+		});
+	}
+
 	// Přepnutí: optimisticky překlopit, po odpovědi srovnat s realitou.
 	async function toggle(item) {
 		if (!item.toggleable || busy.has(item.id)) return;
@@ -242,7 +276,7 @@
 					<ul class="items">
 						{#each visible as i (i.id)}
 							{@const s = srcOf(i.source)}
-							<li class="item" class:off={!i.enabled}>
+							<li class="item" class:off={!i.enabled} oncontextmenu={(e) => menuPolozka(e, i)}>
 								<span class="i-src" title={s.label}><s.icon size={16} /></span>
 								<span class="i-main">
 									<span class="i-title">
@@ -621,20 +655,12 @@
 		flex-wrap: wrap;
 	}
 	.i-run {
-		font-size: var(--fs-3xs, 0.62rem);
-		letter-spacing: 0.04em;
-		text-transform: uppercase;
+		font-size: var(--fs-xs);
 		white-space: nowrap;
-		padding: 1px 6px;
-		border-radius: 999px;
-		border: 1px solid var(--border);
 		color: var(--text-faint);
-		line-height: 1.5;
 	}
 	.i-run.live {
 		color: var(--ok);
-		border-color: color-mix(in srgb, var(--ok) 45%, transparent);
-		background: color-mix(in srgb, var(--ok) 10%, transparent);
 	}
 	/* Přepínač — vratná akce, žádný dialog (T0). */
 	.sw {

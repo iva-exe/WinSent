@@ -4,6 +4,7 @@
 	// Windows samy a dělají to líp.
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
+	import { openMenu, akceKopirovat, akceOtevritUmisteni, oddelovac } from '$lib/itemmenu.svelte.js';
 	import {
 		ShieldCheck,
 		User,
@@ -61,6 +62,44 @@
 	}
 
 	// Ikona podle toho, čím účet JE — ne podle toho, jak se jmenuje.
+	// Kontextové menu účtu.
+	//
+	// Jméno účtu se NEVYHLEDÁVÁ — je to osobní údaj a ve vyhledávači
+	// nemá co dělat. „Co to je?" se proto ptá na typ účtu, ne na to,
+	// jak se ten člověk jmenuje.
+	function menuUcet(e, u) {
+		const typ = u.microsoft ? 'účet Microsoft ve Windows' : 'místní účet ve Windows';
+		openMenu(e, {
+			title: u.name,
+			subtitle: [u.admin ? 'správce' : 'běžný účet', u.disabled ? 'zakázaný' : null]
+				.filter(Boolean)
+				.join(' · '),
+			hledat: [typ],
+			items: [
+				{
+					label: 'Správa účtů ve Windows',
+					icon: 'shield',
+					// Winsent účty nespravuje (SPEC 14) — jen doveze
+					// uživatele tam, kde to udělá sám.
+					run: () => invoke('open_settings_page', { page: 'otherusers' })
+				},
+				u.password_not_required
+					? {
+							label: 'Proč je „heslo nevyžadováno" problém?',
+							icon: 'search',
+							run: () =>
+								invoke('search_web', {
+									query: 'Windows účet bez hesla PASSWD_NOTREQD riziko'
+								})
+						}
+					: null,
+				oddelovac,
+				akceKopirovat(u.name, 'Kopírovat jméno účtu'),
+				akceKopirovat(u.sid, 'Kopírovat SID')
+			]
+		});
+	}
+
 	function icoOf(u) {
 		if (u.disabled) return UserX;
 		if (u.admin) return UserCog;
@@ -92,7 +131,7 @@
 			{#each users as u (u.sid || u.name)}
 				{@const Ico = icoOf(u)}
 				{@const me = u.name.toLowerCase() === (report.current_user ?? '').toLowerCase()}
-				<article class="item" class:off={u.disabled}>
+				<article class="item" class:off={u.disabled} oncontextmenu={(e) => menuUcet(e, u)}>
 					<div class="ico"><Ico size={19} /></div>
 					<div class="info">
 						<h3>

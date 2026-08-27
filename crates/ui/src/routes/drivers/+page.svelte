@@ -10,12 +10,16 @@
 	import CategoryNav from '$lib/CategoryNav.svelte';
 	import { mergeSame } from '$lib/mergesame.js';
 	import { invoke } from '@tauri-apps/api/core';
+	import { goto } from '$app/navigation';
+	import { openMenu, akceKopirovat, akceOtevritUmisteni, oddelovac } from '$lib/itemmenu.svelte.js';
+	import { page } from '$app/state';
 	import { Search, Package, PackageCheck, TriangleAlert, ChevronRight } from 'lucide-svelte';
 	import { byCategory } from '$lib/devcategory.js';
 
 	let report = $state(null);
 	let loadError = $state('');
-	let filter = $state('');
+	// Předvyplněné hledání z jiné sekce (pravý klik → Ovladač zařízení).
+	let filter = $state(page.url.searchParams.get('q') ?? '');
 	// vše | oem (doinstalované) | old (staré) | problem
 	let segment = $state('all');
 
@@ -35,6 +39,52 @@
 		const t = setInterval(load, 300000);
 		return () => clearInterval(t);
 	});
+
+	// Kontextové menu ovladače.
+	//
+	// Hledá se jméno zařízení, ne jméno souboru ovladače — člověk se ptá
+	// „co je Realtek PCIe GbE", ne „co je rtcx21x64.sys". Vydavatel se
+	// přidá jen tehdy, když je jméno samo o sobě obecné.
+	function menuOvladac(e, d) {
+		const zarizeni = d.device ?? '';
+		const vyrobce = d.provider ?? '';
+		openMenu(e, {
+			title: zarizeni,
+			subtitle: [vyrobce, d.version].filter(Boolean).join(' · '),
+			hledat: [zarizeni, vyrobce],
+			items: [
+				{
+					label: 'Hledat novější ovladač',
+					icon: 'web',
+					hint: d.version ?? '',
+					disabled: !zarizeni,
+					run: () =>
+						invoke('search_web', {
+							query: `${zarizeni} ${vyrobce} driver download`.trim()
+						})
+				},
+				d.problem_code
+					? {
+							label: 'Co znamená ten problém?',
+							icon: 'search',
+							hint: `kód ${d.problem_code}`,
+							run: () =>
+								invoke('search_web', {
+									query: `Windows Device Manager error code ${d.problem_code}`
+								})
+						}
+					: null,
+				{
+					label: 'Zobrazit zařízení',
+					icon: 'cpu',
+					run: () => goto(`/hardware?q=${encodeURIComponent(zarizeni)}`)
+				},
+				oddelovac,
+				akceKopirovat(zarizeni),
+				akceKopirovat(d.inf, 'Kopírovat jméno INF')
+			]
+		});
+	}
 
 	// Rok z data ovladače. Systém ho hlásí v místním formátu, takže se
 	// hledá ten díl, který na rok vypadá — nic jiného z data nepotřebujeme.
@@ -192,7 +242,7 @@
 				{#each s.merged as mg, i (mg.key)}
 				{@const d = mg.head}
 				{@const year = yearOf(d)}
-				<article class="item" id="drv-{s.name}-{i}" class:flash={flashId === `drv-${s.name}-${i}`} class:bad={d.problem_code}>
+				<article class="item" id="drv-{s.name}-{i}" class:flash={flashId === `drv-${s.name}-${i}`} class:bad={d.problem_code} oncontextmenu={(e) => menuOvladac(e, d)}>
 					<div class="ico">
 						{#if d.problem_code}
 							<TriangleAlert size={19} />

@@ -16,6 +16,9 @@
 	// u teploty se vždy ukazuje zdroj, jinak se řekne, že chybí.
 	import { onMount, tick as nextTick } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import { openMenu, akceKopirovat, oddelovac } from '$lib/itemmenu.svelte.js';
 	import { describeProblem } from '$lib/devproblem.js';
 	import { CATEGORIES, categoryOf, hasVidPid } from '$lib/devcategory.js';
 	import { mergeSame } from '$lib/mergesame.js';
@@ -58,7 +61,8 @@
 	// žádná plocha není a seznam by byl prázdný.
 	let displays = $state([]);
 	let loadError = $state('');
-	let filter = $state('');
+	// Předvyplněné hledání z jiné sekce (pravý klik → Zobrazit zařízení).
+	let filter = $state(page.url.searchParams.get('q') ?? '');
 
 	let bodyEl = $state(null);
 	// Přepínač kategorií i jeho scroll žijí ve sdílené komponentě —
@@ -183,6 +187,117 @@
 	function matches(text) {
 		const q = filter.trim().toLowerCase();
 		return !q || text.toLowerCase().includes(q);
+	}
+
+	// ── Kontextové menu ──
+	//
+	// Co vyhledat je tady nejdůležitější rozhodnutí celé nabídky.
+	// Nadpis karty je často obecný („NVMe", „Paměť RAM") a model, na
+	// který se uživatel ptá, leží až v popiscích pod ním. `openMenu`
+	// dostane kandidáty v pořadí od nejobecnějšího a sám vybere ten
+	// první konkrétní; když je nadpis obecný, spojí ho s modelem —
+	// z „NVMe" + „ST2000DM008-2FR102" vyjde dotaz na obojí.
+	function menuKomponenta(e, r) {
+		const spolecne = (title, hledat, subtitle = '', extra = []) =>
+			openMenu(e, {
+				title,
+				subtitle,
+				hledat,
+				items: [...extra, oddelovac, akceKopirovat(hledat.filter(Boolean)[0] ?? title)]
+			});
+
+		if (r.kind === 'cpu') {
+			const jmeno = statics?.cpu_name ?? 'Procesor';
+			return spolecne('Procesor', [jmeno, cpuVendor], jmeno);
+		}
+		if (r.kind === 'ram') {
+			const m = statics?.ram_modules?.[0];
+			// U paměti hledá člověk konkrétní modul, ne slovo „RAM“.
+			const model = [m?.manufacturer, m?.part_number].filter(Boolean).join(' ');
+			return spolecne('Paměť RAM', [model || 'RAM', m?.part_number], model);
+		}
+		if (r.kind === 'gpu') {
+			return spolecne(r.dev.name, [r.dev.name, r.dev.manufacturer], r.dev.manufacturer, [
+				{
+					label: 'Ovladač zařízení',
+					icon: 'info',
+					hint: r.dev.driver_version ?? '',
+					disabled: !r.dev.driver_version,
+					run: () => goto(`/drivers?q=${encodeURIComponent(r.dev.name)}`)
+				}
+			]);
+		}
+		if (r.kind === 'disk') {
+			// Nadpis bývá model, ale když ne, spojí se s ním typ disku.
+			return spolecne(r.disk.model || `Disk ${r.disk.index}`, [r.disk.model, 'disk'], '', [
+				{
+					label: 'Ukázat ve Files',
+					icon: 'disk',
+					run: () => goto('/files')
+				}
+			]);
+		}
+		if (r.kind === 'board') {
+			const b = hw?.board;
+			const model = [b?.manufacturer, b?.product].filter(Boolean).join(' ');
+			return spolecne('Základní deska', [model || 'základní deska', b?.product], model, [
+				{
+					label: 'Hledat aktualizaci BIOSu',
+					icon: 'search',
+					hint: b?.bios_version ?? '',
+					disabled: !model,
+					run: () => invoke('search_web', { query: `${model} BIOS update` })
+				}
+			]);
+		}
+		if (r.kind === 'battery') {
+			return spolecne('Baterie', ['baterie notebooku opotřebení'], '');
+		}
+		return spolecne(r.id, [r.id]);
+	}
+
+	function menuObrazovka(e, d) {
+		openMenu(e, {
+			title: d.monitor || 'Obrazovka',
+			subtitle: d.adapter ?? '',
+			// Jméno monitoru je konkrétní; adaptér je grafika, ne obrazovka.
+			hledat: [d.monitor, d.adapter],
+			items: [oddelovac, akceKopirovat(d.monitor || d.adapter)]
+		});
+	}
+
+	function menuZarizeni(e, d, mg) {
+		const problem = mg.members.find((m) => m.problem_code);
+		openMenu(e, {
+			title: d.name,
+			subtitle: vendorSaysNothing(d.manufacturer) ? (hwid(d) ?? '') : d.manufacturer,
+			// Výrobce sám o sobě nestačí, ale se jménem zařízení dá
+			// smysluplný dotaz; hardwarové ID je poslední záchrana.
+			hledat: [d.name, d.manufacturer, hwid(d)],
+			items: [
+				problem
+					? {
+							label: 'Co znamená ten problém?',
+							icon: 'search',
+							hint: `kód ${problem.problem_code}`,
+							run: () =>
+								invoke('search_web', {
+									query: `Windows Device Manager error code ${problem.problem_code}`
+								})
+						}
+					: null,
+				{
+					label: 'Ovladač zařízení',
+					icon: 'info',
+					hint: d.driver_version ?? '',
+					disabled: !d.driver_version,
+					run: () => goto(`/drivers?q=${encodeURIComponent(d.name)}`)
+				},
+				oddelovac,
+				akceKopirovat(d.name),
+				akceKopirovat(d.hardware_id, 'Kopírovat hardwarové ID')
+			]
+		});
 	}
 
 	// ── Komponenty: bohatší řádky, které se skládají z víc zdrojů ──
@@ -445,7 +560,7 @@
 			<section class="grp" id="sect-Komponenty">
 			<h2 class="sect"><Cpu size={17} /> Komponenty <span class="sect-n">{componentRows.length}</span></h2>
 			{#each componentRows as r (r.id)}
-				<article class="item" id={r.id} class:flash={flashId === r.id} class:bad={r.problem}>
+				<article class="item" id={r.id} class:flash={flashId === r.id} class:bad={r.problem} oncontextmenu={(e) => menuKomponenta(e, r)}>
 					{#if r.kind === 'cpu'}
 						<div class="ico"><Cpu size={20} /></div>
 						<div class="info">
@@ -729,7 +844,7 @@
 			<section class="grp" id="sect-Obrazovky">
 			<h2 class="sect"><Monitor size={17} /> Obrazovky <span class="sect-n">{visibleDisplays.length}</span></h2>
 			{#each visibleDisplays as d, i (d.adapter + i)}
-				<article class="item">
+				<article class="item" oncontextmenu={(e) => menuObrazovka(e, d)}>
 					<div class="ico"><Monitor size={20} /></div>
 					<div class="info">
 						<h3>{d.monitor || 'Obrazovka'}</h3>
@@ -768,7 +883,7 @@
 				     mostů). Řádek to nikdy nevydává za jeden kus — nese
 				     počet a pod rozklikem je každý zvlášť. -->
 				{@const parts = mg.count > 1 ? mg.members : d.members}
-				<article class="item" id={rid} class:flash={flashId === rid} class:bad={mg.members.some((m) => m.problem_code)}>
+				<article class="item" id={rid} class:flash={flashId === rid} class:bad={mg.members.some((m) => m.problem_code)} oncontextmenu={(e) => menuZarizeni(e, d, mg)}>
 					<div class="ico"><Ico size={20} /></div>
 					<div class="info">
 						<h3>

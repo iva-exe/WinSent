@@ -12,6 +12,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { daemon, startDaemonPolling } from '$lib/daemon.svelte.js';
+	import ItemMenu from '$lib/ItemMenu.svelte';
 	import { updater, startUpdateChecks, runUpdate } from '$lib/updater.svelte.js';
 	import {
 		House,
@@ -234,6 +235,10 @@
 			{/key}
 		</main>
 	</div>
+
+	<!-- Kontextové menu položek. Jedno pro celou aplikaci — sekce mu jen
+	     řeknou, na co se kliklo (viz lib/itemmenu.svelte.js). -->
+	<ItemMenu />
 
 	<!-- ── Nová verze: trvalé upozornění vpravo dole ──
 	     Nemizí samo a nedá se odkliknout: stará verze je stav, který

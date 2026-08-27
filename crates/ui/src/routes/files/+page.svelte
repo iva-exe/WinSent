@@ -5,6 +5,7 @@
 	// mazání přijde v v8 (bezpečně, do koše).
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
+	import { openMenu, akceKopirovat, oddelovac } from '$lib/itemmenu.svelte.js';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import {
 		HardDrive,
@@ -172,6 +173,54 @@
 		setTimeout(() => (delToast = null), 4000);
 	}
 
+	// Kontextové menu cesty (soubor, složka, duplicita).
+	//
+	// Celá cesta se do vyhledávače NEPOSÍLÁ — je v ní jméno uživatele
+	// a struktura jeho disku. Hledá se jen jméno souboru, případně jeho
+	// přípona: „co je pagefile.sys" dává smysl, „co je
+	// C:\Users\Jan Novak\…" ne.
+	function menuCesta(e, path, size, jeSlozka) {
+		const jmeno = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+		const pripona = jmeno.includes('.') ? jmeno.split('.').pop().toLowerCase() : '';
+		const guard = systemPathInfo(path);
+		openMenu(e, {
+			title: jmeno,
+			subtitle: size != null ? fmtSize(size) : '',
+			hledat: [jmeno],
+			kontext: jeSlozka ? 'složka Windows' : 'soubor',
+			items: [
+				{
+					label: 'Otevřít v Průzkumníku',
+					icon: 'folder',
+					run: () => openPath(path)
+				},
+				// Složky se z UI nemažou (nevratně větší zásah než soubor
+				// a ze seznamu není poznat, co v nich je).
+				jeSlozka
+					? null
+					: {
+							label: 'Přesunout do koše',
+							icon: 'trash',
+							danger: true,
+							disabled: !!guard,
+							hint: guard ? guard.reason : '',
+							run: () => askDelete([path])
+						},
+				pripona
+					? {
+							label: `Co je přípona .${pripona}?`,
+							icon: 'search',
+							hint: `.${pripona}`,
+							run: () => invoke('search_web', { query: `přípona souboru .${pripona}` })
+						}
+					: null,
+				oddelovac,
+				akceKopirovat(jmeno, 'Kopírovat název'),
+				akceKopirovat(path, 'Kopírovat celou cestu')
+			]
+		});
+	}
+
 	async function openPath(path) {
 		try {
 			await invoke('open_path', { path });
@@ -302,7 +351,7 @@
 					     v Průzkumníku, kde uživatel vidí obsah. -->
 					{#each bigDirs as [, path, size] (path)}
 						{@const guard = systemPathInfo(path)}
-						<button class="row" onclick={() => openPath(path)} title="Otevřít v Průzkumníku">
+						<button class="row" onclick={() => openPath(path)} oncontextmenu={(e) => menuCesta(e, path, size, true)} title="Otevřít v Průzkumníku">
 							<span class="r-path mono">{path}</span>
 							{#if guard}<SystemBadge compact level={guard.level} title={guard.reason} />{/if}
 							<span class="r-size mono">{fmtSize(size)}</span>
@@ -314,7 +363,7 @@
 					{#each bigFiles as [, path, size] (path)}
 						{@const guard = systemPathInfo(path)}
 						<div class="row-wrap">
-							<button class="row" onclick={() => openPath(path)} title="Otevřít v Průzkumníku">
+							<button class="row" onclick={() => openPath(path)} oncontextmenu={(e) => menuCesta(e, path, size, false)} title="Otevřít v Průzkumníku">
 								<span class="r-path mono">{path}</span>
 								{#if guard}<SystemBadge compact level={guard.level} title={guard.reason} />{/if}
 								<span class="r-size mono">{fmtSize(size)}</span>
@@ -393,7 +442,7 @@
 									<span class="dup-size mono">{fmtSize(size)} × {paths.length}</span>
 									{#each paths as p (p)}
 										<div class="row-wrap">
-											<button class="row" onclick={() => openPath(p)}>
+											<button class="row" onclick={() => openPath(p)} oncontextmenu={(e) => menuCesta(e, p, size, false)}>
 												<span class="r-path mono">{p}</span>
 											</button>
 											<button
@@ -425,7 +474,7 @@
 						{:else}
 							{#each zeroFiles.slice(0, 60) as p (p)}
 								<div class="row-wrap">
-									<button class="row" onclick={() => openPath(p)}>
+									<button class="row" onclick={() => openPath(p)} oncontextmenu={(e) => menuCesta(e, p, null, false)}>
 										<span class="r-path mono">{p}</span>
 									</button>
 									<button
