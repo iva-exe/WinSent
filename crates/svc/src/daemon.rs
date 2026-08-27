@@ -912,7 +912,17 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             // start služby, kdy ji nikdo nedrží.
             Request::SetDbDir { dir } => {
                 match crate::config::set_db_dir(&cfg_path_ipc, &dir) {
-                    Ok(()) => Response::Ok,
+                    Ok(()) => {
+                        // Propsat i do sdílené konfigurace hned.
+                        //
+                        // Hot-reload watcher změnu zachytí taky, ale až
+                        // za chvíli — a UI se ptá okamžitě po uložení.
+                        // Bez tohohle vrátil dotaz starou hodnotu a
+                        // vypadalo to, že se nastavení neuložilo.
+                        cfg_ipc.write().expect("config lock poisoned").db_dir =
+                            dir.trim().to_string();
+                        Response::Ok
+                    }
                     Err(e) => Response::Error {
                         message: e.to_string(),
                     },
