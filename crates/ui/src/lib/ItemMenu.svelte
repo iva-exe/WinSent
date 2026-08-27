@@ -167,11 +167,13 @@
 		border-radius: var(--radius-lg);
 		/* Podklad se bere z `--bg`, ne z `--surface`.
 		   `--surface` je světlý závoj (bílá na 4 %), takže menu z něj
-		   vycházelo skoro průhledné a text pod ním prosvítal. Tmavý
-		   základ s vysokým rozostřením drží menu čitelné nad čímkoli. */
-		background: color-mix(in srgb, var(--bg) 88%, transparent);
-		backdrop-filter: blur(30px) saturate(150%);
-		-webkit-backdrop-filter: blur(30px) saturate(150%);
+		   vycházelo skoro průhledné a text pod ním prosvítal.
+		   Za menu nemá být nic čitelného: samotné rozostření na to
+		   nestačí, velký text zůstane rozpoznatelný i při 40 px, proto
+		   nese hlavní práci krytí a rozostření jen změkčuje okraje. */
+		background: color-mix(in srgb, var(--bg) 97%, transparent);
+		backdrop-filter: blur(40px) saturate(150%);
+		-webkit-backdrop-filter: blur(40px) saturate(150%);
 		box-shadow:
 			0 12px 32px rgba(0, 0, 0, 0.45),
 			0 2px 8px rgba(0, 0, 0, 0.3);
