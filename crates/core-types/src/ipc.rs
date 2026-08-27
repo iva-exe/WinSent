@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// `HardwareReport` přečte razítko času z bajtu příznaku `Option`,
 /// takže vyjde rok 1970 a nikde se nic nezhroutí. Tichý nesmysl je
 /// horší než chybová hláška, protože ho nikdo nenahlásí.
-pub const PROTOCOL_VERSION: u32 = 47;
+pub const PROTOCOL_VERSION: u32 = 48;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,6 +185,8 @@ pub enum Response {
         free_bytes: u64,
         /// Čeká se na restart služby, aby se přesun provedl?
         pending: bool,
+        /// Proč se poslední přesun nepovedl. Prázdno = nic se nepokazilo.
+        move_error: String,
     },
     SystemHistory(Vec<crate::proc::SystemPoint>),
     /// Stav procesů z historie; `ts` = skutečný čas nalezeného vzorku.

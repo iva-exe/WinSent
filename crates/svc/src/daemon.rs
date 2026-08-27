@@ -89,6 +89,10 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     // Stěhuje se JEDINĚ tady, dokud ji nikdo nedrží otevřenou; kdyby se
     // přesun nepovedl, zůstane se u starého místa a jen se to zaloguje —
     // data jsou přednější než přání.
+    // Proč se přesun nepovedl — pro UI. Samotný log nestačí: uživatel
+    // si o přesun řekl, ten se tiše neprovedl a v Nastavení by dál
+    // svítilo „čeká na restart" donekonečna (SPEC 22: nic neselhává mlčky).
+    let db_move_error: Arc<RwLock<String>> = Arc::new(RwLock::new(String::new()));
     let db_path = {
         let dir = cfg.read().expect("config lock poisoned").db_dir.clone();
         // ODKUD se stěhuje, říká stopa, ne config. Config nese jen
@@ -97,23 +101,28 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         // databáze vedle té plné.
         let ted = store::db_current_dir()?.join(store::DB_FILE);
         let chtena = store::db_path_in(&dir).unwrap_or_else(|_| ted.clone());
+        let mut konecna = ted.clone();
         if chtena != ted {
             match store::move_db(&ted, &chtena) {
                 Ok(()) => {
-                    tracing::info!(z = %ted.display(), na = %chtena.display(), "databáze přesunuta")
+                    tracing::info!(z = %ted.display(), na = %chtena.display(), "databáze přesunuta");
+                    konecna = chtena;
                 }
                 Err(e) => {
-                    tracing::error!(error = %e, z = %ted.display(), na = %chtena.display(), "přesun databáze selhal — zůstávám tam, kde je");
+                    // Zůstává se tam, kde data jsou. Přání je přání,
+                    // historie je historie.
+                    tracing::error!(error = %e, z = %ted.display(), na = %chtena.display(), "přesun databáze selhal");
+                    *db_move_error.write().expect("db error lock") = e.to_string();
                 }
             }
-        }
-        // Kde se opravdu skončilo: když se přesun nepovedl, zůstává
-        // stará cesta. Data jsou přednější než přání.
-        let konecna = if chtena.exists() || !ted.exists() {
-            chtena
         } else {
-            ted
-        };
+            konecna = chtena;
+        }
+        // Když na původním místě nic není (první start, čerstvá
+        // instalace), založí se rovnou tam, kam se má.
+        if !konecna.exists() && !ted.exists() {
+            konecna = store::db_path_in(&dir).unwrap_or(konecna);
+        }
         if let Some(d) = konecna.parent() {
             store::set_db_current_dir(d);
         }
@@ -756,6 +765,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         let self_db_path = db_path.clone();
         let cfg_ipc = Arc::clone(&cfg);
         let cfg_path_ipc = cfg_path.clone();
+        let db_move_error = Arc::clone(&db_move_error);
         // Read-only spojení pro dotazy historie — čtenář ve WAL režimu
         // neblokuje zapisovací vlákno. Mutex: handler běží ve více
         // obslužných vláknech pipe.
@@ -914,6 +924,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         .and_then(win_sys::volumes::free_bytes)
                         .unwrap_or(0),
                     pending: chtena != current,
+                    move_error: db_move_error.read().expect("db error lock").clone(),
                     current_path: current,
                     wanted_dir: wanted,
                     default_dir,

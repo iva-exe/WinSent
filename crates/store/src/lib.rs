@@ -31,6 +31,11 @@ pub enum Error {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error(
+        "na cílovém místě už databáze je ({path}) — přesuň nebo smaž ji ručně, \
+         Winsent sám nerozhoduje, která z nich je ta pravá"
+    )]
+    MoveBlocked { path: PathBuf },
     #[error("proměnná prostředí ProgramData není dostupná")]
     NoProgramData,
 }
@@ -129,24 +134,17 @@ pub fn move_db(from: &Path, to: &Path) -> Result<(), Error> {
     if from == to || !from.exists() {
         return Ok(());
     }
-    // Na cíli něco leží. Přepsat to naslepo nepřipadá v úvahu, ale
-    // prázdná databáze (jen hlavička, nebo ani ta) je zbytek po dřívější
-    // chybě — ta ustoupí, protože v ní nic není.
+    // Na cíli něco leží — dál se nejde.
+    //
+    // Rozhodovat podle velikosti, která z těch dvou databází je „ta
+    // pravá", by znamenalo hádat s cizí historií v ruce. Za normálního
+    // provozu tenhle stav nenastane: přesun soubor STĚHUJE, takže na
+    // původním místě nic nezůstává. Když k němu přesto dojde, řekne se
+    // to uživateli a rozhodne on.
     if to.exists() {
-        let prazdna = std::fs::metadata(to).map(|m| m.len() < 100_000).unwrap_or(false);
-        if !prazdna {
-            return Err(Error::CreateDir {
-                path: to.to_path_buf(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    "na cílovém místě už databáze je",
-                ),
-            });
-        }
-        let _ = std::fs::remove_file(to);
-        for p in ["-wal", "-shm"] {
-            let _ = std::fs::remove_file(PathBuf::from(format!("{}{p}", to.display())));
-        }
+        return Err(Error::MoveBlocked {
+            path: to.to_path_buf(),
+        });
     }
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir).map_err(|source| Error::CreateDir {
@@ -262,25 +260,34 @@ mod stehovani {
         );
     }
 
-    // Prázdný zbytek po dřívější chybě ustoupí.
+    // Ani malá databáze na cíli se nepřepisuje.
     //
-    // Přesně tenhle stav vznikl při ověřování: databáze se přestěhovala
-    // na jiný disk, návrat na výchozí místo nic nepřesunul a služba si
-    // tam založila prázdnou databázi. Kdyby taková nula blokovala
-    // přesun, historie by zůstala nedosažitelná napořád.
+    // Rozhodovat podle velikosti, která z těch dvou je „ta pravá",
+    // znamená hádat s cizí historií v ruce. Radši se to řekne uživateli.
     #[test]
-    fn prazdny_zbytek_na_cili_ustoupi() {
+    fn ani_mala_databaze_na_cili_neustoupi() {
         let a = temp("zbytek-z");
         let b = temp("zbytek-na");
         let z = a.join(DB_FILE);
         let na = b.join(DB_FILE);
         naplnit(&z, 200_000);
         naplnit(&na, 4096);
-        move_db(&z, &na).expect("přesun");
-        assert_eq!(
-            std::fs::metadata(&na).expect("cíl").len(),
-            200_000,
-            "na cíli nezůstala plná databáze"
-        );
+        assert!(move_db(&z, &na).is_err(), "malá databáze na cíli se přepsala");
+        assert!(z.exists(), "zdroj zmizel, přestože se nepřesunul");
+    }
+
+    // Původní místo po přesunu zůstane prázdné, takže cesta zpátky je
+    // volná. Právě tohle drží pravidlo „na cíli nesmí nic být" v chodu.
+    #[test]
+    fn cesta_zpatky_je_po_presunu_volna() {
+        let a = temp("tam-z");
+        let b = temp("tam-na");
+        let z = a.join(DB_FILE);
+        let na = b.join(DB_FILE);
+        naplnit(&z, 200_000);
+        move_db(&z, &na).expect("tam");
+        move_db(&na, &z).expect("zpátky");
+        assert!(z.exists(), "databáze se nevrátila");
+        assert!(!na.exists(), "na cizím místě něco zůstalo");
     }
 }

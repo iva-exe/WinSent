@@ -327,7 +327,12 @@
 					<span class="db-v value-mono"><Num value={db.free_bytes} format={fmtBytes} /></span>
 				</div>
 			</div>
-			{#if db.pending}
+			{#if db.move_error}
+				<!-- Přesun se při startu služby nepovedl. Bez tohohle by
+				     v UI donekonečna svítilo „čeká na restart" a jediné,
+				     co by o problému vědělo, byl by log. -->
+				<p class="note pc-err">Přesun se nepovedl: {db.move_error}</p>
+			{:else if db.pending}
 				<!-- Databáze je otevřená, takže se stěhuje až při startu
 				     služby. Říct to nahlas je důležitější než to schovat:
 				     jinak uživatel uvidí starou cestu a bude si myslet,

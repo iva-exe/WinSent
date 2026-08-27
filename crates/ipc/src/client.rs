@@ -120,6 +120,7 @@ pub fn query_db_location() -> Result<DbLocation, Error> {
             bytes,
             free_bytes,
             pending,
+            move_error,
         } => Ok(DbLocation {
             current_path,
             wanted_dir,
@@ -127,6 +128,7 @@ pub fn query_db_location() -> Result<DbLocation, Error> {
             bytes,
             free_bytes,
             pending,
+            move_error,
         }),
         Response::Error { message } => Err(Error::Remote { message }),
         other => Err(Error::Remote {
@@ -144,6 +146,7 @@ pub struct DbLocation {
     pub bytes: u64,
     pub free_bytes: u64,
     pub pending: bool,
+    pub move_error: String,
 }
 
 /// Přesune databázi jinam (prázdno = zpět na výchozí místo).
