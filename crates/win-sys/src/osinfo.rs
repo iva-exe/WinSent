@@ -32,8 +32,14 @@ pub struct OsInfo {
     pub update_last_search: Option<i64>,
     /// Kdy naposledy úspěšně proběhla instalace aktualizace (unix).
     pub update_last_install: Option<i64>,
-    /// Typ spuštění služby Windows Update (2 = automaticky,
-    /// 3 = ručně, 4 = zakázáno). `None` = klíč se nepodařilo přečíst.
+    /// Surový typ spuštění služby `wuauserv` z registru.
+    ///
+    /// NEPŘEKLÁDEJ to na „aktualizace jsou ruční". Od Windows 10 se
+    /// wuauserv spouští trigerem, takže má 3 (demand start) i na
+    /// stroji, kde se všechno instaluje samo — aktualizace řídí
+    /// Update Orchestrator (UsoSvc), ne ona. Jediná hodnota, která
+    /// o něčem vypovídá, je 4 = zakázáno.
+    /// `None` = klíč se nepodařilo přečíst.
     pub update_service_start: Option<u32>,
     /// Je automatické aktualizování zakázané zásadou?
     pub update_disabled_by_policy: bool,

@@ -47,7 +47,53 @@ const RE_SID = /\bS-1-5-21-\d+-\d+-\d+-(\d+)\b/g;
 // řádek pustí dál. Naměřeno na položce po spuštění pro Movavi:
 // `C:/Users/IVA/AppData/Roaming\Movavi…` prošla nemaskovaná, přestože
 // všechny ostatní cesty v témž souboru maskované byly.
-const RE_PROFILE = /([A-Za-z]:[\\/]Users[\\/])[^\\/:*?"<>|\s]+/gi;
+//
+// Síťová cesta `\\server\Users\Jméno` nemá písmeno disku, proto je
+// začátek volitelný.
+const RE_PROFILE = /((?:[A-Za-z]:|\\\\[^\\/]+)[\\/]Users[\\/])([^\\/:*?"<>|\r\n]+)/gi;
+
+// Složky pod C:\Users, které nepatří žádnému člověku. Maskovat je nemá
+// co chránit a výstup to jen znečistí: `C:\Users\All Users` se dřív
+// zapsalo jako `C:\Users\<uživatel> Users`.
+const NEPROFILY = ['all users', 'default user', 'default', 'public', 'desktop.ini'];
+
+// Jména profilových složek z tohohle stroje, malými písmeny. Plní je
+// reportText ze seznamu účtů — jinak nejde poznat, kde jméno s mezerou
+// končí a kde začíná zbytek věty.
+let profilyStroje = [];
+
+// Nahradí jméno profilové složky, ať už obsahuje mezery, nebo ne.
+//
+// Maska dřív brala jen souvislý shluk bez bílých znaků, takže u účtu
+// „Jan Novak" (profil C:\Users\Jan Novak) zůstalo v záznamu příjmení:
+// `C:\Users\<uživatel> Novak`. Rozšířit znakovou třídu o mezeru samo
+// o sobě nestačí — cesta se v textu občas objeví bez pokračování
+// a za ní věta, kterou by maska spolkla taky.
+//
+// Rozhoduje proto ZNAK ZA SHODOU. Když za jménem následuje lomítko
+// nebo uvozovka, je jisté, že celá shoda je jméno složky, a maskuje
+// se celá i s mezerami. Když shoda končí koncem řádku, je to nejspíš
+// věta — tam se zkusí skutečná jména účtů z tohohle stroje a teprve
+// když žádné nesedí, maskuje se jen první slovo (chování před opravou).
+function maskProfilovouSlozku(m, zaklad, zbytek, offset, cely) {
+	const lc = zbytek.toLowerCase();
+	// Složky, které nepatří člověku, se nechávají být.
+	for (const n of NEPROFILY) {
+		if (lc === n) return m;
+	}
+	const za = cely[offset + m.length];
+	if (za === '\\' || za === '/' || za === '"' || za === "'") {
+		return zaklad + '<uživatel>';
+	}
+	for (const n of profilyStroje) {
+		if (lc === n) return zaklad + '<uživatel>';
+		if (lc.startsWith(n) && /[\s.,;)]/.test(zbytek[n.length])) {
+			return zaklad + '<uživatel>' + zbytek.slice(n.length);
+		}
+	}
+	const prvni = zbytek.search(/\s/);
+	return prvni < 0 ? zaklad + '<uživatel>' : zaklad + '<uživatel>' + zbytek.slice(prvni);
+}
 
 /// Adresy, které nikoho neidentifikují — nechávají se celé.
 const KEEP_IP = new Set(['0.0.0.0', '255.255.255.255', '::', '::1']);
@@ -82,7 +128,7 @@ function clean(v) {
 	s = s.replace(RE_IPV6, (m) => (m.includes('::') && m.length < 4 ? m : maskIp(m)));
 	s = s.replace(RE_IPV4, (m) => maskIp(m));
 	s = s.replace(RE_SID, (_m, rid) => `S-1-5-21-<stroj>-${rid}`);
-	s = s.replace(RE_PROFILE, '$1<uživatel>');
+	s = s.replace(RE_PROFILE, maskProfilovouSlozku);
 	return s;
 }
 
@@ -156,6 +202,42 @@ function gigabitCapable(a) {
 	return /gigabit|gbe|\b2\.5g|\b5g\b|10gb|i21[0-9]|rtl81(1|6)|killer e/.test(d);
 }
 
+// Je ta verze Windows po konci podpory? Vrací větu, nebo null.
+//
+// Data pro tenhle závěr v záznamu byla už dřív (sestavení i označení
+// verze), jen z nich nikdo závěr neudělal — a přitom je to podmínka
+// všeho ostatního: systém bez záplat se nedá označit za chráněný.
+// Termíny jsou veřejné a pevné, proto se dají zapsat natvrdo; co
+// nevíme, o tom mlčíme.
+const KONEC_PODPORY = {
+	// Windows 10, poslední verze pro běžné edice.
+	19045: '2025-10-14',
+	19044: '2024-06-11',
+	19043: '2022-12-13',
+	19042: '2022-05-10',
+	19041: '2021-12-14',
+	18363: '2021-05-11',
+	// Windows 11.
+	22000: '2023-10-10',
+	22621: '2024-10-08',
+	22631: '2025-11-11'
+};
+
+function konecPodpory(o) {
+	const den = KONEC_PODPORY[o.build];
+	if (!den) return null;
+	const konec = Date.parse(den + 'T00:00:00Z') / 1000;
+	const jmeno = `${o.product}${o.display_version ? ' ' + o.display_version : ''}`;
+	if (Date.now() / 1000 > konec) {
+		return `${jmeno} je po konci podpory (${den}) — bezpečnostní záplaty už nechodí.`;
+	}
+	const dnu = Math.round((konec - Date.now() / 1000) / 86400);
+	if (dnu <= 180) {
+		return `${jmeno} má konec podpory ${den}, tedy za ${dnu} dnů.`;
+	}
+	return null;
+}
+
 function parseJson(s) {
 	try {
 		return JSON.parse(s ?? '');
@@ -223,6 +305,21 @@ export async function gatherAll(invoke, onStep = () => {}) {
 }
 
 export function reportText(d) {
+	// Jména účtů se maskovači předají dřív, než začne cokoli psát.
+	// Profilová složka se jmenuje podle přihlašovacího jména, takže
+	// tohle je jediný spolehlivý způsob, jak poznat, kde jméno
+	// s mezerou („Jan Novak") končí. Nejdelší napřed, aby „Jan" nesebral
+	// shodu „Jan Novak". Přidává se i jméno přihlášeného účtu pro případ,
+	// že se seznam účtů nepodařilo načíst.
+	profilyStroje = [
+		...(d.users?.users ?? []).map((u) => u.name),
+		d.users?.current_user,
+		...(d.users?.users ?? []).map((u) => u.full_name)
+	]
+		.filter((n) => typeof n === 'string' && n.trim())
+		.map((n) => n.trim().toLowerCase())
+		.sort((a, b) => b.length - a.length);
+
 	const L = [];
 	const H = (t) => {
 		L.push('');
@@ -513,10 +610,30 @@ export function reportText(d) {
 				`Windows:    ${o.product}${o.display_version ? ' ' + o.display_version : ''} ${o.arch}, sestavení ${o.build}.${o.ubr}`
 			);
 			L.push(`Nainstalován: ${o.install_ts ? ts(o.install_ts) : '—'}`);
-			const svc = { 2: 'automaticky', 3: 'ručně', 4: 'ZAKÁZANÁ' };
-			L.push(
-				`Aktualizace: služba ${svc[o.update_service_start] ?? '—'}${o.update_disabled_by_policy ? ', VYPNUTÉ ZÁSADOU' : ''}`
-			);
+			// Údaje pro tenhle závěr v záznamu byly, závěr chyběl —
+			// a přitom je to ze všeho nejdůležitější: systém po konci
+			// podpory nedostává bezpečnostní záplaty, takže všechno
+			// ostatní v sekci ochrany je tím podmíněné.
+			const podpora = konecPodpory(o);
+			if (podpora) L.push(`POZOR:      ${podpora}`);
+			// Typ spuštění služby wuauserv se NEPŘEKLÁDÁ na režim
+			// aktualizací.
+			//
+			// Od Windows 10 je wuauserv spouštěná trigerem, takže má
+			// Start = 3 i na stroji, kde se všechno instaluje samo —
+			// aktualizace řídí Update Orchestrator (UsoSvc), ne ona.
+			// Řádek „Aktualizace: služba ručně" tak vylezl prakticky
+			// všude a byl to falešný poplach: technik z něj přečte
+			// problém, který neexistuje. Jediná hodnota, která opravdu
+			// něco znamená, je 4 = zakázáno.
+			const zakazano = o.update_service_start === 4 || o.update_disabled_by_policy;
+			const duvod = [
+				o.update_service_start === 4 ? 'služba wuauserv je zakázaná' : null,
+				o.update_disabled_by_policy ? 'zakázáno zásadou (NoAutoUpdate)' : null
+			]
+				.filter(Boolean)
+				.join(', ');
+			L.push(`Aktualizace: ${zakazano ? 'VYPNUTÉ — ' + duvod : 'zapnuté'}`);
 			L.push(
 				`  naposledy hledáno: ${o.update_last_search ? ts(o.update_last_search) : 'nezjištěno'}`
 			);
@@ -540,14 +657,33 @@ export function reportText(d) {
 			`Firewall:   doména ${p.fw_domain == null ? '—' : p.fw_domain ? 'ano' : 'NE'}, privátní ${p.fw_private == null ? '—' : p.fw_private ? 'ano' : 'NE'}, veřejná ${p.fw_public == null ? '—' : p.fw_public ? 'ano' : 'NE'}`
 		);
 		L.push(`Secure Boot: ${p.secure_boot == null ? 'není k dispozici (legacy BIOS)' : p.secure_boot ? 'zapnutý' : 'VYPNUTÝ'}`);
+		// Prázdná verze specifikace znamená „čip ve stromu zařízení je,
+		// ale WMI o něm mlčí" — typicky bez práv. Tvrdit v takové chvíli
+		// „nenalezen" by byl výmysl o hardwaru.
 		L.push(
-			`TPM:        ${p.tpm == null ? 'nenalezen' : `${p.tpm[0] ? 'zapnutý' : 'vypnutý'}${p.tpm[1] ? ', specifikace ' + p.tpm[1] : ''}`}`
+			`TPM:        ${
+				p.tpm == null
+					? 'nenalezen (žádný čip ve stromu zařízení)'
+					: p.tpm[1]
+						? `${p.tpm[0] ? 'zapnutý' : 'vypnutý'}, specifikace ${p.tpm[1]}`
+						: 'čip je, stav nezjištěn (WMI nic nevrátilo)'
+			}`
 		);
 		L.push(
 			`UAC:        ${p.uac_enabled ? 'zapnuté' : 'VYPNUTÉ'}${p.uac_admin_prompt != null ? `, režim výzvy ${p.uac_admin_prompt}` : ''}`
 		);
-		for (const e of p.encryption ?? []) {
-			L.push(`BitLocker:  ${e[0]} — ${e[1] === 1 ? 'zapnuté' : e[1] === 0 ? 'VYPNUTÉ' : 'neznámé'}`);
+		// Prázdný seznam znamenalo mlčení, takže z něj nešlo poznat,
+		// jestli šifrovaný svazek není, nebo jsme se jen nezeptali.
+		// Win32_EncryptableVolume nevrátí nic na edicích bez BitLockeru
+		// a bez práv správce.
+		if ((p.encryption ?? []).length) {
+			for (const e of p.encryption) {
+				L.push(
+					`BitLocker:  ${e[0]} — ${e[1] === 1 ? 'zapnuté' : e[1] === 0 ? 'VYPNUTÉ' : 'neznámé'}`
+				);
+			}
+		} else {
+			L.push('BitLocker:  nezjištěno (edice bez BitLockeru, nebo dotaz neprošel)');
 		}
 
 		const perms = d.security.permissions ?? [];
@@ -591,21 +727,48 @@ export function reportText(d) {
 		for (const cap of caps) {
 			// Uvnitř kategorie napřed to, co se používá teď, pak podle
 			// posledního použití — nahoře je vždycky to zajímavé.
-			const rows = byCap.get(cap).sort((a, b) => {
+			// Sloučit verze téže aplikace do jednoho řádku.
+			//
+			// ConsentStore klíčuje oprávnění CESTOU k .exe, takže program
+			// instalovaný do složky s číslem verze si po každé aktualizaci
+			// založí nový záznam a starý nechá ležet. Naměřeno 118 řádků
+			// pro jeden Discord a 255 řádků v celé sekci — hlavní důvod,
+			// proč byla nečitelná. `group_key` posílá služba právě proto
+			// a stránka Zabezpečení podle něj sdružuje už dřív; záznam ho
+			// jen ignoroval.
+			const skupiny = new Map();
+			for (const x of byCap.get(cap)) {
+				const k = x.group_key || x.app;
+				const t = totals.get(`${x.capability}|${x.app}`) ?? 0;
+				const g = skupiny.get(k);
+				if (!g) {
+					skupiny.set(k, { ...x, verzi: 1, celkem: t });
+					continue;
+				}
+				g.verzi += 1;
+				g.celkem += t;
+				// Za skupinu mluví ta verze, která ví nejvíc: používá se
+				// teď, jinak ta s nejnovějším použitím.
+				if (x.in_use && !g.in_use) Object.assign(g, x, { verzi: g.verzi, celkem: g.celkem });
+				else if (x.in_use === g.in_use && (x.last_used ?? 0) > (g.last_used ?? 0)) {
+					Object.assign(g, x, { verzi: g.verzi, celkem: g.celkem });
+				}
+			}
+			const rows = [...skupiny.values()].sort((a, b) => {
 				if (a.in_use !== b.in_use) return a.in_use ? -1 : 1;
 				return (b.last_used ?? 0) - (a.last_used ?? 0);
 			});
 			const live = rows.filter((r) => r.in_use).length;
 			const allowed = rows.filter((r) => r.allow).length;
+			const verzi = rows.reduce((s, r) => s + r.verzi, 0);
 			L.push('');
 			L.push(
-				`  ${CAPS[cap] ?? cap} (${cap}) — ${rows.length} aplikací, povoleno ${allowed}${live ? `, PRÁVĚ POUŽÍVÁ ${live}` : ''}`
+				`  ${CAPS[cap] ?? cap} (${cap}) — ${rows.length} aplikací, povoleno ${allowed}${live ? `, PRÁVĚ POUŽÍVÁ ${live}` : ''}${verzi > rows.length ? `  [${verzi} záznamů v registru, sloučeno podle aplikace]` : ''}`
 			);
 			L.push('    stav        používá  naposledy            30 dnů     aplikace');
 			for (const x of rows) {
-				const t = totals.get(`${x.capability}|${x.app}`);
 				L.push(
-					`    ${pad(x.allow ? 'povoleno' : x.enforced ? 'zablokováno' : 'odepřeno*', 11)} ${pad(x.in_use ? 'ANO' : '', 8)} ${pad(x.last_used ? ts(x.last_used) : '—', 20)} ${pad(dur(t), 10)} ${x.app_name || x.app}`
+					`    ${pad(x.allow ? 'povoleno' : x.enforced ? 'zablokováno' : 'odepřeno*', 11)} ${pad(x.in_use ? 'ANO' : '', 8)} ${pad(x.last_used ? ts(x.last_used) : '—', 20)} ${pad(dur(x.celkem || null), 10)} ${x.app_name || x.app}${x.verzi > 1 ? `  (${x.verzi} verzí)` : ''}`
 				);
 			}
 		}

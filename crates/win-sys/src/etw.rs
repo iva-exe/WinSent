@@ -1,6 +1,15 @@
-//! ETW (SPEC kap. 3.2): realtime session pro události procesů a
-//! POVINNÝ autologger — černá skříňka ve file módu (.etl, rotující
-//! ring), jejíž buffery zapisuje jádro, takže přežije BSOD.
+//! ETW (SPEC kap. 3.2): realtime session pro události procesů a černá
+//! skříňka ve file módu (.etl, rotující ring).
+//!
+//! POZOR na rozsah záruky. Skříňka NENÍ registrovaná jako autologger
+//! v registru — zakládá ji `StartTraceW` až po startu služby, takže
+//! restart stroje nepřežije a po BSODu v ní chybí to, co v okamžiku
+//! bugchecku leželo v bufferech (nejvýš `FlushTimer`, tedy 5 s).
+//! Řádné zastavení služby buffery dopíše, protože `Drop` volá
+//! `ControlTraceW(STOP)`. Kdyby měla skříňka pád opravdu přežít celá,
+//! musel by ji zakládat autologger v
+//! `HKLM\SYSTEM\CurrentControlSet\Control\WMI\Autologger` — to zatím
+//! neděláme a SPEC 16.3 v tomhle bodě popisuje cíl, ne stav.
 //!
 //! Realtime konzumujeme jen Microsoft-Windows-Kernel-Process
 //! (ProcessStart/Stop s exit kódem a pravým parent PID — to žádné
@@ -78,22 +87,28 @@ fn build_props(file: Option<&str>) -> (Vec<u8>, usize, usize) {
     props.Wnode.BufferSize = total as u32;
     props.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
     props.Wnode.ClientContext = 1; // QPC
-    props.BufferSize = 64; // KB na buffer
     props.LoggerNameOffset = name_off as u32;
     match file {
         Some(path) => {
             props.LogFileMode = EVENT_TRACE_FILE_MODE_CIRCULAR;
             props.MaximumFileSize = 64; // MB — rotující ring (SPEC 16.3)
-            // Černou skříňku nikdo nečte za běhu — čte se až po incidentu.
+            // Cena flushe se snižuje VELIKOSTÍ bufferu, ne jeho odkladem.
             //
-            // Sekundový flush tady byl draho zaplacený zvyk z realtime
-            // session: ETW při něm zapíše na disk nedoplněný buffer za
-            // KAŽDÉ jádro, tedy 64 kB × počet jader každou sekundu.
-            // Na dvanáctijádrovém stroji to je skoro 800 kB/s trvale,
-            // což odpovídá naměřeným ~550 kB/s zápisu služby — a protože
+            // ETW při vypršení časovače zapíše na disk rozepsaný buffer
+            // za KAŽDÉ jádro. Se 64 kB a sekundovým časovačem to na
+            // dvanáctijádrovém stroji dělá skoro 800 kB/s trvale —
+            // odtud naměřených ~550 kB/s zápisu služby, a protože
             // skříňka sbírá i diskové události, částečně se tím krmila
-            // sama. Šedesát sekund znamená, že se buffery zapíšou plné.
-            props.FlushTimer = 60;
+            // sama.
+            //
+            // Odklad na 60 s to spravil, ale zaplatil tím to jediné,
+            // kvůli čemu skříňka existuje: v archivu chyběla celá
+            // poslední minuta před pádem, tedy přesně okno incidentu.
+            // Osmikilobajtový buffer stojí osmkrát míň, takže se
+            // pětisekundový časovač vejde do ~10 kB/s a v souboru
+            // chybí nejvýš pět sekund.
+            props.BufferSize = 8; // kB na buffer
+            props.FlushTimer = 5; // s
             props.LogFileNameOffset = file_off as u32;
             let wide: Vec<u16> = path.encode_utf16().take(MAX_CHARS - 1).collect();
             let dst = &mut buf[file_off..file_off + wide.len() * 2];
@@ -106,6 +121,7 @@ fn build_props(file: Option<&str>) -> (Vec<u8>, usize, usize) {
             props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
             // Realtime doručení bez čekání na plný buffer — tady je
             // sekunda na místě, nic se přitom nezapisuje na disk.
+            props.BufferSize = 64; // kB na buffer
             props.FlushTimer = 1;
             props.LogFileNameOffset = 0;
         }
@@ -115,10 +131,11 @@ fn build_props(file: Option<&str>) -> (Vec<u8>, usize, usize) {
 
 /// Vynutí zápis rozepsaných bufferů session do souboru.
 ///
-/// Černá skříňka zapisuje buffery až plné (viz `build_props`), takže
-/// posledních pár minut událostí leží v paměti. Před archivací okna
-/// incidentu je potřeba je dostat na disk — jinak by v archivu chybělo
-/// právě to, co se dělo těsně před událostí.
+/// Používá se před archivací okna incidentu, aby v souboru bylo
+/// i posledních pár sekund. Když session neexistuje (typicky proto,
+/// že se archivuje hned po startu služby, tedy dřív, než se skříňka
+/// vůbec založí), vrátí `ERROR_WMI_INSTANCE_NOT_FOUND` — to není
+/// chyba, jen se nemá co zapisovat.
 pub fn flush_session(name: &str) -> Result<(), Error> {
     let (mut buf, name_off, _) = build_props(None);
     let mut wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();

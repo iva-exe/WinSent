@@ -43,7 +43,7 @@ pub fn record(
          ON CONFLICT(app, capability, start_ts)
          -- Konec se jen doplňuje. Přepsat vyplněný konec zpět na NULL
          -- by ze zavřeného sezení udělalo věčně běžící.
-         --  se naopak posouvá pořád: je to poslední okamžik,
+         -- seen_ts se naopak posouvá pořád: je to poslední okamžik,
          -- kdy jsme relaci viděli otevřenou, a u sezení bez konce
          -- určuje, kam až se smí počítat.
          DO UPDATE SET stop_ts = COALESCE(excluded.stop_ts, perm_use.stop_ts),

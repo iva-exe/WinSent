@@ -199,19 +199,42 @@ fn secure_boot() -> Option<bool> {
 }
 
 /// TPM přes WMI (root\CIMV2\Security\MicrosoftTpm).
+///
+/// Prázdný výsledek NEZNAMENÁ „čip tam není". Dotaz vrátí prázdno taky
+/// tehdy, když na něj nemáme právo nebo když WMI třídu neregistrovala
+/// žádná verze — a Winsent to hlásil jako „TPM: nenalezen", tedy jako
+/// fakt o hardwaru. Proto se hned vedle hledá zařízení ve stromu
+/// systému: když tam Trusted Platform Module je, čip existuje a my jen
+/// nevíme, v jakém je stavu.
 fn tpm() -> Option<(bool, String)> {
     let rows = crate::wmi::query(
         r"root\CIMV2\Security\MicrosoftTpm",
         "SELECT IsEnabled_InitialValue, SpecVersion FROM Win32_Tpm",
         &["IsEnabled_InitialValue", "SpecVersion"],
     );
-    let r = rows.first()?;
+    let Some(r) = rows.first() else {
+        // Čip ve stromu zařízení je, stav neznáme — prázdná verze
+        // specifikace je pro volajícího značka „nezjištěno".
+        return tpm_device_present().then(|| (false, String::new()));
+    };
     Some((
         crate::wmi::flag(r, "IsEnabled_InitialValue").unwrap_or(false),
         r.get("SpecVersion")
             .map(|v| v.split(',').next().unwrap_or(v).trim().to_string())
             .unwrap_or_default(),
     ))
+}
+
+/// Je ve stromu zařízení čip TPM? Levné čtení registru — třída
+/// `SecurityDevices` existuje jen tam, kde nějaký čip je.
+fn tpm_device_present() -> bool {
+    use crate::registry::{enum_subkeys, HKEY_LOCAL_MACHINE};
+    enum_subkeys(
+        HKEY_LOCAL_MACHINE,
+        r"SYSTEM\CurrentControlSet\Enum\ACPI\MSFT0101",
+    )
+    .iter()
+    .any(|s| !s.is_empty())
 }
 
 /// BitLocker per svazek (root\CIMV2\Security\MicrosoftVolumeEncryption)

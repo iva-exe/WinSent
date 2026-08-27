@@ -338,6 +338,7 @@ pub fn load_tables() -> Tables {
     // Nejdelší prefix první (nejspecifičtější InstallLocation vyhrává).
     uninstall.sort_by_key(|(loc, _)| std::cmp::Reverse(loc.len()));
     uninstall.dedup_by(|a, b| a.0 == b.0);
+    drop_collection_dirs(&mut uninstall);
     tracing::info!(
         count = uninstall.len(),
         icons = icons.len(),
@@ -381,6 +382,25 @@ fn install_prefix(raw: &str) -> Option<String> {
         return None;
     }
     Some(lc)
+}
+
+/// Vyhodí instalační adresáře, které jsou nadřazené jiné instalaci.
+///
+/// Sběrné adresáře seznam pevných jmen nezachytí — jsou to úplně
+/// legitimní záznamy. Naměřeno: Minecraft Launcher má
+/// `InstallLocation = D:\hry\` a jeho binárka tam opravdu leží, jenže
+/// v témž adresáři jsou i Genshin Impact, Star Rail a Star Stable.
+/// Prefixová shoda pak `D:\hry\Star Rail Games\StarRail.exe` ohlásila
+/// jako aplikaci „Minecraft Launcher" s confidence Exact — tedy přesně
+/// to, co u „Blender má D:\" tenhle modul zavíral, jen o patro níž.
+///
+/// Poznává se to tvarem dat, ne jmény: když pod prefixem leží jiný
+/// prefix z téhle tabulky, není to instalační adresář jedné aplikace,
+/// ale kontejner. Rodič se zahodí; potomci si své cesty určí sami
+/// a zbytek spadne o krok níž v kaskádě na podpis, což je pravdivější.
+fn drop_collection_dirs(uninstall: &mut Vec<(String, String)>) {
+    let vsechny: Vec<String> = uninstall.iter().map(|(l, _)| l.clone()).collect();
+    uninstall.retain(|(loc, _)| !vsechny.iter().any(|jiny| under_dir(jiny, loc)));
 }
 
 /// Leží cesta uvnitř adresáře? Obojí malými písmeny, `dir` bez koncového

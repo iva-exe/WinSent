@@ -146,13 +146,19 @@
 			tone: p.secure_boot == null ? 'dim' : p.secure_boot ? 'ok' : 'warn'
 		});
 
-		// TPM.
+		// TPM. Prázdná verze specifikace = čip ve stromu zařízení je,
+		// ale WMI o něm mlčí (typicky bez práv). „Nenalezen" by v té
+		// chvíli bylo tvrzení o hardwaru, které neplyne z ničeho.
 		rows.push({
 			icon: FileLock2,
 			name: 'TPM',
-			state: p.tpm == null ? 'nenalezen' : p.tpm[0] ? 'zapnutý' : 'vypnutý',
-			detail: p.tpm?.[1] ? `specifikace ${p.tpm[1]}` : '',
-			tone: p.tpm?.[0] ? 'ok' : 'dim'
+			state: p.tpm == null ? 'nenalezen' : p.tpm[1] ? (p.tpm[0] ? 'zapnutý' : 'vypnutý') : 'nezjištěno',
+			detail: p.tpm
+				? p.tpm[1]
+					? `specifikace ${p.tpm[1]}`
+					: 'čip v počítači je, ale Windows o něm přes WMI nic neřekly'
+				: 've stromu zařízení žádný čip není',
+			tone: p.tpm?.[0] && p.tpm?.[1] ? 'ok' : 'dim'
 		});
 
 		// UAC.

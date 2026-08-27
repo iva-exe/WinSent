@@ -31,13 +31,34 @@ $all = @(
 )
 $gates = if ($Only) { $Only } else { $all }
 
-Write-Host "Winsent — brány ($($gates.Count))" -ForegroundColor Cyan
+# Brány v JavaScriptu. Generátor záznamu o počítači je JS, takže jeho
+# kontroly nejsou .exe a běží zvlášť (viz níž).
+$jsGates = if ($Only) { @() } else { @('crates\ui\tests\maskcheck.mjs', 'crates\ui\tests\reportcheck.mjs') }
+
+Write-Host "Winsent — brány ($($gates.Count + $jsGates.Count))" -ForegroundColor Cyan
 
 # ── Build (jednou, pro všechny) ────────────────────────────────────
 $t0 = [Diagnostics.Stopwatch]::StartNew()
 & cargo build -q -p ipc -p identity -p win-sys --examples
 if ($LASTEXITCODE -ne 0) { throw "build bran selhal ($LASTEXITCODE)" }
 Write-Host ("  build {0:N0} s" -f $t0.Elapsed.TotalSeconds) -ForegroundColor DarkGray
+
+# ── Brány v JavaScriptu ────────────────────────────────────────────
+# Maskování osobních údajů a pravdivost záznamu se testují tady,
+# protože právě tenhle soubor uživatel posílá e-mailem a do ticketů.
+$jsFailed = @()
+foreach ($j in $jsGates) {
+    $path = Join-Path $root $j
+    if (-not (Test-Path $path)) { continue }
+    $name = [IO.Path]::GetFileNameWithoutExtension($j)
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $out = & node $path 2>&1
+    $ok = $LASTEXITCODE -eq 0
+    if (-not $ok) { $jsFailed += $name }
+    $color = if ($ok) { 'Green' } else { 'Red' }
+    Write-Host ("  {0,-14} {1,5:N1} s  {2}" -f $name, $sw.Elapsed.TotalSeconds, ($out | Select-Object -Last 1)) -ForegroundColor $color
+    if (-not $ok) { $out | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkRed } }
+}
 
 # ── Běh (paralelně) ────────────────────────────────────────────────
 # Brány jen čtou přes pipe, takže si navzájem nepřekážejí. Služba je
@@ -80,7 +101,9 @@ foreach ($r in ($results | Sort-Object Name)) {
 }
 
 Write-Host ""
-Write-Host ("Celkem {0:N0} s · {1} z {2} prošlo" -f $t0.Elapsed.TotalSeconds, ($results.Count - $failed.Count), $results.Count) -ForegroundColor Cyan
+$vsech = $results.Count + $jsGates.Count
+$proslo = $vsech - $failed.Count - $jsFailed.Count
+Write-Host ("Celkem {0:N0} s · {1} z {2} prošlo" -f $t0.Elapsed.TotalSeconds, $proslo, $vsech) -ForegroundColor Cyan
 
 # Výpis padlých bran celý — jinak by se muselo pouštět znovu ručně.
 foreach ($f in $failed) {
@@ -88,4 +111,4 @@ foreach ($f in $failed) {
     Write-Host "─── $($f.Name) ───" -ForegroundColor Red
     Write-Host $f.Output
 }
-if ($failed.Count -gt 0) { exit 1 }
+if ($failed.Count -gt 0 -or $jsFailed.Count -gt 0) { exit 1 }

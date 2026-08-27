@@ -512,7 +512,8 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 const STORE_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore";
                 // Sleduje se hive prvního skutečného uživatele. Číst se
                 // pak čtou hive všechny — na stroji s víc účty se změny
-                // těch ostatních zachytí při nejbližší události.
+                // těch ostatních zachytí při nejbližší události, nejpozději
+                // při pravidelném potvrzení (viz REFRESH níž).
                 let watched = win_sys::consent::user_hives()
                     .into_iter()
                     .next()
@@ -521,8 +522,26 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 // Poprvé se čte hned: první průchod po startu zachytí
                 // i to, co běželo, než jsme se začali dívat.
                 let mut due = true;
+                // Probíhající relace se musí občas potvrdit, i když se
+                // v registru nic nehnulo.
+                //
+                // Relace bez konce se do součtu počítá jen po poslední
+                // pozorování (`seen_ts`) — jinak by po pádu aplikace
+                // rostla donekonečna. Jenže Windows během hovoru do
+                // ConsentStore nic nezapisují, takže se `seen_ts`
+                // neposunulo a hodinový hovor přispěl nulou: na jednom
+                // řádku pak stálo „Naposledy: právě teď" a vedle
+                // „Posledních 30 dnů: nepoužito". Potvrzení jednou za
+                // minutu ochranu zachová a živou relaci nechá růst.
+                let mut last_refresh = Instant::now();
+                const REFRESH: Duration = Duration::from_secs(60);
                 while !stop.load(Ordering::SeqCst) {
+                    if last_refresh.elapsed() >= REFRESH {
+                        last_refresh = Instant::now();
+                        due = true;
+                    }
                     if due {
+                        last_refresh = Instant::now();
                         let running = collector_sec::RunningApps::from_procs(
                             &live.read().expect("live lock poisoned").procs,
                         );
@@ -1833,9 +1852,11 @@ fn archive_blackbox(ts: i64) -> Option<String> {
     if !src.exists() {
         return None;
     }
-    // Buffery se zapisují až plné, takže poslední minuty leží v paměti.
-    // Bez tohohle by v archivu chybělo právě to, co se dělo těsně
-    // před incidentem — tedy jediné, kvůli čemu se archivuje.
+    // Dopsat, co ještě leží v bufferech. Po restartu stroje session
+    // neběží (archivuje se dřív, než ji `init` založí — soubor by ho
+    // jinak přepsal), takže tam tohle volání většinou nic nezmůže;
+    // uplatní se, když skříňka po tvrdém zabití procesu osiřela a žije
+    // dál. Chybu proto nehlásíme jako problém, viz flush_blackbox.
     collector_etw::flush_blackbox();
     let dst = dir.join(format!("incident-{ts}.etl"));
     let out = match std::fs::rename(&src, &dst) {

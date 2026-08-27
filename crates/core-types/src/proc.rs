@@ -44,7 +44,7 @@ mod filetime_json {
 }
 
 /// Jeden proces v aktuálním snapshotu sampleru.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProcRow {
     pub pid: u32,
     pub parent_pid: u32,
@@ -247,7 +247,7 @@ pub struct VolumeRow {
 }
 
 /// Zdraví fyzického disku (NVMe health log; SATA zatím None).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiskHealthRow {
     pub index: u32,
     pub model: String,
@@ -285,7 +285,7 @@ pub struct CleanupReport {
 }
 
 /// Startup položka (v6, SPEC kap. 7).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StartupRow {
     /// `{source}|{name}` — klíč pro přepnutí.
     pub id: String,
@@ -437,7 +437,7 @@ pub struct BatteryInfo {
 
 /// Tepelný stav CPU (v9, SPEC kap. 15.2). Teplota je `None`, když ji
 /// stroj nehlásí — `temp_source` vždy řekne, čemu uživatel věří.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CpuThermalInfo {
     pub celsius: Option<f32>,
     /// „HWiNFO" | „LibreHardwareMonitor" | „ACPI" | „nedostupné".
@@ -449,7 +449,7 @@ pub struct CpuThermalInfo {
 
 /// Kompletní hardwarový přehled (v9, SPEC kap. 15). Skládá se ze
 /// statického inventáře (čte se jednou) a stavu, který se obnovuje.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HardwareReport {
     pub board: BoardInfo,
     pub battery: Option<BatteryInfo>,
@@ -632,7 +632,9 @@ pub struct OsInfoRow {
     /// Poslední úspěšná instalace aktualizace (unix). `None` = nezjištěno,
     /// ne „nikdy" — novější sestavení tenhle záznam nevedou.
     pub update_last_install: Option<i64>,
-    /// Typ spuštění služby wuauserv: 2 automaticky, 3 ručně, 4 zakázáno.
+    /// Surový typ spuštění služby wuauserv. Jen 4 = zakázáno o něčem
+    /// vypovídá; 3 je od Windows 10 běžný stav (trigger start), ne
+    /// „ruční aktualizace“ — viz win_sys::osinfo.
     pub update_service_start: Option<u32>,
     /// Automatické aktualizace vypnuté zásadou.
     pub update_disabled_by_policy: bool,

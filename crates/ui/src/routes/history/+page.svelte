@@ -99,6 +99,17 @@
 								<span class="r-badge ok">provedeno</span>
 							{:else if a.outcome === 'rolled_back'}
 								<span class="r-badge warn">vráceno zpět</span>
+							{:else if a.outcome === 'handed'}
+								<!-- Odinstalaci převzal launcher (Steam a spol.).
+								     Není to selhání, jen se čeká na potvrzení
+								     v jeho okně — proto neutrální, ne varovný. -->
+								<span class="r-badge info" title="Odinstalaci převzal jiný program a čeká na potvrzení v jeho okně">
+									předáno launcheru
+								</span>
+							{:else if a.outcome === 'running'}
+								<span class="r-badge info">probíhá</span>
+							{:else if a.outcome === 'failed'}
+								<span class="r-badge warn">nepovedlo se</span>
 							{:else}
 								<span class="r-badge warn">{a.outcome ?? '—'}</span>
 							{/if}
@@ -258,6 +269,11 @@
 	.r-badge.warn {
 		color: var(--warn);
 		border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+	}
+	/* Stav, který není ani úspěch, ani problém — jen se ještě čeká. */
+	.r-badge.info {
+		color: var(--text-dim);
+		border-color: color-mix(in srgb, var(--text-dim) 40%, transparent);
 	}
 	.r-target {
 		font-size: var(--fs-sm);

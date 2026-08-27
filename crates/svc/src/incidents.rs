@@ -171,6 +171,11 @@ pub fn ntstatus_meaning(code: u32) -> Option<&'static str> {
         0xC000_041D => "výjimka uvnitř obsluhy zpětného volání",
         0xC000_0602 => "program se ukončil sám kvůli poškozenému stavu (FAIL_FAST)",
         0xC000_0022 => "přístup odepřen (ACCESS_DENIED)",
+        // Tyhle tři vyšly z analyzovaných záznamů dvou strojů —
+        // ve slovníku chyběly zrovna ty, na které se opravdu narazilo.
+        0xC000_010A => "proces se ukončoval, když se do něj sahalo (PROCESS_IS_TERMINATING)",
+        0xC000_026B => "systém vypínal a proces se ukončil s ním (DLL_INIT_FAILED_LOGOFF)",
+        0xC000_042C => "chtěl práva správce a nedostal je (ELEVATION_REQUIRED)",
         _ => return None,
     })
 }

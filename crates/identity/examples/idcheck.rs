@@ -62,6 +62,27 @@ fn main() {
         }
     }
 
+    // Žádný instalační adresář nesmí být nadřazený jinému.
+    //
+    // Sběrné adresáře jsou legitimní záznamy, které seznam pevných jmen
+    // nezachytí: Minecraft Launcher má `InstallLocation = D:\hry\` a
+    // jeho binárka tam opravdu leží — jenže vedle ní i Genshin Impact
+    // a Star Rail. Prefixová shoda pak celý adresář ohlásila jako
+    // „Minecraft Launcher" s confidence Exact.
+    for (loc, jmeno) in &tables.uninstall {
+        // Na hranici komponenty, ne po znacích: „…\hollow knight" a
+        // „…\hollow knight silksong" jsou sousedi, ne vnoření.
+        if let Some((pod, kdo)) = tables.uninstall.iter().find(|(jiny, _)| {
+            jiny.len() > loc.len()
+                && jiny.starts_with(loc.as_str())
+                && jiny.as_bytes()[loc.len()] == b'\\'
+        }) {
+            println!("FAIL: „{jmeno}\" ({loc}) je nadřazený „{kdo}\" ({pod})");
+            bad += 1;
+        }
+    }
+    println!("  instalačních adresářů v tabulce: {}", tables.uninstall.len());
+
     if bad > 0 {
         println!("FAIL: {bad} procesů s vymyšlenou identitou");
         std::process::exit(1);

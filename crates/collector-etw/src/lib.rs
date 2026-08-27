@@ -1,7 +1,11 @@
 //! collector-etw — ETW session (SPEC kap. 3.2): realtime události
-//! procesů (start/stop s exit kódem a pravým parent PID) + POVINNÝ
-//! autologger — černá skříňka `.etl` (rotující ring 64 MB, zapisuje
-//! jádro, přežije BSOD).
+//! procesů (start/stop s exit kódem a pravým parent PID) + černá
+//! skříňka `.etl` (rotující ring 64 MB).
+//!
+//! Skříňka NENÍ registrovaná jako autologger v registru: zakládá se
+//! až po startu služby, takže restart stroje nepřežije a po BSODu
+//! v ní chybí posledních nejvýš pět sekund (co leželo v bufferech).
+//! SPEC 16.3 v tomhle bodě popisuje cíl, ne stav — viz win_sys::etw.
 //!
 //! Kernel-File až ve v4/v8 (mapa souborů); hard faulty a latence disku
 //! se sbírají levněji mimo ETW (PDH/IOCTL, viz win-sys::pdhq a disk).
@@ -12,18 +16,19 @@ pub use win_sys::etw::ProcEvent;
 
 /// Jméno realtime session.
 const RT_SESSION: &str = "syswatch-rt";
-/// Jméno autologger session (černá skříňka).
+/// Jméno session černé skříňky.
 pub const BB_SESSION: &str = "syswatch-blackbox";
 
 /// Vynutí zápis rozepsaných bufferů černé skříňky na disk.
 ///
-/// Buffery se jinak zapisují až plné (šetří to desítky gigabajtů
-/// zápisů denně), takže posledních pár minut leží v paměti. Před
-/// archivací okna incidentu se musí dostat na disk — jinak by
-/// v archivu chybělo právě to, co se dělo těsně předtím.
+/// Volá se před archivací okna incidentu. Když session neběží, nemá
+/// se co zapisovat a není to chyba — po restartu stroje se archivuje
+/// dřív, než se skříňka vůbec založí (soubor by jinak `StartTraceW`
+/// přepsal). Proto jen `debug`, ne varování: hlásit „selhalo" po
+/// každém BSODu znamená poslat člověka hledat problém, který není.
 pub fn flush_blackbox() {
     if let Err(e) = win_sys::etw::flush_session(BB_SESSION) {
-        tracing::warn!(error = %e, "vyprázdnění černé skříňky selhalo");
+        tracing::debug!(error = %e, "černá skříňka se nevyprázdnila (nejspíš ještě neběží)");
     }
 }
 

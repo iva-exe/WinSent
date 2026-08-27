@@ -8,7 +8,15 @@ use serde::{Deserialize, Serialize};
 
 /// Verze IPC protokolu. UI a služba si ji vymění při připojení;
 /// neshoda znamená „čekám na dokončení aktualizace“ (INFRA kap. 4.3).
-pub const PROTOCOL_VERSION: u32 = 45;
+///
+/// POVYŠUJ JI V TOMTÉŽ COMMITU, KTERÝ MĚNÍ TVAR JAKÉKOLI ZPRÁVY.
+/// Postcard není sebepopisný formát: přidané pole posune čtení všech
+/// následujících. Když se přidá pole a verze zůstane, obě strany si
+/// odsouhlasí shodu a přitom čtou jinak — starý klient si u
+/// `HardwareReport` přečte razítko času z bajtu příznaku `Option`,
+/// takže vyjde rok 1970 a nikde se nic nezhroutí. Tichý nesmysl je
+/// horší než chybová hláška, protože ho nikdo nenahlásí.
+pub const PROTOCOL_VERSION: u32 = 46;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -263,4 +271,66 @@ pub enum Response {
     Error {
         message: String,
     },
+}
+
+#[cfg(test)]
+mod wire_shape {
+    use crate::proc::*;
+
+    /// Otisk tvaru jedné zprávy: kolik bajtů zabere její prázdná
+    /// podoba v postcardu.
+    ///
+    /// Přidané pole se v prázdné struktuře projeví vždycky — `Option`
+    /// jedním bajtem příznaku, `String` i `Vec` bajtem délky, číslo
+    /// aspoň jedním bajtem varintu. Kontrola je tedy hloupá schválně:
+    /// nezajímá ji význam, jen to, že se tvar hnul.
+    fn otisk<T: serde::Serialize + Default>() -> usize {
+        postcard::to_allocvec(&T::default())
+            .expect("prázdná struktura musí jít serializovat")
+            .len()
+    }
+
+    /// Změna tvaru zprávy musí povýšit verzi protokolu.
+    ///
+    /// Postcard není sebepopisný: přidané pole posune čtení všeho za
+    /// ním. Když se pole přidá a `PROTOCOL_VERSION` zůstane, obě strany
+    /// si odsouhlasí shodu a přitom čtou jinak — a nemusí to spadnout.
+    /// Starý klient si u `HardwareReport` přečte razítko času z bajtu
+    /// příznaku `Option` a zobrazí rok 1970. Takovou chybu nikdo
+    /// nenahlásí, protože nevypadá jako chyba.
+    ///
+    /// Když tenhle test spadne: zkontroluj, že jsi povýšil
+    /// `PROTOCOL_VERSION`, a teprve pak sem přepiš nové číslo.
+    /// NIKDY nepřepisuj jen čísla tady.
+    #[test]
+    fn zmena_tvaru_zpravy_vyzaduje_povyseni_protokolu() {
+        // (jméno, naměřený otisk, otisk zaznamenaný při PROTOCOL_VERSION 46)
+        let mereno: Vec<(&str, usize, usize)> = vec![
+            ("ProcRow", otisk::<ProcRow>(), 23),
+            ("SystemSnapshot", otisk::<SystemSnapshot>(), 31),
+            ("StaticInfo", otisk::<StaticInfo>(), 11),
+            ("StartupRow", otisk::<StartupRow>(), 12),
+            ("ProtectionReport", otisk::<ProtectionReport>(), 20),
+            ("HardwareReport", otisk::<HardwareReport>(), 19),
+            ("OsInfoRow", otisk::<OsInfoRow>(), 10),
+            ("PagefileRow", otisk::<PagefileRow>(), 4),
+            ("DiskHealthRow", otisk::<DiskHealthRow>(), 7),
+            ("PermissionRow", otisk::<PermissionRow>(), 9),
+            ("ConnectionReport", otisk::<ConnectionReport>(), 4),
+            ("DriversReport", otisk::<DriversReport>(), 3),
+            ("CollectorHealth", otisk::<CollectorHealth>(), 5),
+        ];
+        let rozdily: Vec<String> = mereno
+            .iter()
+            .filter(|(_, je, ma)| je != ma)
+            .map(|(jmeno, je, ma)| format!("{jmeno}: {ma} → {je} bajtů"))
+            .collect();
+        assert!(
+            rozdily.is_empty(),
+            "tvar zpráv se změnil ({}). Povyš PROTOCOL_VERSION (teď {}) \
+             a pak teprve oprav čísla v tomhle testu.",
+            rozdily.join(", "),
+            super::PROTOCOL_VERSION
+        );
+    }
 }
