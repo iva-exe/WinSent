@@ -91,20 +91,33 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     // data jsou přednější než přání.
     let db_path = {
         let dir = cfg.read().expect("config lock poisoned").db_dir.clone();
-        let vychozi = store::db_path()?;
-        match store::db_path_in(&dir) {
-            Ok(chtena) if chtena != vychozi => match store::move_db(&vychozi, &chtena) {
+        // ODKUD se stěhuje, říká stopa, ne config. Config nese jen
+        // přání „kam"; kdyby se vycházelo z výchozího místa, návrat
+        // z jiného disku by nic nepřesunul a založila by se prázdná
+        // databáze vedle té plné.
+        let ted = store::db_current_dir()?.join(store::DB_FILE);
+        let chtena = store::db_path_in(&dir).unwrap_or_else(|_| ted.clone());
+        if chtena != ted {
+            match store::move_db(&ted, &chtena) {
                 Ok(()) => {
-                    tracing::info!(z = %vychozi.display(), na = %chtena.display(), "databáze přesunuta");
-                    chtena
+                    tracing::info!(z = %ted.display(), na = %chtena.display(), "databáze přesunuta")
                 }
                 Err(e) => {
-                    tracing::error!(error = %e, na = %chtena.display(), "přesun databáze selhal — zůstávám na výchozím místě");
-                    vychozi
+                    tracing::error!(error = %e, z = %ted.display(), na = %chtena.display(), "přesun databáze selhal — zůstávám tam, kde je");
                 }
-            },
-            _ => vychozi,
+            }
         }
+        // Kde se opravdu skončilo: když se přesun nepovedl, zůstává
+        // stará cesta. Data jsou přednější než přání.
+        let konecna = if chtena.exists() || !ted.exists() {
+            chtena
+        } else {
+            ted
+        };
+        if let Some(d) = konecna.parent() {
+            store::set_db_current_dir(d);
+        }
+        konecna
     };
     let conn = store::open(&db_path)?;
     tracing::info!(db = %db_path.display(), "databáze otevřena, schéma zmigrováno");

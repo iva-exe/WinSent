@@ -82,6 +82,41 @@ pub fn db_path_in(dir: &str) -> Result<PathBuf, Error> {
     Ok(PathBuf::from(d).join(DB_FILE))
 }
 
+/// Soubor se stopou, KDE databáze právě leží.
+///
+/// Bez něj by služba neuměla stěhovat zpátky: config říká, kam se
+/// databáze má dostat, ale ne odkud. Když si uživatel po přesunu na
+/// jiný disk zvolil zase výchozí umístění, cíl se shodoval s výchozím
+/// místem, nikdo nic nepřesunul a služba si na výchozím místě založila
+/// PRÁZDNOU databázi — celá historie zůstala ležet na starém disku.
+/// Naměřeno při ověřování: 119,7 MB na D: a 0 MB na C:.
+///
+/// Stopa žije vždy ve výchozím adresáři, ať databáze leží kdekoli.
+fn db_marker() -> Result<PathBuf, Error> {
+    Ok(data_dir()?.join("db_location.txt"))
+}
+
+/// Kde databáze leží podle stopy. Bez stopy se předpokládá výchozí
+/// místo — tak to bylo, než se stěhování vůbec zavedlo.
+pub fn db_current_dir() -> Result<PathBuf, Error> {
+    let marker = db_marker()?;
+    match std::fs::read_to_string(&marker) {
+        Ok(s) if !s.trim().is_empty() => Ok(PathBuf::from(s.trim())),
+        _ => data_dir(),
+    }
+}
+
+/// Zapíše stopu. Selhání se nepovažuje za fatální — jen se příště
+/// bude vycházet z výchozího místa.
+pub fn set_db_current_dir(dir: &Path) {
+    if let Ok(marker) = db_marker() {
+        if let Some(parent) = marker.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&marker, dir.to_string_lossy().as_bytes());
+    }
+}
+
 /// Přestěhuje databázi, když si uživatel přál jiné místo.
 ///
 /// Volá se JEDINĚ při startu služby, tedy ve chvíli, kdy databázi nikdo
@@ -91,8 +126,27 @@ pub fn db_path_in(dir: &str) -> Result<PathBuf, Error> {
 /// Když se přesun nepovede, vrátí se chyba a volající zůstane u starého
 /// místa — data jsou přednější než přání.
 pub fn move_db(from: &Path, to: &Path) -> Result<(), Error> {
-    if from == to || !from.exists() || to.exists() {
+    if from == to || !from.exists() {
         return Ok(());
+    }
+    // Na cíli něco leží. Přepsat to naslepo nepřipadá v úvahu, ale
+    // prázdná databáze (jen hlavička, nebo ani ta) je zbytek po dřívější
+    // chybě — ta ustoupí, protože v ní nic není.
+    if to.exists() {
+        let prazdna = std::fs::metadata(to).map(|m| m.len() < 100_000).unwrap_or(false);
+        if !prazdna {
+            return Err(Error::CreateDir {
+                path: to.to_path_buf(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "na cílovém místě už databáze je",
+                ),
+            });
+        }
+        let _ = std::fs::remove_file(to);
+        for p in ["-wal", "-shm"] {
+            let _ = std::fs::remove_file(PathBuf::from(format!("{}{p}", to.display())));
+        }
     }
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir).map_err(|source| Error::CreateDir {
@@ -156,4 +210,77 @@ pub fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<(), Error> 
 /// Interval retenční smyčky z konfigurace.
 pub fn retention_interval(cfg: &core_types::config::Config) -> Duration {
     Duration::from_secs(cfg.retention_interval_s.max(1))
+}
+
+#[cfg(test)]
+mod stehovani {
+    use super::*;
+
+    fn temp(jmeno: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("winsent-test-{jmeno}"));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("dočasná složka");
+        d
+    }
+
+    fn naplnit(p: &Path, bajtu: usize) {
+        std::fs::write(p, vec![7u8; bajtu]).expect("zápis");
+    }
+
+    // Přesun vezme databázi i její WAL.
+    #[test]
+    fn presun_vezme_i_wal() {
+        let a = temp("presun-z");
+        let b = temp("presun-na");
+        let z = a.join(DB_FILE);
+        naplnit(&z, 200_000);
+        naplnit(&PathBuf::from(format!("{}-wal", z.display())), 1024);
+        let na = b.join(DB_FILE);
+        move_db(&z, &na).expect("přesun");
+        assert!(na.exists(), "databáze na cíli chybí");
+        assert!(!z.exists(), "databáze zůstala na původním místě");
+        assert!(
+            PathBuf::from(format!("{}-wal", na.display())).exists(),
+            "WAL se nepřestěhoval"
+        );
+    }
+
+    // Plnou databázi na cíli nesmí nic přepsat.
+    #[test]
+    fn plnou_databazi_na_cili_neprepiseme() {
+        let a = temp("kolize-z");
+        let b = temp("kolize-na");
+        let z = a.join(DB_FILE);
+        let na = b.join(DB_FILE);
+        naplnit(&z, 200_000);
+        naplnit(&na, 300_000);
+        assert!(move_db(&z, &na).is_err(), "přesun přes plnou databázi prošel");
+        assert_eq!(
+            std::fs::metadata(&na).expect("cíl").len(),
+            300_000,
+            "cíl se přepsal"
+        );
+    }
+
+    // Prázdný zbytek po dřívější chybě ustoupí.
+    //
+    // Přesně tenhle stav vznikl při ověřování: databáze se přestěhovala
+    // na jiný disk, návrat na výchozí místo nic nepřesunul a služba si
+    // tam založila prázdnou databázi. Kdyby taková nula blokovala
+    // přesun, historie by zůstala nedosažitelná napořád.
+    #[test]
+    fn prazdny_zbytek_na_cili_ustoupi() {
+        let a = temp("zbytek-z");
+        let b = temp("zbytek-na");
+        let z = a.join(DB_FILE);
+        let na = b.join(DB_FILE);
+        naplnit(&z, 200_000);
+        naplnit(&na, 4096);
+        move_db(&z, &na).expect("přesun");
+        assert_eq!(
+            std::fs::metadata(&na).expect("cíl").len(),
+            200_000,
+            "na cíli nezůstala plná databáze"
+        );
+    }
 }
