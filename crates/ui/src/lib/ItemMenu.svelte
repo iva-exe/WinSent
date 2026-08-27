@@ -170,11 +170,13 @@
 		   a `body` nemá pozadí — spoléhá se na blur okna. Prvek nad ním
 		   proto musí mít vlastní krytí; rozostření samo nestačí, velký
 		   text zůstane rozpoznatelný i při 40 px.
-		   Nejdřív plná barva jako záchrana, pak průsvitná varianta:
+		   Světlejší než --bg schválně: na tmavém pozadí aplikace vypadal
+		   podklad z --bg jako černá deska. Nejdřív plná barva jako záchrana,
+		   pak průsvitná varianta:
 		   kdyby `color-mix` cokoli odmítlo, zůstane aspoň neprůhledné
 		   pozadí místo skla, přes které je vidět všechno. */
-		background: #14151a;
-		background: color-mix(in srgb, var(--bg) 96%, transparent);
+		background: #1c1d24;
+		background: color-mix(in srgb, #1c1d24 88%, transparent);
 		backdrop-filter: blur(64px) saturate(160%);
 		-webkit-backdrop-filter: blur(64px) saturate(160%);
 		box-shadow:
