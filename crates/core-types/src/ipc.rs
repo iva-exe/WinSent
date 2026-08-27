@@ -277,17 +277,36 @@ pub enum Response {
 mod wire_shape {
     use crate::proc::*;
 
-    /// Otisk tvaru jedné zprávy: kolik bajtů zabere její prázdná
-    /// podoba v postcardu.
+    /// Otisk tvaru jedné zprávy.
     ///
-    /// Přidané pole se v prázdné struktuře projeví vždycky — `Option`
-    /// jedním bajtem příznaku, `String` i `Vec` bajtem délky, číslo
-    /// aspoň jedním bajtem varintu. Kontrola je tedy hloupá schválně:
-    /// nezajímá ji význam, jen to, že se tvar hnul.
-    fn otisk<T: serde::Serialize + Default>() -> usize {
-        postcard::to_allocvec(&T::default())
+    /// Skládá se ze dvou nezávislých měření, protože ani jedno samo
+    /// nestačí:
+    ///
+    /// 1. Délka prázdné struktury v postcardu. Chytí přidané a odebrané
+    ///    pole i změnu šířky čísla (`u32` → `u64` u nenulové hodnoty),
+    ///    ale je slepá k pořadí a ke jménům.
+    /// 2. Tvar téže struktury v JSONu. Ten nese JMÉNA polí v pořadí,
+    ///    v jakém jsou deklarovaná, a názvy variant enumů — takže
+    ///    prohození dvou polí téhož typu, přejmenování pole nebo
+    ///    varianty se projeví, přestože bajtová délka sedí.
+    ///
+    /// Co ani jedno nechytí: záměnu dvou čísel stejné šířky se stejným
+    /// jménem (`u32` → `i32`). Postcard je kóduje jinak (zigzag), takže
+    /// je to skutečná změna drátu — kdo takovou úpravu dělá, musí verzi
+    /// povýšit sám.
+    fn otisk<T: serde::Serialize + Default>() -> (usize, u64) {
+        let v = T::default();
+        let bajtu = postcard::to_allocvec(&v)
             .expect("prázdná struktura musí jít serializovat")
-            .len()
+            .len();
+        let tvar = serde_json::to_string(&v).expect("prázdná struktura musí jít do JSONu");
+        // FNV-1a — nepotřebujeme kryptografii, jen stabilní číslo.
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in tvar.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x1000_0000_01b3);
+        }
+        (bajtu, h)
     }
 
     /// Změna tvaru zprávy musí povýšit verzi protokolu.
@@ -300,37 +319,49 @@ mod wire_shape {
     /// nenahlásí, protože nevypadá jako chyba.
     ///
     /// Když tenhle test spadne: zkontroluj, že jsi povýšil
-    /// `PROTOCOL_VERSION`, a teprve pak sem přepiš nové číslo.
+    /// `PROTOCOL_VERSION`, a teprve pak sem přepiš nové otisky.
     /// NIKDY nepřepisuj jen čísla tady.
     #[test]
     fn zmena_tvaru_zpravy_vyzaduje_povyseni_protokolu() {
-        // (jméno, naměřený otisk, otisk zaznamenaný při PROTOCOL_VERSION 46)
-        let mereno: Vec<(&str, usize, usize)> = vec![
-            ("ProcRow", otisk::<ProcRow>(), 23),
-            ("SystemSnapshot", otisk::<SystemSnapshot>(), 31),
-            ("StaticInfo", otisk::<StaticInfo>(), 11),
-            ("StartupRow", otisk::<StartupRow>(), 12),
-            ("ProtectionReport", otisk::<ProtectionReport>(), 20),
-            ("HardwareReport", otisk::<HardwareReport>(), 19),
-            ("OsInfoRow", otisk::<OsInfoRow>(), 10),
-            ("PagefileRow", otisk::<PagefileRow>(), 4),
-            ("DiskHealthRow", otisk::<DiskHealthRow>(), 7),
-            ("PermissionRow", otisk::<PermissionRow>(), 9),
-            ("ConnectionReport", otisk::<ConnectionReport>(), 4),
-            ("DriversReport", otisk::<DriversReport>(), 3),
-            ("CollectorHealth", otisk::<CollectorHealth>(), 5),
+        // (jméno, naměřeno, zaznamenáno při PROTOCOL_VERSION 46)
+        let mereno: Vec<(&str, (usize, u64), (usize, u64))> = vec![
+            ("ProcRow", otisk::<ProcRow>(), (23, 2959247389591744881)),
+            ("SystemSnapshot", otisk::<SystemSnapshot>(), (31, 1630485381821562429)),
+            ("StaticInfo", otisk::<StaticInfo>(), (11, 16331367557955489898)),
+            ("StartupRow", otisk::<StartupRow>(), (12, 5603128357851775481)),
+            ("ProtectionReport", otisk::<ProtectionReport>(), (20, 7503998234196962424)),
+            ("HardwareReport", otisk::<HardwareReport>(), (19, 16128689981868478521)),
+            ("OsInfoRow", otisk::<OsInfoRow>(), (10, 15116235607699317519)),
+            ("PagefileRow", otisk::<PagefileRow>(), (4, 9219782284099688547)),
+            ("DiskHealthRow", otisk::<DiskHealthRow>(), (7, 6026345417622266159)),
+            ("PermissionRow", otisk::<PermissionRow>(), (9, 15657882981265654498)),
+            ("ConnectionReport", otisk::<ConnectionReport>(), (4, 11340516523186696761)),
+            ("DriversReport", otisk::<DriversReport>(), (3, 2119242957881570790)),
+            ("CollectorHealth", otisk::<CollectorHealth>(), (5, 5942219211452029580)),
+            ("AppRow", otisk::<AppRow>(), (9, 17305535340744830704)),
+            ("IncidentRow", otisk::<IncidentRow>(), (8, 11433128703909839783)),
+            ("EventRow", otisk::<EventRow>(), (5, 15093540666795501623)),
+            ("HistProcRow", otisk::<HistProcRow>(), (13, 1874953404327417601)),
+            ("VolumeRow", otisk::<VolumeRow>(), (8, 12562810835843001531)),
+            ("DeviceRow", otisk::<DeviceRow>(), (10, 6588135713776308766)),
+            ("DriverRow", otisk::<DriverRow>(), (10, 10978326375890790080)),
+            ("NetAdapterRow", otisk::<NetAdapterRow>(), (10, 12005896299422780646)),
+            ("AppNetRow", otisk::<AppNetRow>(), (9, 3665581879689679179)),
+            ("PermUseRow", otisk::<PermUseRow>(), (2, 4410355863787390850)),
+            ("CrashReportRow", otisk::<CrashReportRow>(), (7, 6217742025496804370)),
+            ("AuditRow", otisk::<crate::action::AuditRow>(), (9, 12115489750143912336)),
         ];
         let rozdily: Vec<String> = mereno
             .iter()
             .filter(|(_, je, ma)| je != ma)
-            .map(|(jmeno, je, ma)| format!("{jmeno}: {ma} → {je} bajtů"))
+            .map(|(jmeno, je, _)| format!("(\"{jmeno}\", otisk::<{jmeno}>(), ({}, {})),", je.0, je.1))
             .collect();
         assert!(
             rozdily.is_empty(),
-            "tvar zpráv se změnil ({}). Povyš PROTOCOL_VERSION (teď {}) \
-             a pak teprve oprav čísla v tomhle testu.",
-            rozdily.join(", "),
-            super::PROTOCOL_VERSION
+            "tvar zpráv se změnil. Povyš PROTOCOL_VERSION (teď {}) a teprve \
+             potom sem přepiš nové otisky:\n{}",
+            super::PROTOCOL_VERSION,
+            rozdily.join("\n")
         );
     }
 }

@@ -9,10 +9,10 @@ fn main() {
     let tables = identity::load_tables();
 
     println!("nejkratší instalační adresáře v tabulce:");
-    let mut podle_delky: Vec<&(String, String)> = tables.uninstall.iter().collect();
-    podle_delky.sort_by_key(|(l, _)| l.len());
-    for (loc, jmeno) in podle_delky.iter().take(8) {
-        println!("  {loc:<44} {jmeno}");
+    let mut podle_delky: Vec<&identity::UninstallEntry> = tables.uninstall.iter().collect();
+    podle_delky.sort_by_key(|e| e.loc.len());
+    for e in podle_delky.iter().take(8) {
+        println!("  {:<40} {}{}", e.loc, e.name, if e.collection { "  [sběrný]" } else { "" });
     }
 
     println!("\nkontrolní cesty:");

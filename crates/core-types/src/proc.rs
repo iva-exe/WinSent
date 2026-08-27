@@ -172,7 +172,7 @@ pub struct SystemSnapshot {
 }
 
 /// Událost na časové ose (zásek, pád procesu…) — markery v grafu.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventRow {
     pub id: i64,
     pub ts: i64,
@@ -183,7 +183,7 @@ pub struct EventRow {
 }
 
 /// Aplikace z inventáře (v4, SPEC kap. 5).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppRow {
     /// Klíč shodný s identitou procesů (`app:…` / `msix:…`) — spojuje
     /// inventář s během i ikonami.
@@ -234,7 +234,7 @@ pub struct AppPathRow {
 }
 
 /// Logický svazek (v4, SPEC kap. 11.1).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VolumeRow {
     pub letter: char,
     pub label: String,
@@ -320,7 +320,7 @@ pub struct StartupRow {
 }
 
 /// Incident (zásek s viníkem, pád aplikace, BSOD) — SPEC kap. 16.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IncidentRow {
     pub id: i64,
     pub ts: i64,
@@ -388,7 +388,7 @@ pub struct SystemPoint {
 
 /// Řádek procesu z historie (tabulky sample_1s + proc_names).
 /// Užší než ProcRow — historie nedrží vlákna ani session.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HistProcRow {
     pub pid: u32,
     pub name: String,
@@ -533,7 +533,7 @@ pub struct ConnRow {
 }
 
 /// Spojení jedné aplikace (v9) — seskupené podle identity (kap. 4).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppNetRow {
     pub identity_key: String,
     pub app_name: String,

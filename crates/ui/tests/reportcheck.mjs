@@ -131,7 +131,45 @@ const KONTROLY = [
 	],
 	[
 		'konec podpory: podporovaná verze mlčí',
-		() => !/konci podpory/.test(zaznam({ os: { build: 26100, display_version: '24H2' } }))
+		() =>
+			!/konci podpory/.test(
+				zaznam({
+					os: { build: 26100, display_version: '24H2', product: 'Windows 11 Enterprise' }
+				})
+			)
+	],
+	// Termín závisí na edici, ne jen na sestavení. Enterprise 23H2 je
+	// dnes podporované, Home/Pro téhož sestavení už ne.
+	[
+		'konec podpory: Enterprise má vlastní termín',
+		() => {
+			const t = zaznam({
+				os: { build: 22631, display_version: '23H2', product: 'Windows 11 Enterprise' }
+			});
+			return /má konec podpory 2026-11-10/.test(t) && !/je po konci podpory/.test(t);
+		}
+	],
+	[
+		'konec podpory: Home/Pro téhož sestavení je po termínu',
+		() =>
+			/je po konci podpory \(2025-11-11\)/.test(
+				zaznam({ os: { build: 22631, display_version: '23H2', product: 'Windows 11 Pro' } })
+			)
+	],
+	// LTSC a IoT mají termíny podle konkrétního vydání — hádat je by
+	// znamenalo falešný poplach na strojích podporovaných do roku 2032.
+	[
+		'konec podpory: LTSC mlčí',
+		() =>
+			!/konci podpory/.test(
+				zaznam({
+					os: { build: 19044, display_version: '21H2', product: 'Windows 10 IoT Enterprise LTSC' }
+				})
+			)
+	],
+	[
+		'konec podpory: u Windows 10 se přizná výjimka ESU',
+		() => /ESU/.test(zakladni)
 	]
 ];
 

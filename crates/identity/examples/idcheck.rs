@@ -62,26 +62,47 @@ fn main() {
         }
     }
 
-    // Žádný instalační adresář nesmí být nadřazený jinému.
+    // Sběrný adresář nesmí rozdávat své jméno sousedům — ale musí si ho
+    // udržet pro sebe.
     //
-    // Sběrné adresáře jsou legitimní záznamy, které seznam pevných jmen
-    // nezachytí: Minecraft Launcher má `InstallLocation = D:\hry\` a
-    // jeho binárka tam opravdu leží — jenže vedle ní i Genshin Impact
-    // a Star Rail. Prefixová shoda pak celý adresář ohlásila jako
-    // „Minecraft Launcher" s confidence Exact.
-    for (loc, jmeno) in &tables.uninstall {
-        // Na hranici komponenty, ne po znacích: „…\hollow knight" a
-        // „…\hollow knight silksong" jsou sousedi, ne vnoření.
-        if let Some((pod, kdo)) = tables.uninstall.iter().find(|(jiny, _)| {
-            jiny.len() > loc.len()
-                && jiny.starts_with(loc.as_str())
-                && jiny.as_bytes()[loc.len()] == b'\\'
-        }) {
-            println!("FAIL: „{jmeno}\" ({loc}) je nadřazený „{kdo}\" ({pod})");
+    // `InstallLocation` Minecraft Launcheru je `D:\hry\`. Jeho binárka
+    // tam opravdu leží, jenže vedle ní i Genshin Impact a Star Rail.
+    // Dřív prefixová shoda ohlásila celý adresář jako „Minecraft
+    // Launcher" s confidence Exact; pak se zase zahazoval celý záznam
+    // a launcher sám přišel o identitu. Testuje se proto CHOVÁNÍ
+    // kaskády, ne obsah tabulky — na syntetických cestách, takže to
+    // nezávisí na tom, co je zrovna spuštěné.
+    let sberne: Vec<&identity::UninstallEntry> =
+        tables.uninstall.iter().filter(|e| e.collection).collect();
+    println!(
+        "  instalačních adresářů: {} (z toho sběrných: {})",
+        tables.uninstall.len(),
+        sberne.len()
+    );
+    for e in &sberne {
+        let klic = format!("app:{}", e.name.to_ascii_lowercase());
+        // Binárka přímo ve sběrném adresáři té aplikaci pořád patří.
+        let primo = format!(r"{}\vlastni-binarka-neexistuje.exe", e.loc);
+        let id = identity::cascade::resolve(0, "x.exe", Some(&primo), &tables);
+        if id.identity_key != klic {
+            println!(
+                "FAIL: „{}\" přišel o vlastní adresář ({}) → {}",
+                e.name, e.loc, id.identity_key
+            );
             bad += 1;
         }
+        // Soused v podadresáři už ne.
+        let soused = format!(r"{}\cizi-podadresar-neexistuje\x.exe", e.loc);
+        let id = identity::cascade::resolve(0, "x.exe", Some(&soused), &tables);
+        if id.identity_key == klic {
+            println!(
+                "FAIL: „{}\" ({}) si přisvojil sousední podadresář",
+                e.name, e.loc
+            );
+            bad += 1;
+        }
+        println!("  sběrný: {:<28} {}", e.loc, e.name);
     }
-    println!("  instalačních adresářů v tabulce: {}", tables.uninstall.len());
 
     if bad > 0 {
         println!("FAIL: {bad} procesů s vymyšlenou identitou");

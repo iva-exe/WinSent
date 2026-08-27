@@ -207,29 +207,51 @@ function gigabitCapable(a) {
 // Data pro tenhle závěr v záznamu byla už dřív (sestavení i označení
 // verze), jen z nich nikdo závěr neudělal — a přitom je to podmínka
 // všeho ostatního: systém bez záplat se nedá označit za chráněný.
-// Termíny jsou veřejné a pevné, proto se dají zapsat natvrdo; co
-// nevíme, o tom mlčíme.
+//
+// Termín NEZÁVISÍ JEN NA SESTAVENÍ, ale i na edici. Klíčovat to jen
+// číslem sestavení znamenalo tvrdit „po konci podpory" firemnímu
+// notebooku s Windows 11 Enterprise 23H2, který záplaty pořád dostává.
+// Nejhorší případ byl Windows 10 IoT Enterprise LTSC 2021 (build
+// 19044), podporovaný do roku 2032 — falešný poplach na dalších pět let
+// zrovna na strojích v průmyslu, kde reinstalace stojí nejvíc.
+//
+// Data jsou publikované termíny Microsoftu, zapsané natvrdo. U edic
+// LTSC a IoT se mlčí schválně: jejich termíny se liší podle konkrétního
+// vydání a hádat je by bylo horší než neříct nic.
 const KONEC_PODPORY = {
-	// Windows 10, poslední verze pro běžné edice.
-	19045: '2025-10-14',
-	19044: '2024-06-11',
-	19043: '2022-12-13',
-	19042: '2022-05-10',
-	19041: '2021-12-14',
-	18363: '2021-05-11',
-	// Windows 11.
-	22000: '2023-10-10',
-	22621: '2024-10-08',
-	22631: '2025-11-11'
+	// sestavení: { pro: Home/Pro, ent: Enterprise/Education }
+	18363: { pro: '2021-05-11', ent: '2022-05-10' },
+	19041: { pro: '2021-12-14', ent: '2021-12-14' },
+	19042: { pro: '2022-05-10', ent: '2023-05-09' },
+	19043: { pro: '2022-12-13', ent: '2022-12-13' },
+	19044: { pro: '2023-06-13', ent: '2024-06-11' },
+	19045: { pro: '2025-10-14', ent: '2025-10-14' },
+	22000: { pro: '2023-10-10', ent: '2024-10-08' },
+	22621: { pro: '2024-10-08', ent: '2025-10-14' },
+	22631: { pro: '2025-11-11', ent: '2026-11-10' },
+	26100: { pro: '2026-10-13', ent: '2027-10-12' }
 };
 
+// Do které skupiny termínů edice patří? `null` = nevíme, tedy mlčet.
+function edice(product) {
+	const p = (product ?? '').toLowerCase();
+	if (/ltsc|ltsb|\biot\b/.test(p)) return null;
+	if (/enterprise|education|server/.test(p)) return 'ent';
+	if (/home|pro|core|workstation|\bn\b|windows 1[01]/.test(p)) return 'pro';
+	return null;
+}
+
 function konecPodpory(o) {
-	const den = KONEC_PODPORY[o.build];
+	const skupina = edice(o.product);
+	const den = skupina && KONEC_PODPORY[o.build]?.[skupina];
 	if (!den) return null;
 	const konec = Date.parse(den + 'T00:00:00Z') / 1000;
 	const jmeno = `${o.product}${o.display_version ? ' ' + o.display_version : ''}`;
+	// Rozšířené aktualizace (ESU) se z registru nepoznají, takže se
+	// u Windows 10 přizná, že tenhle závěr má výjimku.
+	const esu = o.build < 22000 ? ' (pokud nemáš placené rozšířené aktualizace ESU)' : '';
 	if (Date.now() / 1000 > konec) {
-		return `${jmeno} je po konci podpory (${den}) — bezpečnostní záplaty už nechodí.`;
+		return `${jmeno} je po konci podpory (${den}) — bezpečnostní záplaty už nechodí${esu}.`;
 	}
 	const dnu = Math.round((konec - Date.now() / 1000) / 86400);
 	if (dnu <= 180) {

@@ -80,12 +80,18 @@ pub fn resolve(pid: u32, image_name: &str, path: Option<&str>, tables: &Tables) 
     // 3. Uninstall — nejdelší InstallLocation, který je prefixem cesty.
     // Shoda musí padnout na hranici komponenty cesty, ne po znacích:
     // „…\zen browser" by jinak sedlo i na „…\zen browser nightly\zen.exe".
+    //
+    // Sběrný adresář (pod kterým leží instalace jiné aplikace) platí jen
+    // pro binárky PŘÍMO v něm. `D:\hry` je bydliště Minecraft Launcheru
+    // a zároveň místo, kam si uživatel dává hry: `MinecraftLauncher.exe`
+    // se tam pozná, ale `D:\hry\Star Rail Games\StarRail.exe` už ne —
+    // ten se dořeší podpisem, což je pravdivější než cizí jméno.
     let path_lc = path.to_ascii_lowercase();
-    if let Some((_, name)) = tables
-        .uninstall
-        .iter()
-        .find(|(loc, _)| under_dir(&path_lc, loc))
-    {
+    let dir_lc = parent_dir(&path_lc);
+    if let Some(e) = tables.uninstall.iter().find(|e| {
+        under_dir(&path_lc, &e.loc) && (!e.collection || dir_lc == e.loc)
+    }) {
+        let name = &e.name;
         return Identity {
             identity_key: format!("app:{}", name.to_ascii_lowercase()),
             app_name: name.clone(),

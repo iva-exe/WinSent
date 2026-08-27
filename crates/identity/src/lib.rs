@@ -45,12 +45,25 @@ impl Identity {
 /// Statické tabulky pro kaskádu (uninstall záznamy). Zjištěno jednou.
 #[derive(Debug, Clone, Default)]
 pub struct Tables {
-    /// (InstallLocation lowercase, název aplikace), seřazené sestupně
-    /// dle délky cesty — nejdelší prefix vyhrává (SPEC 4.1 krok 3).
-    pub uninstall: Vec<(String, String)>,
+    /// Instalační adresáře, seřazené sestupně dle délky cesty —
+    /// nejdelší prefix vyhrává (SPEC 4.1 krok 3).
+    pub uninstall: Vec<UninstallEntry>,
     /// identity_key („app:…“) → DisplayIcon spec z uninstall registru
     /// („cesta,index“) — fallback, když .exe procesu ikonu nemá.
     pub icons: HashMap<String, String>,
+}
+
+/// Jeden instalační adresář z uninstall registru.
+#[derive(Debug, Clone)]
+pub struct UninstallEntry {
+    /// InstallLocation malými písmeny, bez koncového „\".
+    pub loc: String,
+    /// DisplayName aplikace.
+    pub name: String,
+    /// Leží pod tímhle adresářem instalace jiné aplikace? Pak to není
+    /// bydliště jedné aplikace, ale sběrný adresář, a platí jen pro
+    /// binárky přímo v něm (viz `mark_collection_dirs`).
+    pub collection: bool,
 }
 
 /// Ochranná třída procesu (win-sys → serializovatelný core-types typ).
@@ -332,13 +345,13 @@ pub fn load_tables() -> Tables {
             else {
                 continue;
             };
-            uninstall.push((loc, name));
+            uninstall.push(UninstallEntry { loc, name, collection: false });
         }
     }
     // Nejdelší prefix první (nejspecifičtější InstallLocation vyhrává).
-    uninstall.sort_by_key(|(loc, _)| std::cmp::Reverse(loc.len()));
-    uninstall.dedup_by(|a, b| a.0 == b.0);
-    drop_collection_dirs(&mut uninstall);
+    uninstall.sort_by_key(|e| std::cmp::Reverse(e.loc.len()));
+    uninstall.dedup_by(|a, b| a.loc == b.loc);
+    mark_collection_dirs(&mut uninstall);
     tracing::info!(
         count = uninstall.len(),
         icons = icons.len(),
@@ -384,7 +397,7 @@ fn install_prefix(raw: &str) -> Option<String> {
     Some(lc)
 }
 
-/// Vyhodí instalační adresáře, které jsou nadřazené jiné instalaci.
+/// Označí instalační adresáře, které jsou nadřazené jiné instalaci.
 ///
 /// Sběrné adresáře seznam pevných jmen nezachytí — jsou to úplně
 /// legitimní záznamy. Naměřeno: Minecraft Launcher má
@@ -394,13 +407,33 @@ fn install_prefix(raw: &str) -> Option<String> {
 /// jako aplikaci „Minecraft Launcher" s confidence Exact — tedy přesně
 /// to, co u „Blender má D:\" tenhle modul zavíral, jen o patro níž.
 ///
-/// Poznává se to tvarem dat, ne jmény: když pod prefixem leží jiný
-/// prefix z téhle tabulky, není to instalační adresář jedné aplikace,
-/// ale kontejner. Rodič se zahodí; potomci si své cesty určí sami
-/// a zbytek spadne o krok níž v kaskádě na podpis, což je pravdivější.
-fn drop_collection_dirs(uninstall: &mut Vec<(String, String)>) {
-    let vsechny: Vec<String> = uninstall.iter().map(|(l, _)| l.clone()).collect();
-    uninstall.retain(|(loc, _)| !vsechny.iter().any(|jiny| under_dir(jiny, loc)));
+/// Poznává se to tvarem dat, ne jmény: pod prefixem leží jiný prefix
+/// z téhle tabulky, takže to není adresář jedné aplikace.
+///
+/// Záznam se ale NESMÍ zahodit. `D:\hry` je zároveň skutečné bydliště
+/// Minecraft Launcheru (leží tam `MinecraftLauncher.exe` i jeho vlastní
+/// `game\`, `runtime\`, `tools\`) — po zahození spadly jeho binárky
+/// o krok níž na podpis, tedy do sdíleného klíče
+/// `sig:microsoft corporation`, kde už bydlí WebView2, GameInput
+/// a PowerShell. Aplikace by v Procesech přišla o vlastní řádek i ikonu
+/// a jméno skupiny by určil ten proces, co dorazí první.
+///
+/// Označený adresář proto platí dál, ale jen pro binárky ležící PŘÍMO
+/// v něm (viz `cascade`, krok 3). To zachová Minecraft Launcher
+/// a zároveň nepustí sousedy v podadresářích.
+///
+/// Hranice tohohle pravidla: spustí ho jen existence JINÉHO uninstall
+/// záznamu pod prefixem. Kdyby uživatel Rockstar Games Launcher
+/// odinstaloval, `D:\hry` se přestane považovat za sběrný adresář
+/// a hry v podadresářích se zase začnou hlásit jeho jménem. Poctivější
+/// signál (třeba sourozenecké stromy na disku) by ale odstřelil
+/// i normální instalace jako `C:\Program Files\Git`, kde binárky
+/// v podadresářích leží úplně legitimně.
+fn mark_collection_dirs(uninstall: &mut [UninstallEntry]) {
+    let vsechny: Vec<String> = uninstall.iter().map(|e| e.loc.clone()).collect();
+    for e in uninstall.iter_mut() {
+        e.collection = vsechny.iter().any(|jiny| under_dir(jiny, &e.loc));
+    }
 }
 
 /// Leží cesta uvnitř adresáře? Obojí malými písmeny, `dir` bez koncového

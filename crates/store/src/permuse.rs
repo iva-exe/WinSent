@@ -120,6 +120,57 @@ mod tests {
         assert_eq!(h[0].stop_ts, Some(1600));
     }
 
+    // Probíhající relace musí do součtu růst.
+    //
+    // Windows během hovoru do ConsentStore nic nezapisují, takže se
+    // `seen_ts` neposune samo — sledování ho proto potvrzuje jednou za
+    // minutu. Bez toho vycházel hodinový hovor jako nula a na jednom
+    // řádku stálo „Naposledy: právě teď" a vedle „Posledních 30 dnů:
+    // nepoužito".
+    #[test]
+    fn probihajici_relace_roste_se_seen_ts() {
+        let c = db();
+        record(&c, "app", "microphone", 1000, None, 1000).expect("zápis");
+        assert_eq!(
+            total_seconds(&c, "app", "microphone", 0, 5000).expect("součet"),
+            0,
+            "hned po startu ještě není co počítat"
+        );
+        // Minutová potvrzení během hovoru.
+        for t in [1060, 1120, 1180] {
+            record(&c, "app", "microphone", 1000, None, t).expect("zápis");
+        }
+        assert_eq!(
+            total_seconds(&c, "app", "microphone", 0, 5000).expect("součet"),
+            180,
+            "relace musí růst po poslední pozorování"
+        );
+    }
+
+    // Relace, které konec nikdy nedopsal, se nesmí uzavřít na nulu.
+    //
+    // `last_used` z registru je maximum ze začátku a konce, takže po
+    // výpadku napájení nebo BSODu se rovná začátku. Kdyby se poslal
+    // jako `stop_ts`, přepsal by NULL a smazal celý naměřený čas.
+    #[test]
+    fn nedokoncena_relace_neprijde_o_cas() {
+        let c = db();
+        record(&c, "app", "microphone", 1000, None, 1000).expect("zápis");
+        record(&c, "app", "microphone", 1000, None, 4600).expect("hodina hovoru");
+        assert_eq!(
+            total_seconds(&c, "app", "microphone", 0, 9000).expect("součet"),
+            3600
+        );
+        // Tady daemon POZNÁ, že konec Windows nezapsaly, a stop_ts
+        // neposílá — čas zůstává.
+        record(&c, "app", "microphone", 1000, None, 4600).expect("po pádu");
+        assert_eq!(
+            total_seconds(&c, "app", "microphone", 0, 9000).expect("součet"),
+            3600,
+            "hodina se nesmí ztratit"
+        );
+    }
+
     // Doplněný konec se nesmí ztratit, když pak dorazí čtení bez něj.
     #[test]
     fn closed_session_never_reopens() {

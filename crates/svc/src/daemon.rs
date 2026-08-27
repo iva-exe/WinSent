@@ -549,11 +549,30 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             collector_sec::permissions(&running)
                                 .into_iter()
                                 .filter_map(|c| {
+                                    let start = c.last_start?;
+                                    // Konec zapisujeme JEN tehdy, když ho
+                                    // opravdu zapsaly Windows.
+                                    //
+                                    // `last_used` je maximum ze začátku
+                                    // a konce, takže u relace, které konec
+                                    // nikdy nedopsal (výpadek napájení,
+                                    // BSOD, zaseklý záznam), se rovná
+                                    // začátku. Poslat ho jako `stop_ts`
+                                    // znamenalo uzavřít relaci na nulovou
+                                    // délku a smazat všechen čas, co se
+                                    // do ní za hodinu nastřádal — údaj,
+                                    // který uživatel minutu předtím viděl
+                                    // růst, by spadl na „nepoužito".
+                                    // Bez konce zůstane strop na
+                                    // posledním pozorování (`seen_ts`),
+                                    // což je pravda: dál než tam nevíme.
+                                    let konec = match c.last_used {
+                                        Some(t) if !c.in_use && t > start => Some(t),
+                                        _ => None,
+                                    };
                                     Some(crate::incidents::PermUseEntry {
-                                        start_ts: c.last_start?,
-                                        // Běžící sezení nemá konec —
-                                        // doplní se, až aplikace pustí.
-                                        stop_ts: if c.in_use { None } else { c.last_used },
+                                        start_ts: start,
+                                        stop_ts: konec,
                                         app: c.app,
                                         capability: c.capability,
                                     })

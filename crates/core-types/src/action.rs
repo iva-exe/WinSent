@@ -154,7 +154,7 @@ pub struct ActionResult {
 }
 
 /// Řádek auditu pro UI (SPEC 17.6).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuditRow {
     pub id: i64,
     pub ts: i64,
