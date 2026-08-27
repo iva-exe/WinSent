@@ -245,25 +245,27 @@
 							<li class="item" class:off={!i.enabled}>
 								<span class="i-src" title={s.label}><s.icon size={16} /></span>
 								<span class="i-main">
-									<span class="i-name">{i.name}</span>
+									<span class="i-title">
+										<span class="i-name">{i.name}</span>
+										<!-- U služby přepínač mění typ spuštění, ne aktuální
+										     stav. Automatická služba může být zastavená, ručně
+										     spouštěná může běžet — bez tohohle štítku se to
+										     z řádku nedalo poznat a četlo se to obráceně.
+										     Patří k názvu, ne k pravému okraji: tam mizel
+										     mezi zdrojem a přepínačem. -->
+										{#if i.running != null}
+											<span
+												class="i-run"
+												class:live={i.running}
+												title={i.running ? 'Služba právě běží' : 'Služba je zastavená'}
+											>
+												{i.running ? 'běží' : 'stojí'}
+											</span>
+										{/if}
+									</span>
 									<span class="i-cmd mono" title={i.command}>{i.command}</span>
 								</span>
 								<span class="i-srclabel label-tech">{s.label}</span>
-								<!-- U služby přepínač mění typ spuštění, ne aktuální
-								     stav. Automatická služba může být zastavená, ručně
-								     spouštěná může běžet — bez tohohle štítku se to
-								     z řádku nedalo poznat a četlo se to obráceně. -->
-								{#if i.running != null}
-									<span
-										class="i-run label-tech"
-										class:live={i.running}
-										title={i.running
-											? 'Služba právě běží'
-											: 'Služba je zastavená'}
-									>
-										{i.running ? 'běží' : 'stojí'}
-									</span>
-								{/if}
 								{#if i.toggleable}
 									<button
 										class="sw"
@@ -609,16 +611,30 @@
 		font-size: var(--fs-2xs);
 		white-space: nowrap;
 	}
+	/* Název a stav běhu na jednom řádku; stav je malý odznak vedle
+	   jména, ne sloupec u pravého okraje. */
+	.i-title {
+		display: flex;
+		align-items: baseline;
+		gap: 7px;
+		min-width: 0;
+		flex-wrap: wrap;
+	}
 	.i-run {
-		font-size: var(--fs-2xs);
+		font-size: var(--fs-3xs, 0.62rem);
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
 		white-space: nowrap;
-		min-width: 34px;
-		text-align: right;
-		opacity: 0.55;
+		padding: 1px 6px;
+		border-radius: 999px;
+		border: 1px solid var(--border);
+		color: var(--text-faint);
+		line-height: 1.5;
 	}
 	.i-run.live {
 		color: var(--ok);
-		opacity: 1;
+		border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+		background: color-mix(in srgb, var(--ok) 10%, transparent);
 	}
 	/* Přepínač — vratná akce, žádný dialog (T0). */
 	.sw {

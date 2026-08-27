@@ -433,7 +433,16 @@
 					y: false,
 					drag: { x: false, y: false },
 					// Žádné tečky při hoveru — jen linka; tečka patří zámku.
-					points: { show: false }
+					points: { show: false },
+					// Dvojklik uPlotu nemá co dělat.
+					//
+					// uPlot si na dvojklik váže vlastní „reset zoomu":
+					// odzoomoval graf na celý rozsah dat a náš
+					// `applyScale()` ho hned nato vrátil zpátky. Navenek
+					// to vypadalo, že graf problikne a chvíli si dělá,
+					// co chce. Rozsah osy tady řídíme sami (kolečko,
+					// Ctrl+kolečko, tažení), takže se ta vazba ruší.
+					bind: { dblclick: () => null }
 				},
 				scales: {
 					y: isNet

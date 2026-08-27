@@ -50,12 +50,31 @@
 		}
 	}
 
+	// Kdy naposledy se kontrolovalo. Kontrola běží každých 30 s, takže
+	// 'před chvílí' by tam svítilo pořád — pod minutu se tiká po
+	// sekundách, ať je vidět, že se opravdu něco děje.
+	let ted = $state(Date.now());
 	let lastCheck = $derived.by(() => {
 		if (!updater.checkedAt) return 'zatím ne';
-		const s = Math.round((Date.now() - updater.checkedAt) / 1000);
-		if (s < 90) return 'před chvílí';
+		const s = Math.max(0, Math.round((ted - updater.checkedAt) / 1000));
+		if (s < 5) return 'právě teď';
+		if (s < 60) return `před ${s} s`;
 		const m = Math.round(s / 60);
 		return m < 90 ? `před ${m} min` : `před ${Math.round(m / 60)} h`;
+	});
+
+	// Krátké bliknutí u čísel verzí, když kontrola doběhne. Bez něj
+	// nešlo poznat, jestli tlačítko vůbec něco udělalo — většina
+	// kontrol totiž skončí tím, že se nic nezměnilo.
+	let justChecked = $state(false);
+	let posledniBlik = 0;
+	$effect(() => {
+		const t = updater.checkedAt;
+		if (!t || t === posledniBlik) return;
+		posledniBlik = t;
+		justChecked = true;
+		const id = setTimeout(() => (justChecked = false), 1000);
+		return () => clearTimeout(id);
 	});
 
 	// ── Kam se ukládá databáze ──
@@ -137,18 +156,213 @@
 		refresh();
 		nacistDb();
 		const t = setInterval(refresh, 2000);
-		return () => clearInterval(t);
+		// Vlastní tikot pro 'naposledy zjištěno' — bez něj by text
+		// zamrzl na hodnotě z posledního překreslení.
+		const tik = setInterval(() => (ted = Date.now()), 1000);
+		return () => {
+			clearInterval(t);
+			clearInterval(tik);
+		};
 	});
 </script>
 
 <div class="settings">
+	<!-- Nastavení je seznam, ne sada esejí.
+	     Každý řádek má jméno, jednu větu proč a ovládání vpravo. Delší
+	     vysvětlení, která tu byla dřív, natáhla stránku tak, že se v ní
+	     nedalo najít, co vlastně jde přepnout. -->
+
 	<section class="card">
-		<header class="card-head">
-			<span class="label-tech">// settings / spotřeba nástroje</span>
-		</header>
-		<p class="note">
-			Démon se měří stejným samplerem jako každý jiný proces — žádná výjimka,
-			žádné skrývání. Rozpočet: &lt; 0,5&nbsp;% CPU, &lt; 50&nbsp;MB RAM.
+		<header class="card-head"><span class="label-tech">// zobrazení</span></header>
+
+		<button
+			class="row opt"
+			role="switch"
+			aria-checked={prefs.showZeroByte}
+			onclick={() => setPref('showZeroByte', !prefs.showZeroByte)}
+		>
+			<span class="row-main">
+				<span class="row-name">Prázdné soubory ve Files</span>
+				<span class="row-why">Soubory o 0 B bývají zámky a rozdělaná stahování, ne smetí.</span>
+			</span>
+			<span class="sw" class:on={prefs.showZeroByte}><span class="knob"></span></span>
+		</button>
+
+		<button
+			class="row opt"
+			role="switch"
+			aria-checked={prefs.showSystemStartup}
+			onclick={() => setPref('showSystemStartup', !prefs.showSystemStartup)}
+		>
+			<span class="row-main">
+				<span class="row-name">Startovací položky Windows</span>
+				<span class="row-why">Jen k náhledu — přepnout je Winsent nedovolí.</span>
+			</span>
+			<span class="sw" class:on={prefs.showSystemStartup}><span class="knob"></span></span>
+		</button>
+	</section>
+
+	<section class="card">
+		<header class="card-head"><span class="label-tech">// verze a aktualizace</span></header>
+
+		<div class="row">
+			<span class="row-main">
+				<span class="row-name">Verze</span>
+				<span class="row-why">
+					{#if updater.available}
+						Nová verze je připravená. Aktualizace zavře aplikaci, přepíše soubory
+						a spustí ji znovu.
+					{:else if updater.error}
+						Zjistit verzi se nepodařilo: {updater.error}
+					{:else if updater.current}
+						Máš aktuální verzi. Kontroluje se každých 30 sekund.
+					{:else}
+						Běží z vývojového stromu — aktualizace se tu nenabízí.
+					{/if}
+				</span>
+			</span>
+			<span class="row-act ver-vals" class:flash={justChecked}>
+				<span class="value-mono ver-now">{updater.current || '—'}</span>
+				{#if updater.available}
+					<span class="ver-arrow">→</span>
+					<span class="value-mono ver-new">{updater.latest || '—'}</span>
+				{/if}
+			</span>
+		</div>
+
+		<div class="row">
+			<span class="row-main">
+				<span class="row-name">Kontrola</span>
+				<span class="row-why">
+					{#if updater.checking}
+						Ptám se repozitáře…
+					{:else}
+						Naposledy {lastCheck}.
+					{/if}
+				</span>
+			</span>
+			<span class="row-act">
+				<button class="v-btn" disabled={updater.checking} onclick={checkUpdate}>
+					<RefreshCw size={14} class={updater.checking ? 'pc-spin' : ''} />
+					{updater.checking ? 'kontroluji…' : 'Zkontrolovat teď'}
+				</button>
+				{#if updater.available}
+					<button class="v-btn primary" disabled={updater.busy} onclick={runUpdate}>
+						{updater.busy ? 'stahuji…' : 'Aktualizovat'}
+					</button>
+				{/if}
+			</span>
+		</div>
+		{#if updater.runError}
+			<p class="row-err">{updater.runError}</p>
+		{/if}
+	</section>
+
+	<section class="card">
+		<header class="card-head"><span class="label-tech">// databáze</span></header>
+
+		<div class="row">
+			<span class="row-main">
+				<span class="row-name">Umístění</span>
+				<span class="row-why value-mono path">{db?.current_path ?? '—'}</span>
+			</span>
+			<span class="row-act">
+				<button class="v-btn" disabled={dbBusy} onclick={vybratSlozku}>
+					<FolderOpen size={14} /> Změnit
+				</button>
+				{#if db?.wanted_dir}
+					<button class="v-btn" disabled={dbBusy} onclick={() => ulozitSlozku('')}>
+						Výchozí
+					</button>
+				{/if}
+			</span>
+		</div>
+
+		<div class="row">
+			<span class="row-main">
+				<span class="row-name">Velikost</span>
+				<span class="row-why">Historie měření za posledních 30 dnů.</span>
+			</span>
+			<span class="row-act value-mono">
+				{#if db}
+					<Num value={db.bytes} format={fmtBytes} />
+					<span class="row-sub">volno <Num value={db.free_bytes} format={fmtBytes} /></span>
+				{:else}
+					—
+				{/if}
+			</span>
+		</div>
+
+		{#if dbErr}
+			<p class="row-err">{dbErr}</p>
+		{:else if db?.move_error}
+			<!-- Přesun se při startu služby nepovedl. Bez tohohle by v UI
+			     donekonečna svítilo „čeká na restart" a jediné, co by
+			     o problému vědělo, byl by log. -->
+			<p class="row-err">Přesun se nepovedl: {db.move_error}</p>
+		{:else if db?.pending}
+			<!-- Databáze je otevřená, takže se stěhuje až při startu služby.
+			     Říct to nahlas je důležitější než to schovat: jinak uživatel
+			     uvidí starou cestu a bude si myslet, že se nic neuložilo. -->
+			<div class="row">
+				<span class="row-main">
+					<span class="row-name">Čeká na restart služby</span>
+					<span class="row-why">
+						Přesun do <span class="value-mono">{db.wanted_dir}</span> proběhne, až se
+						služba znovu spustí — teď je databáze otevřená.
+					</span>
+				</span>
+				<span class="row-act">
+					<button class="v-btn primary" disabled={dbBusy} onclick={restartSluzby}>
+						<RefreshCw size={14} /> Restartovat službu
+					</button>
+				</span>
+			</div>
+		{:else if dbMsg}
+			<p class="row-ok">{dbMsg}</p>
+		{/if}
+	</section>
+
+	<section class="card">
+		<header class="card-head"><span class="label-tech">// záznam o počítači</span></header>
+
+		<div class="row">
+			<span class="row-main">
+				<span class="row-name">Stáhnout záznam</span>
+				<span class="row-why">
+					Kompletní stav počítače a záznamy za 24 h do textového souboru — k analýze
+					člověkem i modelem.
+				</span>
+			</span>
+			<span class="row-act">
+				<button class="v-btn primary" disabled={pcState === 'busy'} onclick={downloadPcReport}>
+					{#if pcState === 'busy'}
+						<RefreshCw size={14} class="pc-spin" /> {pcStep}…
+					{:else}
+						<Download size={14} /> Stáhnout
+					{/if}
+				</button>
+			</span>
+		</div>
+		<p class="row-why priv">
+			<ShieldCheck size={14} />
+			<span>
+				Bez obsahu disku: žádné cesty ani seznamy složek. Uloží se do Stažených
+				souborů a nikam se neodesílá.
+			</span>
+		</p>
+		{#if pcState === 'done'}
+			<p class="row-ok path">Uloženo: {pcPath}</p>
+		{:else if pcState === 'error'}
+			<p class="row-err">Nepodařilo se: {pcStep}</p>
+		{/if}
+	</section>
+
+	<section class="card">
+		<header class="card-head"><span class="label-tech">// spotřeba nástroje</span></header>
+		<p class="row-why">
+			Démon se měří stejným samplerem jako každý jiný proces. Rozpočet: &lt; 0,5 % CPU,
+			&lt; 50 MB RAM.
 		</p>
 		{#if usage}
 			<div class="tiles">
@@ -172,207 +386,8 @@
 		{:else}
 			<p class="empty label-tech">{daemon.alive ? error || 'čekám na vzorek…' : 'služba neběží'}</p>
 		{/if}
-	</section>
-
-
-
-	<section class="card">
-		<header class="card-head">
-			<span class="label-tech">// settings / zobrazení</span>
-		</header>
-		<p class="note">
-			Co se má v aplikaci ukazovat. Na systém to nesahá — Winsent nic nepřepíná
-			ani neskrývá před Windows, je to jen volba zobrazení.
-		</p>
-		<!-- Přepínač je popiskem i tlačítkem zároveň: klik kamkoli na řádek
-		     přepne, aby se nemuselo mířit na malý obdélníček. -->
-		<button
-			class="opt"
-			role="switch"
-			aria-checked={prefs.showZeroByte}
-			onclick={() => setPref('showZeroByte', !prefs.showZeroByte)}
-		>
-			<span class="sw" class:on={prefs.showZeroByte}><span class="knob"></span></span>
-			<span class="opt-text">
-				<span class="opt-name">Ukazovat prázdné soubory ve Files</span>
-				<span class="opt-why">
-					Soubory o velikosti 0 B nejsou samy o sobě smetí — bývají to dočasné
-					soubory aplikací, zámky nebo rozdělaná stahování. Ve výchozím stavu
-					se proto neukazují.
-				</span>
-			</span>
-		</button>
-		<button
-			class="opt"
-			role="switch"
-			aria-checked={prefs.showSystemStartup}
-			onclick={() => setPref('showSystemStartup', !prefs.showSystemStartup)}
-		>
-			<span class="sw" class:on={prefs.showSystemStartup}><span class="knob"></span></span>
-			<span class="opt-text">
-				<span class="opt-name">Ukazovat startovací položky Windows</span>
-				<span class="opt-why">
-					V Po spuštění jsou vidět jen programy třetích stran — to, co s Windows
-					startuje ze systému samotného, se nezobrazuje. Přepnout to stejně nejde
-					(služba to odmítne) a dlouhý seznam nepřepínatelných řádků jen zakryje
-					to, co ovlivnit můžeš. Zapnuté je uvidíš k náhledu, bez přepínače.
-				</span>
-			</span>
-		</button>
-	</section>
-
-	<section class="card">
-		<header class="card-head">
-			<span class="label-tech">// settings / verze a aktualizace</span>
-		</header>
-		<div class="ver-grid">
-			<div>
-				<span class="label-tech">nainstalovaná verze</span>
-				<span class="ver-val value-mono">{updater.current || '—'}</span>
-			</div>
-			<div>
-				<span class="label-tech">verze k dispozici</span>
-				<span class="ver-val value-mono" class:new={updater.available}>
-					{updater.latest || '—'}
-				</span>
-			</div>
-			<div>
-				<span class="label-tech">naposledy zjištěno</span>
-				<span class="ver-val value-mono small">{lastCheck}</span>
-			</div>
-		</div>
-		<p class="note ver-note">
-			{#if updater.available}
-				Nová verze je připravená. Aktualizace zavře aplikaci i hlídače na pozadí, přepíše
-				soubory a spustí to znovu — Windows se cestou zeptají na práva správce.
-			{:else if updater.error}
-				Zjistit verzi se nepodařilo: {updater.error}
-			{:else if updater.current}
-				Máš aktuální verzi. Kontroluje se při startu a pak jednou za šest hodin.
-			{:else}
-				Aplikace neběží z instalace (vývojový strom) — aktualizace se tu nenabízí.
-			{/if}
-		</p>
-		{#if updater.runError}
-			<p class="note ver-err">{updater.runError}</p>
-		{/if}
-		<div class="ver-actions">
-			<button class="v-btn" onclick={checkUpdate}>Zkontrolovat teď</button>
-			{#if updater.available}
-				<button class="v-btn primary" disabled={updater.busy} onclick={runUpdate}>
-					{updater.busy ? 'stahuji…' : 'Aktualizovat'}
-				</button>
-			{/if}
-		</div>
-	</section>
-
-
-	<section class="card">
-		<header class="card-head">
-			<span class="label-tech">// settings / záznam o počítači</span>
-		</header>
-		<p class="note">
-			Textový soubor s kompletním stavem počítače: sestava, hardware, ovladače,
-			ochrana, oprávnění, účty, síť, programy, procesy, položky po spuštění
-			a všechny záznamy za posledních 24 hodin. Určený k analýze — ať už ho
-			čte odborník, nebo model.
-		</p>
-		<p class="note pc-priv">
-			<ShieldCheck size={15} />
-			<span>
-				Obsah disku v něm <b>není</b>. Žádné cesty k souborům, seznamy složek,
-				duplicity ani mapy instalací — z disků jde do záznamu jen technika:
-				model, zdraví, teplota, kapacita. Soubor se uloží do Stažených souborů
-				a nikam se neodesílá.
-			</span>
-		</p>
-		{#if pcState === 'done'}
-			<p class="note pc-done">Uloženo: <span class="value-mono">{pcPath}</span></p>
-		{:else if pcState === 'error'}
-			<p class="note pc-err">Nepodařilo se: {pcStep}</p>
-		{/if}
-		<div class="ver-actions">
-			<button class="v-btn primary" disabled={pcState === 'busy'} onclick={downloadPcReport}>
-				{#if pcState === 'busy'}
-					<RefreshCw size={14} class="pc-spin" /> sbírám — {pcStep}…
-				{:else}
-					<Download size={14} /> Stáhnout záznam o počítači
-				{/if}
-			</button>
-		</div>
-	</section>
-
-	<section class="card">
-		<header class="card-head">
-			<span class="label-tech">// settings / kam se ukládá databáze</span>
-		</header>
-		<p class="note">
-			Historie měření roste do stovek megabajtů. Když máš malý nebo opotřebovaný
-			systémový disk, dá se odsunout jinam — výchozí umístění zůstává tam, kde bylo.
-		</p>
-		{#if dbErr}
-			<p class="note pc-err">{dbErr}</p>
-		{:else if db}
-			<div class="db-rows">
-				<div class="db-row">
-					<span class="db-k">Teď leží v</span>
-					<span class="value-mono db-v">{db.current_path}</span>
-				</div>
-				<div class="db-row">
-					<span class="db-k">Velikost</span>
-					<span class="db-v value-mono"><Num value={db.bytes} format={fmtBytes} /></span>
-				</div>
-				<div class="db-row">
-					<span class="db-k">Volné místo</span>
-					<span class="db-v value-mono"><Num value={db.free_bytes} format={fmtBytes} /></span>
-				</div>
-			</div>
-			{#if db.move_error}
-				<!-- Přesun se při startu služby nepovedl. Bez tohohle by
-				     v UI donekonečna svítilo „čeká na restart" a jediné,
-				     co by o problému vědělo, byl by log. -->
-				<p class="note pc-err">Přesun se nepovedl: {db.move_error}</p>
-			{:else if db.pending}
-				<!-- Databáze je otevřená, takže se stěhuje až při startu
-				     služby. Říct to nahlas je důležitější než to schovat:
-				     jinak uživatel uvidí starou cestu a bude si myslet,
-				     že se nastavení neuložilo. -->
-				<p class="note db-pending">
-					Přesun do <span class="value-mono">{db.wanted_dir}</span> čeká na restart služby —
-					databáze je teď otevřená a hýbat s ní pod rukama by znamenalo přijít
-					o poslední vzorky. Restartuj službu, nebo počítač.
-				</p>
-			{/if}
-			{#if dbMsg}
-				<p class="note pc-done">{dbMsg}</p>
-			{/if}
-			<div class="ver-actions">
-				<button class="v-btn" disabled={dbBusy} onclick={vybratSlozku}>
-					<FolderOpen size={14} /> Vybrat složku…
-				</button>
-				{#if db.wanted_dir}
-					<button class="v-btn" disabled={dbBusy} onclick={() => ulozitSlozku('')}>
-						Zpátky na výchozí
-					</button>
-				{/if}
-				{#if db.pending}
-					<button class="v-btn primary" disabled={dbBusy} onclick={restartSluzby}>
-						<RefreshCw size={14} /> Restartovat službu
-					</button>
-				{/if}
-			</div>
-		{:else}
-			<p class="note">Načítám…</p>
-		{/if}
-	</section>
-
-	<section class="card">
-		<header class="card-head">
-			<span class="label-tech">// settings / konfigurace</span>
-		</header>
-		<p class="note">
-			Konfigurace žije v <span class="value-mono">%ProgramData%\syswatch\config.toml</span>
-			a změny se projeví za běhu (hot-reload). Grafické nastavení přijde s dalšími verzemi.
+		<p class="row-why faint">
+			Konfigurace: <span class="value-mono">%ProgramData%\syswatch\config.toml</span>
 		</p>
 	</section>
 </div>
@@ -392,10 +407,120 @@
 	.card-head {
 		margin-bottom: 0.6rem;
 	}
-	.note {
-		margin: 0 0 0.8rem;
-		color: var(--text-dim);
+	/* ── Řádek nastavení ─────────────────────────────────────────
+	   Jméno, jedna věta proč, ovládání vpravo. Řádky v kartě sedí
+	   pod sebou a dělí je tenká linka, takže to čte jako seznam,
+	   ne jako sada odstavců. */
+	.row {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		width: 100%;
+		padding: 0.6rem 0;
+		border: 0;
+		border-top: 1px solid var(--border);
+		background: none;
+		color: var(--text);
+		font: inherit;
+		text-align: left;
+	}
+	.row:first-of-type {
+		border-top: 0;
+		padding-top: 0.1rem;
+	}
+	.row-main {
+		display: flex;
+		flex-direction: column;
+		gap: 0.12rem;
+		min-width: 0;
+		flex: 1;
+	}
+	.row-name {
 		font-size: var(--fs-lg);
+		line-height: 1.3;
+	}
+	.row-why {
+		font-size: var(--fs-sm);
+		color: var(--text-dim);
+		line-height: 1.4;
+		margin: 0;
+	}
+	.row-act {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		flex: none;
+		white-space: nowrap;
+	}
+	.row-sub {
+		font-size: var(--fs-xs);
+		color: var(--text-faint);
+		margin-left: 0.4rem;
+	}
+	.row-err {
+		margin: 0.5rem 0 0;
+		font-size: var(--fs-sm);
+		color: var(--danger);
+		overflow-wrap: anywhere;
+	}
+	.row-ok {
+		margin: 0.5rem 0 0;
+		font-size: var(--fs-sm);
+		color: var(--ok);
+		overflow-wrap: anywhere;
+	}
+	/* Cesta se smí zalomit kdekoli — jinak roztáhne celou kartu. */
+	.path {
+		overflow-wrap: anywhere;
+	}
+	.priv {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.45rem;
+		margin-top: 0.6rem;
+	}
+	.faint {
+		margin-top: 0.7rem;
+		color: var(--text-faint);
+	}
+	/* Přepínatelný řádek je celý tlačítko — mířit na malý obdélníček
+	   je zbytečná práce navíc. */
+	.opt {
+		cursor: pointer;
+	}
+	.opt:hover .row-name {
+		color: var(--accent, var(--text));
+	}
+	/* Verze: současná, a když je co, i ta nová za šipkou. */
+	.ver-vals {
+		gap: 0.35rem;
+	}
+	.ver-now {
+		color: var(--text-dim);
+	}
+	.ver-arrow {
+		color: var(--text-faint);
+	}
+	.ver-new {
+		color: var(--ok);
+	}
+	/* Krátké bliknutí po dokončení kontroly.
+	   Kontrola běží každých 30 s a většinou nic nezmění, takže bez
+	   téhle odezvy nešlo poznat, že tlačítko vůbec něco udělalo. */
+	.ver-vals.flash {
+		animation: ver-flash 1s ease-out;
+	}
+	@keyframes ver-flash {
+		0% {
+			background: color-mix(in srgb, var(--ok) 30%, transparent);
+			box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 18%, transparent);
+			border-radius: 4px;
+		}
+		100% {
+			background: transparent;
+			box-shadow: none;
+			border-radius: 4px;
+		}
 	}
 	/* Řádek s přepínačem. Celý řádek je tlačítko — mířit na malý
 	   obdélníček je zbytečná práce navíc. */
@@ -452,97 +577,10 @@
 		background: var(--ok);
 		box-shadow: var(--glow-ok);
 	}
-	.opt-text {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-	.opt-name {
-		font-size: var(--fs-xl);
-	}
-	.opt-why {
-		font-size: var(--fs-md);
-		color: var(--text-dim);
-		line-height: 1.5;
-	}
 	/* Verze: tři údaje vedle sebe, popisky ve stejném jazyce jako
 	   jinde v aplikaci (mono verzálky). */
-	.ver-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-		gap: 0.8rem;
-		margin-bottom: 0.7rem;
-	}
-	.ver-grid > div {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-	.ver-val {
-		font-size: var(--fs-lg);
-		color: var(--text);
-	}
-	.ver-val.small {
-		font-size: var(--fs-sm);
-		color: var(--text-dim);
-	}
-	/* Jantarová jen když je co stáhnout — jinak by to křičelo pořád. */
-	.ver-val.new {
-		color: var(--warn);
-	}
-	.ver-note {
-		margin: 0 0 0.7rem;
-	}
-	.ver-err {
-		margin: 0 0 0.7rem;
-		color: var(--danger);
-	}
 	/* Poznámka o soukromí — modrý štít, ne varování. Je to ujištění,
 	   ne problém. */
-	.pc-priv {
-		display: flex;
-		align-items: flex-start;
-		gap: 9px;
-		padding: 9px 12px;
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		background: var(--surface);
-	}
-	.pc-priv :global(svg) {
-		flex: none;
-		margin-top: 2px;
-		color: var(--net-down);
-	}
-	.pc-done {
-		color: var(--ok);
-		word-break: break-all;
-	}
-	.pc-err {
-		color: var(--danger);
-	}
-	/* Umístění databáze: hodnoty pod sebou, cesta se smí zalomit. */
-	.db-rows {
-		display: flex;
-		flex-direction: column;
-		gap: 0.35rem;
-		margin-bottom: 0.8rem;
-	}
-	.db-row {
-		display: grid;
-		grid-template-columns: 8.5rem minmax(0, 1fr);
-		align-items: baseline;
-		gap: 0.6rem;
-	}
-	.db-k {
-		font-size: var(--fs-sm);
-		color: var(--text-dim);
-	}
-	.db-v {
-		word-break: break-all;
-	}
-	.db-pending {
-		color: var(--warn);
-	}
 	.v-btn :global(svg) {
 		vertical-align: -2px;
 		margin-right: 5px;
@@ -555,11 +593,10 @@
 			transform: rotate(360deg);
 		}
 	}
-	.ver-actions {
-		display: flex;
-		gap: 0.5rem;
-	}
 	.v-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
 		padding: 6px 13px;
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
@@ -568,6 +605,11 @@
 		font: inherit;
 		font-size: var(--fs-sm);
 		cursor: pointer;
+		white-space: nowrap;
+	}
+	.v-btn:disabled {
+		opacity: 0.6;
+		cursor: default;
 	}
 	.v-btn:hover:not(:disabled) {
 		background: var(--surface-hover);

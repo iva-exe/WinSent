@@ -20,10 +20,16 @@ export const updater = $state({
 	/// Běží stahování instalátoru?
 	busy: false,
 	/// Chyba spuštění aktualizace.
-	runError: ''
+	runError: '',
+	/// Právě se ptáme repozitáře. Kontrola jde po síti a trvá
+	/// nezanedbatelně dlouho — bez tohohle tlačítko po kliknutí
+	/// jen mlčelo a nedalo se poznat, jestli se něco děje.
+	checking: false
 });
 
 export async function checkUpdate() {
+	if (updater.checking) return;
+	updater.checking = true;
 	try {
 		const r = await invoke('check_update');
 		updater.current = r.current ?? '';
@@ -35,6 +41,7 @@ export async function checkUpdate() {
 		updater.available = false;
 	}
 	updater.checkedAt = Date.now();
+	updater.checking = false;
 }
 
 export async function runUpdate() {
@@ -54,10 +61,16 @@ export async function runUpdate() {
 
 let timer;
 
-/// Spustí kontrolu (idempotentní). Při startu hned, pak jednou za šest
-/// hodin — častěji nemá smysl, vydává se v řádu dnů.
+/// Jak často se ptát repozitáře na novou verzi.
+///
+/// Půl minuty je na běžnou aplikaci hodně, ale Winsent se během vývoje
+/// vydává několikrát za hodinu a testeři mají mít novou verzi hned —
+/// jeden dotaz na jeden malý soubor za 30 s je proti tomu levný.
+const INTERVAL_MS = 30 * 1000;
+
+/// Spustí kontrolu (idempotentní). Při startu hned, pak v intervalu.
 export function startUpdateChecks() {
 	if (timer) return;
 	checkUpdate();
-	timer = setInterval(checkUpdate, 6 * 3600 * 1000);
+	timer = setInterval(checkUpdate, INTERVAL_MS);
 }
