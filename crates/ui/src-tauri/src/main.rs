@@ -938,16 +938,23 @@ fn check_update() -> UpdateInfo {
             error: Some("aplikace neběží z instalace — aktualizace se nenabízí".into()),
         };
     }
-    let latest = match latest_commit()
-        .and_then(|sha| {
-            win_sys::http::get(
-                RAW_HOST,
-                &format!("/{REPO}/{sha}/release/version.txt"),
-                |_| {},
-            )
-            .map_err(|e| e.to_string())
-        })
-        .map(|b| String::from_utf8_lossy(&b).trim().to_string())
+    // Verze se čte PŘÍMO z větve, ne přes commit z API.
+    //
+    // GitHub API má pro nepřihlášené 60 dotazů za hodinu z jedné IP.
+    // Kontrola každých 30 s je 120 za hodinu, takže limit dojde vždycky
+    // — a pak vrací 403. Naměřeno: brána updatecheck spadla na
+    // „server odpověděl chybou 403" a instalátor, který si SHA bere
+    // odtud, začal stahovat starší commit. `raw` jede přes CDN, nemá
+    // hodinový limit a pro odpověď „jaká verze je venku" stačí.
+    //
+    // Commit se dohledá teprve tehdy, když je co stahovat (`run_update`).
+    let latest = match win_sys::http::get(
+        RAW_HOST,
+        &format!("/{REPO}/main/release/version.txt"),
+        |_| {},
+    )
+    .map_err(|e| e.to_string())
+    .map(|b| String::from_utf8_lossy(&b).trim().to_string())
     {
         Ok(v) if !v.is_empty() => v,
         Ok(_) => {

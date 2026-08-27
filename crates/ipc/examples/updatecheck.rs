@@ -13,6 +13,30 @@ const REPO: &str = "iva-exe/WinSent";
 fn main() {
     let mut fails = 0;
 
+    // Cesta, kterou používá KONTROLA v aplikaci: verze rovnou z větve.
+    //
+    // Přes API se to dělat nedá — GitHub dává nepřihlášeným 60 dotazů
+    // za hodinu z jedné IP a kontrola každých 30 s je 120. Limit dojde
+    // vždycky a odpověď je 403.
+    match win_sys::http::get(RAW_HOST, &format!("/{REPO}/main/release/version.txt"), |_| {}) {
+        Ok(b) => {
+            let v = String::from_utf8_lossy(&b).trim().to_string();
+            if v.is_empty() {
+                println!("CHYBA: version.txt z větve je prázdný");
+                fails += 1;
+            } else {
+                println!("verze ve větvi: {v}");
+            }
+        }
+        Err(e) => {
+            println!("CHYBA: verzi z větve nelze přečíst: {e}");
+            fails += 1;
+        }
+    }
+
+    // Cesta, kterou používá INSTALÁTOR: commit z API a soubory z něj.
+    // Vyčerpaný hodinový limit (403) není vada našeho kódu — sám se
+    // obnoví. Brána to řekne, ale nepadá na tom.
     let sha = match win_sys::http::get(API_HOST, &format!("/repos/{REPO}/commits/main"), |_| {}) {
         Ok(b) => {
             let t = String::from_utf8_lossy(&b).to_string();
@@ -29,8 +53,13 @@ fn main() {
             }
         }
         Err(e) => {
-            println!("CHYBA: commit se nepodařilo zjistit: {e}");
-            fails += 1;
+            let z = e.to_string();
+            if z.contains("403") {
+                println!("POZOR: GitHub API má vyčerpaný hodinový limit — instalace se zdrží, než se obnoví");
+            } else {
+                println!("CHYBA: commit se nepodařilo zjistit: {z}");
+                fails += 1;
+            }
             String::new()
         }
     };
