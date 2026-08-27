@@ -5,7 +5,15 @@
 	import { onMount } from 'svelte';
 	import { daemon } from '$lib/daemon.svelte.js';
 	import Num from '$lib/Num.svelte';
-	import { prefs, setPref } from '$lib/prefs.svelte.js';
+	import { prefs, setPref, prepniSekci } from '$lib/prefs.svelte.js';
+	import { SEKCE } from '$lib/sections.js';
+
+	/// Kolik sekcí je zapnutých. V hlavičce karty, ať je na první pohled
+	/// vidět, že je něco vypnuté — jinak se člověk diví, kam se sekce
+	/// poděla, a hledá chybu tam, kde žádná není.
+	let zapnutychSekci = $derived(
+		SEKCE.filter((s) => !prefs.hiddenSections.includes(s.href)).length
+	);
 
 	import { updater, checkUpdate, runUpdate } from '$lib/updater.svelte.js';
 	import { gatherAll, reportText } from '$lib/pcreport.js';
@@ -252,6 +260,39 @@
 			</span>
 			<span class="sw" class:on={prefs.showSystemStartup}><span class="knob"></span></span>
 		</button>
+	</section>
+
+	<!-- Sekce aplikace. Kompaktní mřížka, ne seznam řádků s odstavci:
+	     je jich čtrnáct a jde jen o zapnuto/vypnuto, takže vysvětlivka
+	     u každé by z toho udělala stránku textu. -->
+	<section class="card">
+		<header class="card-head sek-head">
+			<span class="label-tech">// sekce v aplikaci</span>
+			<span class="sek-pocet mono">{zapnutychSekci} / {SEKCE.length}</span>
+			{#if zapnutychSekci < SEKCE.length}
+				<button class="sek-vse" onclick={() => setPref('hiddenSections', [])}>Zapnout vše</button>
+			{/if}
+		</header>
+		<p class="sek-why">
+			Vypnutá sekce jen zmizí z navigace. Nic se tím nevypíná ani nepřestane měřit a Nastavení
+			zůstává po ruce vždycky.
+		</p>
+		<div class="sek-mriz">
+			{#each SEKCE as sekce (sekce.href)}
+				{@const zapnuta = !prefs.hiddenSections.includes(sekce.href)}
+				<button
+					class="sek"
+					class:off={!zapnuta}
+					role="switch"
+					aria-checked={zapnuta}
+					onclick={() => prepniSekci(sekce.href, !zapnuta)}
+				>
+					<sekce.icon size={17} strokeWidth={1.75} />
+					<span class="sek-name">{sekce.label}</span>
+					<span class="sw sm" class:on={zapnuta}><span class="knob"></span></span>
+				</button>
+			{/each}
+		</div>
 	</section>
 
 	<section class="card">
@@ -564,6 +605,90 @@
 	   je zbytečná práce navíc. */
 	.opt {
 		cursor: pointer;
+	}
+
+	/* ── Sekce aplikace ──────────────────────────────────────────
+	   Mřížka, ne sloupec: čtrnáct řádků pod sebou by z karty udělalo
+	   nejdelší část Nastavení, přitom jde u každé jen o jeden přepínač. */
+	.sek-head {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
+	.sek-pocet {
+		font-size: var(--fs-2xs);
+		color: var(--text-faint);
+		font-variant-numeric: tabular-nums;
+	}
+	.sek-vse {
+		margin-left: auto;
+		padding: 2px 9px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: none;
+		color: var(--text-dim);
+		font: inherit;
+		font-size: var(--fs-xs);
+		cursor: pointer;
+	}
+	.sek-vse:hover {
+		background: var(--surface-hover);
+		color: var(--text);
+	}
+	.sek-why {
+		margin: 0 0 0.7rem;
+		font-size: var(--fs-sm);
+		color: var(--text-dim);
+		line-height: 1.4;
+	}
+	.sek-mriz {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(214px, 1fr));
+		gap: 2px 1.1rem;
+	}
+	.sek {
+		display: flex;
+		align-items: center;
+		gap: 0.55rem;
+		width: 100%;
+		padding: 0.36rem 0.1rem;
+		border: 0;
+		background: none;
+		color: var(--text);
+		font: inherit;
+		font-size: var(--fs-md);
+		text-align: left;
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+	}
+	.sek:hover {
+		background: var(--surface-hover);
+	}
+	/* Vypnutá sekce zůstane čitelná, jen ustoupí — přeškrtnutí ani
+	   zmizení by z přehledu udělalo hádanku. */
+	.sek.off {
+		color: var(--text-faint);
+	}
+	.sek.off :global(svg) {
+		opacity: 0.55;
+	}
+	.sek-name {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.sw.sm {
+		width: 30px;
+		height: 17px;
+	}
+	.sw.sm .knob {
+		width: 11px;
+		height: 11px;
+	}
+	.sw.sm.on .knob {
+		transform: translateX(13px);
 	}
 	.opt:hover .row-name {
 		color: var(--accent, var(--text));

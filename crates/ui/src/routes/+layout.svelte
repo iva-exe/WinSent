@@ -14,46 +14,27 @@
 	import { daemon, startDaemonPolling } from '$lib/daemon.svelte.js';
 	import ItemMenu from '$lib/ItemMenu.svelte';
 	import { updater, startUpdateChecks, runUpdate } from '$lib/updater.svelte.js';
-	import {
-		House,
-		Activity,
-		Blocks,
-		Files,
-		Search,
-		ListStart,
-		Users,
-		Cpu,
-		BrainCircuit,
-		Wifi,
-		Router,
-		Shield,
-		Settings,
-		History,
-		Download,
-		Minus,
-		Square,
-		TriangleAlert,
-		X
-	} from 'lucide-svelte';
+	import { goto } from '$app/navigation';
+	import { SEKCE } from '$lib/sections.js';
+	import { prefs, prvniViditelnaSekce } from '$lib/prefs.svelte.js';
+	import { Settings, Download, Minus, Square, X } from 'lucide-svelte';
 
 	let { children } = $props();
 
-	// Navigace dle Frame 5 — pořadí i názvy sekcí jsou závazné.
-	const nav = [
-		{ href: '/home', label: 'Home', icon: House },
-		{ href: '/tasks', label: 'Tasks', icon: Activity },
-		{ href: '/incidents', label: 'Incidents', icon: TriangleAlert },
-		{ href: '/programs', label: 'Programs', icon: Blocks },
-		{ href: '/files', label: 'Files', icon: Files },
-		{ href: '/search', label: 'Vyhledávání', icon: Search },
-		{ href: '/onstart', label: 'On start', icon: ListStart },
-		{ href: '/users', label: 'Users', icon: Users },
-		{ href: '/hardware', label: 'Hardware', icon: Cpu },
-		{ href: '/drivers', label: 'Drivers', icon: BrainCircuit },
-		{ href: '/connection', label: 'Connection', icon: Wifi },
-		{ href: '/network', label: 'Network', icon: Router },
-		{ href: '/security', label: 'Security', icon: Shield }
-	];
+	// Navigace dle Frame 5 — pořadí i názvy sekcí jsou závazné a bere
+	// se z jednoho seznamu ($lib/sections.js), který používá i Nastavení.
+	// Vypnutá sekce se nekreslí: je to jen zobrazení, služba měří dál.
+	let nav = $derived(SEKCE.filter((s) => !s.dole && !prefs.hiddenSections.includes(s.href)));
+	let navDole = $derived(SEKCE.filter((s) => s.dole && !prefs.hiddenSections.includes(s.href)));
+
+	// Kdo si vypne sekci, na které zrovna stojí (nebo ji otevře starým
+	// odkazem), by jinak zůstal na stránce, ke které už nevede cesta.
+	$effect(() => {
+		const cesta = page.url.pathname;
+		if (cesta === '/' || cesta.startsWith('/settings') || cesta.startsWith('/spotlight')) return;
+		if (!prefs.hiddenSections.some((h) => cesta.startsWith(h))) return;
+		goto(prvniViditelnaSekce(), { replaceState: true });
+	});
 
 	// Lazy — mimo Tauri (preview v prohlížeči) getCurrentWindow neexistuje.
 	function win() {
@@ -224,15 +205,17 @@
 					<span>Settings</span>
 				</a>
 				<!-- Historie zásahů do systému (audit) — vedle nastavení. -->
-				<a
-					href="/history"
-					class="hist"
-					class:active={page.url.pathname.startsWith('/history')}
-					title="Historie zásahů do systému"
-				>
-					<History size={21} strokeWidth={1.75} />
-					<span>Historie</span>
-				</a>
+				{#each navDole as item (item.href)}
+					<a
+						href={item.href}
+						class="hist"
+						class:active={page.url.pathname.startsWith(item.href)}
+						title="Historie zásahů do systému"
+					>
+						<item.icon size={21} strokeWidth={1.75} />
+						<span>{item.label}</span>
+					</a>
+				{/each}
 			</div>
 		</nav>
 
