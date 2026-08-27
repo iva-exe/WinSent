@@ -54,9 +54,13 @@ export function nacti() {
 				disk: typeof it.disk === 'string' ? it.disk : '',
 				ts: Number.isFinite(it.ts) ? it.ts : 0
 			});
-			if (out.length >= STROP) break;
 		}
-		return out;
+		// Od naposledy otevřeného. Pořadí v uloženém poli tomu sice
+		// odpovídá, ale zapisují do něj dvě okna (sekce i lišta) a
+		// spoléhat se na ně by znamenalo spoléhat se na to, které z nich
+		// psalo dřív. Ořezává se AŽ potom, ať se nezahodí ta novější.
+		out.sort((a, b) => b.ts - a.ts);
+		return out.slice(0, STROP);
 	} catch {
 		return [];
 	}

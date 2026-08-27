@@ -503,7 +503,10 @@
 	/// o 206 řádcích a dvě čísla na jedné obrazovce si odporovala.
 	function proFiltr(zdroj, f) {
 		const v = zdroj.filter((it) => projde(it, f));
-		if (f !== 'vse') return v;
+		// Bez dotazu je v seznamu historie a ta má vlastní pořadí: od
+		// naposledy otevřeného. Přerovnat ji tak, aby byly programy
+		// nahoře, by z „co jsem měl posledně" udělalo „co je čím".
+		if (f !== 'vse' || !dotaz) return v;
 		const a = v.filter((it) => it.kind === 'app').slice(0, APPS_VE_VSEM);
 		return [...a, ...v.filter((it) => it.kind !== 'app')];
 	}
