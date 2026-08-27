@@ -27,7 +27,18 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Najde a spustí aplikaci. Vrací, co se spustilo (pro hlášku v UI).
-pub fn launch(identity_key: &str, display_name: &str) -> Result<String, String> {
+///
+/// Když UI zná přesné AUMID (položka přišla ze složky „Aplikace"),
+/// není co dohledávat a spustí se přesně to, na co uživatel klikl —
+/// žádné porovnávání jmen, žádná šance splést si aplikaci.
+pub fn launch(
+    identity_key: &str,
+    display_name: &str,
+    aumid: Option<&str>,
+) -> Result<String, String> {
+    if let Some(a) = aumid.filter(|a| !a.trim().is_empty()) {
+        return spust(&format!("shell:AppsFolder\\{a}"), None).map(|()| display_name.to_string());
+    }
     let mut chyba: Option<String> = None;
     if let Some(aumid) = najdi_v_appsfolder(display_name) {
         match spust(&format!("shell:AppsFolder\\{aumid}"), None) {
@@ -79,16 +90,43 @@ fn spust(cil: &str, dir: Option<&Path>) -> Result<(), String> {
 
 // ── Složka „Aplikace" ──────────────────────────────────────────────
 
-type Polozky = Vec<(String, String)>;
+/// Jedna položka složky „Aplikace".
+#[derive(Clone)]
+pub struct Polozka {
+    /// Jméno tak, jak ho ukazuje nabídka Start. Lokalizované —
+    /// „Kalkulačka", ne „Microsoft.WindowsCalculator".
+    pub jmeno: String,
+    /// Totéž rozložené na slova; jen pro porovnávání.
+    pub slova: String,
+    /// AUMID nebo cesta. Předává se rovnou ke spuštění.
+    pub aumid: String,
+    /// Cíl na disku, který neexistuje.
+    pub chybi: bool,
+}
+
+type Polozky = Vec<Polozka>;
 
 /// Naposledy načtená složka „Aplikace" a kdy.
 ///
 /// Enumerace stojí přes půl sekundy (naměřeno: 260 položek ≈ 530 ms)
-/// a bez cache by se dělala při každém kliknutí. Platnost je krátká,
-/// aby se čerstvě nainstalovaná aplikace neztratila na dlouho.
+/// a bez cache by se dělala při každém vyvolání lišty. Platnost je
+/// natolik krátká, aby se čerstvě nainstalovaná aplikace neztratila
+/// nadlouho, a natolik dlouhá, aby se za ni neplatilo při psaní.
 static APPSFOLDER: std::sync::OnceLock<std::sync::Mutex<Option<(Instant, Polozky)>>> =
     std::sync::OnceLock::new();
-const PLATNOST_CACHE: Duration = Duration::from_secs(60);
+const PLATNOST_CACHE: Duration = Duration::from_secs(300);
+
+/// Co jde na tomhle stroji spustit.
+///
+/// Tentýž seznam, ze kterého bere nabídka Start i hledání ve Windows.
+/// Pro vyhledávání je to nenahraditelné: inventář služby je seznam
+/// INSTALÁTORŮ, ne spustitelných věcí, a navíc mu chybí všechno, co
+/// je nainstalované jen pro přihlášeného uživatele nebo co má
+/// lokalizované jméno z balíčku. Naměřeno na jednom stroji: ze 260
+/// spustitelných položek jich inventář neznal 178.
+pub fn seznam() -> Polozky {
+    appsfolder()
+}
 
 /// AUMID položky ze složky „Aplikace", jejíž jméno odpovídá aplikaci.
 fn najdi_v_appsfolder(display_name: &str) -> Option<String> {
@@ -98,11 +136,18 @@ fn najdi_v_appsfolder(display_name: &str) -> Option<String> {
     }
     let polozky = appsfolder();
     let mut nejlepsi: Option<(usize, &str, &str)> = None;
-    for (jmeno, aumid) in &polozky {
+    for Polozka {
+        slova: jmeno,
+        aumid,
+        chybi,
+        ..
+    } in &polozky
+    {
         // Odkaz na webovou stránku není program. Instalátory jich do
         // nabídky Start sypou spousty („Git FAQs", „Nápověda k…")
         // a spustit místo aplikace prohlížeč je horší než nespustit nic.
-        if aumid.contains("://") {
+        // Zástupce na neexistující soubor je na tom stejně.
+        if aumid.contains("://") || *chybi {
             continue;
         }
         let Some(skore) = skore_jmena(jmeno, &hledane) else {
@@ -172,18 +217,26 @@ fn enumeruj_appsfolder() -> Polozky {
                         let Ok(jmeno_w) = polozka.GetDisplayName(SIGDN_NORMALDISPLAY) else {
                             continue;
                         };
-                        let jmeno = slova(&jmeno_w.to_string().unwrap_or_default());
+                        // Řetězec se MUSÍ vyrobit před uvolněním —
+                        // po `CoTaskMemFree` je paměť cizí.
+                        let puvodni = jmeno_w.to_string().unwrap_or_default();
                         CoTaskMemFree(Some(jmeno_w.0 as *const _));
-                        if jmeno.is_empty() {
+                        let slova = slova(&puvodni);
+                        if slova.is_empty() {
                             continue;
                         }
                         let Ok(id_w) = polozka.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING) else {
                             continue;
                         };
-                        let id = id_w.to_string().unwrap_or_default();
+                        let aumid = id_w.to_string().unwrap_or_default();
                         CoTaskMemFree(Some(id_w.0 as *const _));
-                        if !id.is_empty() {
-                            out.push((jmeno, id));
+                        if !aumid.is_empty() {
+                            out.push(Polozka {
+                                jmeno: puvodni,
+                                slova,
+                                chybi: chybejici_cil(&aumid),
+                                aumid,
+                            });
                         }
                     }
                 }
@@ -356,6 +409,168 @@ fn projdi(dir: &Path, hloubka: u8, f: &mut impl FnMut(&Path)) {
     }
 }
 
+/// Ukazuje AUMID na soubor, který na disku není?
+///
+/// Ve složce „Aplikace" zůstávají zástupci po odinstalovaných hrách
+/// a programech (naměřeno sedm na jednom stroji). Nabízet je
+/// k spuštění znamená slíbit něco, co skončí chybou — a ve výsledcích
+/// hledání navíc vytlačit něco, co by fungovalo.
+fn chybejici_cil(aumid: &str) -> bool {
+    let b = aumid.as_bytes();
+    let vypada_jako_cesta =
+        b.len() > 3 && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/') && !aumid.contains('!');
+    vypada_jako_cesta && !Path::new(aumid).exists()
+}
+
+// ── Ikona položky ze složky „Aplikace" ─────────────────────────────
+
+/// Hrana ikony v pixelech. Shell umí libovolnou velikost; 48 je
+/// nejmenší, které vypadá dobře i na 200% DPI. Nad 512 by ji zahodila
+/// kontrola rozměrů níž.
+const HRANA_IKONY: i32 = 48;
+
+/// Ikony už jednou získané. Ikona se za běhu nemění, takže bez
+/// expirace; ukládá se jen úspěch, ať se položka nainstalovaná za
+/// běhu nezasekne na uloženém „nemá".
+static IKONY: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, core_types::proc::IconData>>,
+> = std::sync::OnceLock::new();
+
+/// Ikona položky ze složky „Aplikace" podle jejího AUMID.
+///
+/// Zdroj je tentýž, ze kterého kreslí nabídka Start: shell si ikonu
+/// vyrobí sám — z balíčku (MSIX), z .exe, ze zástupce i z registru —
+/// a vrátí ji hotovou. Uspěje proto i tam, kde služba nemá kde brát:
+/// naměřeno 260 z 260 položek složky „Aplikace" proti 357 ze 478
+/// aplikací inventáře. Navíc odpoví HNED — inventář ve službě je
+/// prázdný skoro minutu po startu a do té doby svítí místo ikon
+/// jen monogramy.
+///
+/// POMALÉ (COM + shell): ~20 ms na položku se studenou cache shellu.
+/// Volat mimo vykreslovací cestu; výsledek se cachuje.
+pub fn ikona_polozky(aumid: &str) -> Option<core_types::proc::IconData> {
+    use windows::core::HSTRING;
+    use windows::Win32::Foundation::{HWND, SIZE};
+    use windows::Win32::Graphics::Gdi::{
+        DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
+    };
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::{
+        IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY,
+    };
+
+    // Prázdné AUMID by shell vzal jako složku „Aplikace" samotnou
+    // a vrátil JEJÍ ikonu — tichá záměna, kterou by nikdo nepoznal.
+    if aumid.trim().is_empty() {
+        return None;
+    }
+    let cache = IKONY.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Ok(c) = cache.lock() {
+        if let Some(i) = c.get(aumid) {
+            return Some(i.clone());
+        }
+    }
+
+    // SAFETY: COM se inicializuje pro tohle vlákno; rozhraní drží Rust
+    // a pouští je Drop na konci vnitřního bloku, tedy PŘED
+    // `CoUninitialize`. HBITMAP od shellu uvolňujeme sami.
+    let ikona = unsafe {
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let vysledek = (|| {
+            let cesta = HSTRING::from(format!("shell:AppsFolder\\{aumid}"));
+            let tovarna: IShellItemImageFactory = SHCreateItemFromParsingName(&cesta, None).ok()?;
+            // ICONONLY = chci ikonu, ne náhled obsahu; BIGGERSIZEOK
+            // dovolí vrátit větší hotovou variantu místo dopočítávání.
+            let hbm = tovarna
+                .GetImage(
+                    SIZE {
+                        cx: HRANA_IKONY,
+                        cy: HRANA_IKONY,
+                    },
+                    SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK,
+                )
+                .ok()?;
+            if hbm.is_invalid() {
+                return None;
+            }
+            // Skutečné rozměry — shell smí vrátit i jinou velikost.
+            let mut popis = BITMAP::default();
+            let got = GetObjectW(
+                HGDIOBJ(hbm.0),
+                std::mem::size_of::<BITMAP>() as i32,
+                Some(&mut popis as *mut _ as *mut core::ffi::c_void),
+            );
+            if got == 0 {
+                let _ = DeleteObject(HGDIOBJ(hbm.0));
+                return None;
+            }
+            let w = popis.bmWidth.unsigned_abs();
+            let h = popis.bmHeight.unsigned_abs();
+            if w == 0 || h == 0 || w > 512 || h > 512 {
+                let _ = DeleteObject(HGDIOBJ(hbm.0));
+                return None;
+            }
+
+            // Záporná výška = top-down, přesně jak IconData slibuje UI.
+            let mut bi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: w as i32,
+                    biHeight: -(h as i32),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut buf = vec![0u8; (w as usize) * (h as usize) * 4];
+            let dc = GetDC(Some(HWND::default()));
+            let radku = GetDIBits(
+                dc,
+                hbm,
+                0,
+                h,
+                Some(buf.as_mut_ptr() as *mut core::ffi::c_void),
+                &mut bi,
+                DIB_RGB_COLORS,
+            );
+            ReleaseDC(Some(HWND::default()), dc);
+            let _ = DeleteObject(HGDIOBJ(hbm.0));
+            if radku == 0 {
+                return None;
+            }
+
+            // Shell dává BGRA s NEpremultiplikovanou alfou (ověřeno:
+            // u 218 z 247 poloprůhledných pixelů ikony Firefoxu je
+            // barevný kanál VĚTŠÍ než alfa, což premultiplikaci
+            // vylučuje). Stačí prohodit B a R — stejně jako to dělá
+            // služba ve `win_sys::icon`; dělit alfou se NESMÍ, jinak
+            // se rozsvítí okraje. Ikona úplně bez alfy je neprůhledná.
+            let ma_alfu = buf.chunks_exact(4).any(|px| px[3] != 0);
+            for px in buf.chunks_exact_mut(4) {
+                px.swap(0, 2);
+                if !ma_alfu {
+                    px[3] = 255;
+                }
+            }
+            Some(core_types::proc::IconData { w, h, rgba: buf })
+        })();
+        // RPC_E_CHANGED_MODE = vlákno už COM mělo v jiném režimu;
+        // uvolňovat ho po sobě nesmíme.
+        if hr.is_ok() {
+            CoUninitialize();
+        }
+        vysledek
+    };
+
+    if let (Some(i), Ok(mut c)) = (ikona.as_ref(), cache.lock()) {
+        c.insert(aumid.to_string(), i.clone());
+    }
+    ikona
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,6 +608,17 @@ mod tests {
     }
 
     #[test]
+    fn chybejici_cil_pozna_zastupce_po_odinstalaci() {
+        // Ve složce „Aplikace" zůstávají zástupci po odinstalovaných
+        // hrách; nabídnout je ke spuštění znamená slíbit chybu.
+        assert!(chybejici_cil(r"D:\hry\Neexistuje\hra.exe"));
+        // AUMID balíčku není cesta a existencí souboru se neměří.
+        assert!(!chybejici_cil("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"));
+        // Položka shellu (Ovládací panely) taky ne.
+        assert!(!chybejici_cil("{21EC2020-3AEA-1069-A2DD-08002B30309D}"));
+    }
+
+    #[test]
     fn kratsi_jmeno_vyhrava_pri_shodnem_skore() {
         // Bez tohohle pravidla rozhodovalo pořadí enumerace a stejný
         // klik spouštěl pokaždé něco jiného.
@@ -401,3 +627,4 @@ mod tests {
         assert!((a.1, a.0.len(), a.0) < (b.1, b.0.len(), b.0));
     }
 }
+

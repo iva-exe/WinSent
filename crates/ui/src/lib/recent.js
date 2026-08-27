@@ -49,6 +49,7 @@ export function nacti() {
 				sub: typeof it.sub === 'string' ? it.sub : '',
 				path: typeof it.path === 'string' ? it.path : '',
 				identity_key: typeof it.identity_key === 'string' ? it.identity_key : '',
+				aumid: typeof it.aumid === 'string' ? it.aumid : '',
 				attrs: Number.isFinite(it.attrs) ? it.attrs : 0,
 				disk: typeof it.disk === 'string' ? it.disk : '',
 				ts: Number.isFinite(it.ts) ? it.ts : 0
@@ -72,6 +73,9 @@ export function zapamatuj(item) {
 		sub: item.sub ?? '',
 		path: item.path ?? '',
 		identity_key: item.identity_key ?? '',
+		// Bez AUMID by se program z historie spouštěl zase dohledáváním
+		// podle jména — a to je přesně to, co umí trefit jinou aplikaci.
+		aumid: item.aumid ?? '',
 		attrs: item.attrs ?? 0,
 		disk: item.disk ?? '',
 		ts: Date.now()

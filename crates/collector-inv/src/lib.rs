@@ -1,7 +1,8 @@
 //! collector-inv — inventář aplikací + mapa souborů (SPEC kap. 5).
 //!
 //! „Co mám nainstalované a kde všude to má soubory." Zdroje seznamu:
-//! registry Uninstall (3 kořeny), MSI, MSIX. Mapa souborů se skládá
+//! registry Uninstall (oba kořeny HKLM + hive každého přihlášeného
+//! uživatele přes HKEY_USERS), MSI, MSIX. Mapa souborů se skládá
 //! sestupně dle spolehlivosti a KAŽDÁ cesta nese zdroj + confidence:
 //! MSI komponenty `Exact`, MSIX lokace `Exact`, registry `High`,
 //! heuristika `Guess` — nikdy netvrdit, že víme, když jen hádáme.
@@ -279,24 +280,43 @@ fn exe_from_command(cmd: &str) -> Option<String> {
 /// (SystemComponent=1) a KB aktualizace se přeskakují.
 fn uninstall_entries() -> Vec<UninstallEntry> {
     use win_sys::registry::{
-        enum_subkeys, read_string, read_u64, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+        enum_subkeys, read_string, read_u64, RegKey, HKEY_LOCAL_MACHINE, HKEY_USERS,
     };
-    let roots = [
+    // HKEY_CURRENT_USER tu být NESMÍ. Inventář sbírá služba, ta běží
+    // pod účtem SYSTEM a „aktuální uživatel" je pro ni SYSTEM — jeho
+    // větev Uninstall je prázdná. Aplikace nainstalované „jen pro mě"
+    // (Discord, VS Code User, Modrinth App, Outplayed a další) proto
+    // v seznamu programů úplně chyběly; naměřeno 16 kusů na jednom
+    // stroji. Do hive přihlášeného uživatele se jde přes HKEY_USERS —
+    // stejně, jako to o pár desítek řádků níž dělá `registry_branches`.
+    let mut roots: Vec<(RegKey, String)> = vec![
         (
             HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall".to_string(),
         ),
         (
             HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
-        ),
-        (
-            HKEY_CURRENT_USER,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall".to_string(),
         ),
     ];
+    for sid in enum_subkeys(HKEY_USERS, "") {
+        // S-1-5-21-* jsou účty lidí; „_Classes" je jen odkládací větev
+        // téhož hive. Hive odhlášeného uživatele v HKEY_USERS není —
+        // to je hranice téhle cesty a nahrávat cizí NTUSER.DAT by už
+        // bylo šťourání, ne inventarizace.
+        if !sid.starts_with("S-1-5-21") || sid.ends_with("_Classes") {
+            continue;
+        }
+        for w in ["", r"\WOW6432Node"] {
+            roots.push((
+                HKEY_USERS,
+                format!(r"{sid}\SOFTWARE{w}\Microsoft\Windows\CurrentVersion\Uninstall"),
+            ));
+        }
+    }
     let mut out = Vec::new();
     for (root, base) in roots {
+        let base = base.as_str();
         for sub in enum_subkeys(root, base) {
             let key = format!("{base}\\{sub}");
             let Some(name) = read_string(root, &key, "DisplayName") else {

@@ -768,8 +768,82 @@ fn open_settings_page(page: String) -> Result<(), String> {
 /// Spouští UI proces, protože běží v relaci uživatele — služba je
 /// v session 0 a okno by nemělo kam vykreslit.
 #[tauri::command(async)]
-fn launch_app(identity_key: String, display_name: String) -> Result<String, String> {
-    launch::launch(&identity_key, &display_name)
+fn launch_app(
+    identity_key: String,
+    display_name: String,
+    aumid: Option<String>,
+) -> Result<String, String> {
+    launch::launch(&identity_key, &display_name, aumid.as_deref())
+}
+
+/// Jedna spustitelná položka složky „Aplikace".
+#[derive(Debug, Serialize)]
+struct LaunchableRow {
+    /// Jméno tak, jak ho ukazuje nabídka Start — lokalizované.
+    name: String,
+    /// AUMID nebo cesta; předává se rovnou do `launch_app`.
+    aumid: String,
+    /// `msix:{family}` u balíčkových položek — párování s inventářem,
+    /// ať se u nich neztratí velikosti a mapa souborů.
+    identity_key: Option<String>,
+    /// Cíl na disku neexistuje.
+    missing: bool,
+    /// Je to systémový nástroj Windows (Poznámkový blok, Ovládací
+    /// panely…)? Rozhoduje cesta, resp. shell GUID.
+    system: bool,
+}
+
+/// `msix:{family}` pro balíčkovou položku, jinak nic.
+///
+/// Podmínka je schválně tvrdá. AUMID balíčku je `{family}!{appid}`
+/// a family končí třináctiznakovým identifikátorem vydavatele; bez
+/// téhle kontroly by cesta `C:\…\osu!\osu!.exe` prošla jako balíček
+/// „msix:C:\…" a slepila dvě různé aplikace do jedné.
+fn msix_klic(aumid: &str) -> Option<String> {
+    let (family, _) = aumid.split_once('!')?;
+    if family.contains('\\') || family.contains('/') {
+        return None;
+    }
+    let (_, publisher) = family.rsplit_once('_')?;
+    (publisher.len() == 13 && publisher.chars().all(|c| c.is_ascii_alphanumeric()))
+        .then(|| format!("msix:{family}"))
+}
+
+/// Co jde na tomhle stroji spustit.
+///
+/// Enumeruje hostitel, ne služba, a to ze dvou důvodů: služba běží
+/// pod SYSTEM, takže se v její relaci nedají přečíst ani lokalizovaná
+/// jména balíčků („Microsoft.WindowsCalculator" místo „Kalkulačka"),
+/// ani větev registru přihlášeného uživatele. Inventář služby je navíc
+/// seznam INSTALÁTORŮ — nejsou v něm vestavěné nástroje Windows,
+/// přenosné programy ani hry bez odinstalačního záznamu. Naměřeno:
+/// ze 260 spustitelných položek jich inventář neznal 178.
+#[tauri::command(async)]
+fn query_launchables() -> Vec<LaunchableRow> {
+    launch::seznam()
+        .into_iter()
+        // Odkaz na webovou stránku není program — stejné pravidlo,
+        // jaké platí pro spouštění.
+        .filter(|p| !p.aumid.contains("://"))
+        .map(|p| {
+            let lc = p.aumid.to_ascii_lowercase();
+            LaunchableRow {
+                identity_key: msix_klic(&p.aumid),
+                // Položka shellu (Ovládací panely, Plánovač úloh) je
+                // GUID; nástroje ve Windows leží pod C:\Windows.
+                system: lc.starts_with('{') || lc.contains("\\windows\\"),
+                missing: p.chybi,
+                name: p.jmeno,
+                aumid: p.aumid,
+            }
+        })
+        .collect()
+}
+
+/// Ikona spustitelné položky. Volá se až tehdy, když ji služba nemá.
+#[tauri::command(async)]
+fn query_launchable_icon(aumid: String) -> Option<core_types::proc::IconData> {
+    launch::ikona_polozky(&aumid)
 }
 
 /// Jaká zkratka vyvolává vyhledávací lištu.
@@ -1127,6 +1201,8 @@ fn main() {
             search_web,
             open_settings_page,
             launch_app,
+            query_launchables,
+            query_launchable_icon,
             get_spotlight_hotkey,
             set_spotlight_hotkey,
             hide_spotlight,
@@ -1199,6 +1275,13 @@ fn main() {
                     }
                 });
             });
+            // Seznam spustitelných aplikací dopředu, na pozadí.
+            // Enumerace složky „Aplikace" stojí přes půl sekundy a bez
+            // tohohle by ji zaplatilo první vyvolání lišty — tedy
+            // přesně ta chvíle, kdy má být lišta nejrychlejší.
+            std::thread::spawn(|| {
+                let _ = launch::seznam();
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1212,4 +1295,25 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("start Tauri selhal");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn msix_klic_nespoji_cestu_s_balickem() {
+        assert_eq!(
+            msix_klic("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App").as_deref(),
+            Some("msix:Microsoft.WindowsCalculator_8wekyb3d8bbwe")
+        );
+        // Cesta s vykřičníkem v názvu složky. Bez tvrdé podmínky by
+        // z ní vznikl klíč „msix:C:\…" a slepil dvě různé aplikace
+        // do jedné položky — reálná položka na testovaném stroji.
+        assert_eq!(msix_klic(r"C:\Users\X\AppData\Local\osu!\osu!.exe"), None);
+        // Prostá cesta bez vykřičníku.
+        assert_eq!(msix_klic(r"D:\steam\Steam.exe"), None);
+        // Vypadá jako rodina, ale identifikátor vydavatele nemá 13 znaků.
+        assert_eq!(msix_klic("Neco.Divneho_kratke!App"), None);
+    }
 }

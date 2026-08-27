@@ -12,6 +12,8 @@
 //! Zavírá se samo při ztrátě zaměření. Okno bez křížku, které zůstane
 //! viset, když uživatel klikne jinam, by nešlo zavřít vůbec.
 
+use tauri::utils::config::WindowEffectsConfig;
+use tauri::window::{Color, Effect};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// Jméno okna. Jedno pro všechny sekce — druhé okno by znamenalo druhý
@@ -121,6 +123,31 @@ fn create(app: &AppHandle, route: &str) -> Result<(), String> {
         .skip_taskbar(true)
         .focused(true)
         .visible(true)
+        // Rozostření dělá Windows, ne CSS.
+        //
+        // `backdrop-filter` ve stránce nemá v průhledném okně co
+        // rozostřovat: sahá jen na to, co je pod prvkem UVNITŘ
+        // stránky, a pod `.spot` je průhledné `body`. Zvyšovat tam
+        // pixely bylo měření teploty vypnutým teploměrem — okno
+        // vypadalo pokaždé stejně, protože se nic nedělo.
+        //
+        // Acrylic, ne Blur: na Windows 10 jde přes
+        // ACCENT_ENABLE_ACRYLICBLURBEHIND a rozostřuje nesrovnatelně
+        // víc. Naměřeno na buildu 19045 — s Acrylicem je text za oknem
+        // nečitelný i při tónu alpha 0x01, kdežto Blur ani při 0x66
+        // neskryje rozvržení. Mica ani Tabbed na desítkách neexistují
+        // (chtějí build 22000, resp. 22523) a selhaly by TIŠE, protože
+        // Tauri návratovou hodnotu zahazuje.
+        //
+        // Alpha barvy NIKDY nesmí být 0 — s nulovou průhledností se
+        // Acrylic neaplikuje vůbec. Barva navíc platí jen na Windows 10
+        // v1903+; na jedenáctkách si tón řídí systém sám, proto ho musí
+        // dost nést i CSS v `.spot`.
+        .effects(WindowEffectsConfig {
+            effects: vec![Effect::Acrylic],
+            color: Some(Color(20, 21, 27, 0x78)),
+            ..Default::default()
+        })
         .build()
         .map_err(|e| {
             log(&format!("stavba okna selhala: {e}"));

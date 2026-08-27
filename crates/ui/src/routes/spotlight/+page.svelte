@@ -78,9 +78,18 @@
 </div>
 
 <style>
-	/* Stejný podklad jako aplikace, jen bez jejího rámu. Okno samo je
-	   průhledné a bez dekorací, takže zaoblení i krytí musí zajistit
-	   tenhle prvek — jinak by kolem zůstaly ostré rohy. */
+	/* Okno samo je průhledné a bez dekorací, takže zaoblení i krytí
+	   musí zajistit tenhle prvek — jinak by kolem zůstaly ostré rohy.
+
+	   Rozostření sem NEPATŘÍ: dělá ho acrylic ve Windows, nastavený
+	   při stavbě okna (src-tauri/spotlight.rs). `backdrop-filter` tu
+	   dřív byl, ale nic nedělal — v průhledném okně nemá co filtrovat.
+
+	   Krytí je proto výrazně nižší než dřívějších 92 %: přes skoro
+	   neprůhledné pozadí by po efektu nebylo ani památky a okno by
+	   působilo jako plný obdélník. Ladit se má primárně TADY (0,45
+	   světlejší ↔ 0,70 tmavší), ne v Rustu — CSS působí na Windows 10
+	   i 11 stejně, kdežto barva efektu se na jedenáctkách ignoruje. */
 	.spot {
 		display: flex;
 		flex-direction: column;
@@ -88,10 +97,7 @@
 		overflow: hidden;
 		border: 1px solid var(--border-strong);
 		border-radius: 14px;
-		background: #1c1d24;
-		background: color-mix(in srgb, #1c1d24 92%, transparent);
-		backdrop-filter: blur(72px) saturate(150%);
-		-webkit-backdrop-filter: blur(72px) saturate(150%);
+		background: rgba(28, 29, 36, 0.58);
 		box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
 	}
 </style>

@@ -54,6 +54,7 @@
 	let query = $state('');
 	let hits = $state([]);
 	let apps = $state([]);
+	let spustitelne = $state([]);
 	let procs = $state([]);
 	let posledni = $state([]);
 	let busy = $state(false);
@@ -121,8 +122,9 @@
 		}
 	}
 
-	// Inventář a procesy se drží v paměti a obnovují jen občas: seznam
-	// aplikací se mění po instalaci, ne mezi dvěma stisky klávesy.
+	// Inventář, spustitelné položky a procesy se drží v paměti a
+	// obnovují jen občas: seznam aplikací se mění po instalaci, ne mezi
+	// dvěma stisky klávesy.
 	let nactenoAppsMs = 0;
 	async function nacistApps(force = false) {
 		if (!force && Date.now() - nactenoAppsMs < 60_000) return;
@@ -133,6 +135,11 @@
 			nactenoAppsMs = Date.now();
 		} catch {
 			/* služba mimo — zkusí se při příštím otevření */
+		}
+		try {
+			spustitelne = await invoke('query_launchables');
+		} catch {
+			/* starší hostitel ten příkaz nezná — zbude inventář */
 		}
 		try {
 			procs = await invoke('query_procs');
@@ -157,21 +164,25 @@
 		return c.toDataURL();
 	}
 
-	async function fetchIcon(key) {
-		if (!key) return;
-		const st = iconState.get(key) ?? 0;
-		if (st === 'done' || st >= 3) return;
-		iconState.set(key, st + 1);
+	async function fetchIcon(it) {
+		if (iconState.has(it.key)) return;
+		iconState.set(it.key, 'bezi');
 		try {
-			const icon = await invoke('query_icon', { identityKey: key });
-			if (icon) {
-				iconUrls[key] = rgbaToUrl(icon);
+			let icon = null;
+			if (it.identity_key) {
+				icon = await invoke('query_icon', { identityKey: it.identity_key });
 			}
-			// I „ikonu nemá" je odpověď. Bez tohohle se na aplikace bez
-			// ikony ptáme znovu při každém stisku klávesy.
-			iconState.set(key, 'done');
+			// Služba ikonu nemá vždycky: její cache je po startu skoro
+			// minutu prázdná a u programů bez instalační složky nemá
+			// odkud brát (naměřeno 357 ikon ze 478 aplikací). Shell si
+			// ikonu vyrobí sám a hned — z balíčku, z .exe i ze zástupce.
+			if (!icon && it.aumid) {
+				icon = await invoke('query_launchable_icon', { aumid: it.aumid });
+			}
+			if (icon) iconUrls[it.key] = rgbaToUrl(icon);
 		} catch {
-			/* služba mimo — zkusí se příště */
+			// Nezapamatovat si neúspěch — příště to může vyjít.
+			iconState.delete(it.key);
 		}
 	}
 
@@ -264,6 +275,20 @@
 		return m;
 	});
 
+	/// Text bez diakritiky, malými písmeny.
+	///
+	/// Na české klávesnici se hledá „kalkulacka", ne „Kalkulačka" —
+	/// hlavně v liště, kde jde o rychlost. Rozklad na NFD a zahození
+	/// spojovacích znamének zachovává DÉLKU řetězce (jeden znak
+	/// s háčkem → jeden bez), takže se podle indexů z porovnání dá
+	/// bez přepočtu krájet původní text pro zvýraznění.
+	function bezDiakritiky(t) {
+		return (t ?? '')
+			.toLowerCase()
+			.normalize('NFD')
+			.replace(/\p{M}/gu, '');
+	}
+
 	/// Skóre shody jména aplikace s dotazem: 0 = začíná jím,
 	/// 1 = začíná jím některé slovo, 2 = obsahuje ho, −1 = neshoda.
 	function skore(jmeno, q) {
@@ -273,40 +298,118 @@
 		return /[\s\-_.(]/.test(jmeno[i - 1]) ? 1 : 2;
 	}
 
+	/// Skóre celé položky. Kromě jména se prohledá i vydavatel a
+	/// strojové jméno balíčku, ale s výrazně horším skóre: kdo napíše
+	/// „spotify", má dostat Spotify, ne všechno od Spotify AB.
+	function skorePolozky(it, q) {
+		const j = skore(bezDiakritiky(it.name), q);
+		if (j >= 0) return j;
+		const v = skore(bezDiakritiky(it.sub), q);
+		if (v >= 0) return v + 3;
+		const k = skore(bezDiakritiky(it.identity_key), q);
+		return k >= 0 ? k + 3 : -1;
+	}
+
+	/// Jméno jako klíč pro párování dvou zdrojů: malá písmena, slova
+	/// oddělená mezerou. Stejné pravidlo jako v hostiteli (launch.rs).
+	function klicJmena(s) {
+		return bezDiakritiky(s)
+			.replace(/[^\p{L}\p{N}]+/gu, ' ')
+			.trim();
+	}
+
+	/// Programy pro hledání: inventář služby + složka „Aplikace".
+	///
+	/// Ani jeden zdroj sám nestačí. Inventář ví, co je nainstalované,
+	/// kolik to zabírá a kolik procesů z toho běží. Složka „Aplikace"
+	/// (tatáž, ze které bere nabídka Start) ví, co se dá spustit a jak
+	/// se to jmenuje česky. Naměřeno na jednom stroji: ze 260
+	/// spustitelných položek jich inventář neznal 178 — aplikace ze
+	/// Storu pod strojovým jménem („Microsoft.WindowsCalculator" místo
+	/// „Kalkulačka"), programy nainstalované jen pro přihlášeného
+	/// uživatele, vestavěné nástroje Windows, hry i přenosné programy.
+	let programy = $derived.by(() => {
+		const podleKlice = new Map();
+		const podleJmena = new Map();
+		const podlePrvniho = new Map();
+		for (const a of apps) {
+			if (a.identity_key) podleKlice.set(a.identity_key, a);
+			const n = klicJmena(a.display_name);
+			if (!n) continue;
+			if (!podleJmena.has(n)) podleJmena.set(n, a);
+			const prvni = n.slice(0, n.indexOf(' ') < 0 ? n.length : n.indexOf(' '));
+			if (!podlePrvniho.has(prvni)) podlePrvniho.set(prvni, []);
+			podlePrvniho.get(prvni).push(a);
+		}
+
+		const pouzite = new Set();
+		const out = [];
+		for (const sp of spustitelne) {
+			// Zástupce na soubor, který na disku není, nemá co nabízet.
+			if (sp.missing) continue;
+			const n = klicJmena(sp.name);
+			let inv = sp.identity_key ? podleKlice.get(sp.identity_key) : null;
+			if (!inv) inv = podleJmena.get(n) ?? null;
+			// Inventář nese verzi a architekturu („Blockbench 4.12.4"),
+			// nabídka Start holé jméno. Bez druhého průchodu by se
+			// každý takový program ukázal dvakrát.
+			if (!inv && n) {
+				const kandidati = (podlePrvniho.get(n.slice(0, n.indexOf(' ') < 0 ? n.length : n.indexOf(' '))) ?? [])
+					.filter((a) => klicJmena(a.display_name).startsWith(n + ' '))
+					.sort((a, b) => a.display_name.length - b.display_name.length);
+				inv = kandidati[0] ?? null;
+			}
+			if (inv && pouzite.has(inv.identity_key)) inv = null;
+			if (inv) pouzite.add(inv.identity_key);
+			out.push(polozkaApp(inv, sp));
+		}
+		// Co v nabídce Start není, ale nainstalované to je: runtimy,
+		// SDK, ovladače. Spustit se nedají, ale hledat ano — a nesou
+		// štítky o chybějící instalaci.
+		for (const a of apps) {
+			if (!pouzite.has(a.identity_key)) out.push(polozkaApp(a, null));
+		}
+		return out;
+	});
+
 	/// Aplikace odpovídající dotazu, seřazené podle shody. Filtruje se
-	/// v paměti — inventář je pár set položek, dotaz přes pipe by byl
-	/// pomalejší než celé porovnání.
+	/// v paměti — je jich pár set a dotaz přes pipe by byl pomalejší
+	/// než celé porovnání.
 	let appHits = $derived.by(() => {
 		if (dotaz.length < 2) return [];
-		const q = dotaz.toLowerCase();
-		return apps
-			.map((a) => ({ a, s: skore((a.display_name ?? '').toLowerCase(), q) }))
+		const q = bezDiakritiky(dotaz);
+		return programy
+			.map((it) => ({ it, s: skorePolozky(it, q) }))
 			.filter((x) => x.s >= 0)
 			.sort(
 				(x, y) =>
 					x.s - y.s ||
-					x.a.display_name.length - y.a.display_name.length ||
-					x.a.display_name.localeCompare(y.a.display_name, 'cs')
+					x.it.name.length - y.it.name.length ||
+					x.it.name.localeCompare(y.it.name, 'cs')
 			)
-			.map((x) => polozkaApp(x.a));
+			.map((x) => x.it);
 	});
 
 	// ── Jednotná položka seznamu ─────────────────────────────────────
 	// Aplikace, soubory, složky i „naposledy otevřené" se kreslí týmž
 	// řádkem. Jinak by se tři skoro stejné šablony rozešly v detailech.
-	function polozkaApp(a) {
+	/// `a` je řádek inventáře, `sp` položka nabídky Start; aspoň jedno
+	/// z nich musí být. Jméno vyhrává to ze Startu — je lokalizované
+	/// a bez verze, tedy to, co uživatel opravdu napíše.
+	function polozkaApp(a, sp) {
 		return {
 			kind: 'app',
-			key: `app:${a.identity_key}`,
-			name: a.display_name,
-			sub: a.publisher ?? '',
+			key: a ? `app:${a.identity_key}` : `launch:${sp.aumid}`,
+			name: sp?.name ?? a.display_name,
+			sub: a?.publisher ?? '',
 			path: '',
-			identity_key: a.identity_key,
+			identity_key: a?.identity_key ?? '',
+			aumid: sp?.aumid ?? '',
 			attrs: 0,
 			disk: '',
 			size: null,
-			missing: !!a.missing_install,
-			system: isSystemApp(a),
+			missing: !!a?.missing_install,
+			system: a ? isSystemApp(a) : !!sp?.system,
 			systemInfo: null
 		};
 	}
@@ -316,6 +419,7 @@
 		return {
 			kind: dir ? 'dir' : 'file',
 			key: `f:${h.path}`,
+			aumid: '',
 			name: h.name,
 			sub: slozka(h.path),
 			path: h.path,
@@ -340,6 +444,7 @@
 			sub: r.sub,
 			path: r.path,
 			identity_key: r.identity_key,
+			aumid: r.aumid,
 			attrs: r.attrs,
 			disk: r.disk,
 			size: null,
@@ -447,7 +552,7 @@
 	// Ikony jen pro to, co je zrovna na obrazovce.
 	$effect(() => {
 		for (const it of vysledky) {
-			if (it.kind === 'app') fetchIcon(it.identity_key);
+			if (it.kind === 'app') fetchIcon(it);
 		}
 	});
 
@@ -474,7 +579,9 @@
 	/// proč se řádek objevil.
 	function casti(text) {
 		if (!dotaz) return [{ t: text, m: false }];
-		const i = text.toLowerCase().indexOf(dotaz.toLowerCase());
+		// Porovnává se bez diakritiky, ale krájí se PŮVODNÍ text —
+		// jinak by se v „Kalkulačka" zvýraznilo „Kalkulacka".
+		const i = bezDiakritiky(text).indexOf(bezDiakritiky(dotaz));
 		if (i < 0) return [{ t: text, m: false }];
 		return [
 			{ t: text.slice(0, i), m: false },
@@ -496,7 +603,13 @@
 		spousti = it.key;
 		try {
 			if (it.kind === 'app') {
-				await invoke('launch_app', { identityKey: it.identity_key, displayName: it.name });
+				await invoke('launch_app', {
+					identityKey: it.identity_key,
+					displayName: it.name,
+					// Když položku známe z nabídky Start, spustí se
+					// přesně ona — žádné dohledávání podle jména.
+					aumid: it.aumid || null
+				});
 			} else {
 				await invoke('open_path', { path: it.path });
 			}
@@ -637,6 +750,12 @@
 		busy = false;
 		chyba = '';
 		posledni = nactiPosledni();
+		// Řádky, u kterých se ikona nesehnala, si zaslouží další pokus:
+		// služba je po startu skoro minutu nemá a bez tohohle by
+		// v komponentě zůstaly monogramy až do zavření aplikace.
+		for (const k of [...iconState.keys()]) {
+			if (!iconUrls[k]) iconState.delete(k);
+		}
 		nacistApps();
 		nacistSvazky();
 	}
@@ -759,7 +878,7 @@
 					>
 						<span class="fs-ico">
 							{#if it.kind === 'app'}
-								<AppIcon src={iconUrls[it.identity_key]} name={it.name} size={18} />
+								<AppIcon src={iconUrls[it.key]} name={it.name} size={18} />
 							{:else if it.kind === 'dir'}
 								<Folder size={17} color="var(--warn)" />
 							{:else}
