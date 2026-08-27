@@ -84,6 +84,21 @@ function zaznam(zmeny = {}) {
 
 const zakladni = zaznam();
 
+/// Záznam s hardwarovou sekcí — kvůli tepelné kaskádě.
+function zaznamHw(thermal) {
+	return reportText({
+		now,
+		from: now - 86400,
+		users: { current_user: 'IVA', users: [{ name: 'IVA' }] },
+		hw: {
+			cpu_thermal: { clock_mhz: 3800, max_mhz: 4200, throttling: false, ...thermal },
+			disks: [],
+			volumes: [],
+			devices: []
+		}
+	});
+}
+
 const KONTROLY = [
 	// Verze téže aplikace patří na jeden řádek.
 	['oprávnění: verze sloučené do jednoho řádku', () => /Discord {2}\(118 verzí\)/.test(zakladni)],
@@ -170,6 +185,22 @@ const KONTROLY = [
 	[
 		'konec podpory: u Windows 10 se přizná výjimka ESU',
 		() => /ESU/.test(zakladni)
+	],
+	// Windows teplotu jádra nevydávají a Winsent do jádra nesahá.
+	// Řádek „teplota — °C (zdroj nedostupné)" nebyl údaj, jen šum.
+	[
+		'teplota: nedostupná se nevypisuje jako pomlčka',
+		() => {
+			const t = zaznamHw({ celsius: null, temp_source: 'nedostupné' });
+			return !/teplota — °C/.test(t) && /Windows samy nevydávají/.test(t);
+		}
+	],
+	[
+		'teplota: naměřená se vypíše i se zdrojem',
+		() =>
+			/teplota 54 °C \(zdroj HWiNFO\)/.test(
+				zaznamHw({ celsius: 53.6, temp_source: 'HWiNFO' })
+			)
 	]
 ];
 

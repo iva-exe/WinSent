@@ -9,7 +9,7 @@
 
 	import { updater, checkUpdate, runUpdate } from '$lib/updater.svelte.js';
 	import { gatherAll, reportText } from '$lib/pcreport.js';
-	import { Download, RefreshCw, ShieldCheck } from 'lucide-svelte';
+	import { Download, FolderOpen, RefreshCw, ShieldCheck } from 'lucide-svelte';
 	// Kdy naposledy. Přesný čas nikoho nezajímá, „před chvílí" ano.
 
 	// ── Záznam o celém počítači ──
@@ -58,6 +58,63 @@
 		return m < 90 ? `před ${m} min` : `před ${Math.round(m / 60)} h`;
 	});
 
+	// ── Kam se ukládá databáze ──
+	//
+	// Přesun se NEDĚJE odsud: databáze je otevřená a stěhovat ji pod
+	// rukama by znamenalo přijít o rozepsaný WAL. Uloží se přání a
+	// zbytek udělá start služby.
+	let db = $state(null);
+	let dbErr = $state('');
+	let dbMsg = $state('');
+	let dbBusy = $state(false);
+
+	async function nacistDb() {
+		try {
+			db = await invoke('query_db_location');
+			dbErr = '';
+		} catch (e) {
+			db = null;
+			dbErr = String(e);
+		}
+	}
+
+	async function vybratSlozku() {
+		if (dbBusy) return;
+		try {
+			const dir = await invoke('pick_folder');
+			if (dir) await ulozitSlozku(dir);
+		} catch (e) {
+			dbErr = String(e);
+		}
+	}
+
+	async function ulozitSlozku(dir) {
+		dbBusy = true;
+		dbMsg = '';
+		try {
+			await invoke('set_db_dir', { dir });
+			await nacistDb();
+			dbMsg = dir ? 'Uloženo.' : 'Vrátí se na výchozí místo.';
+		} catch (e) {
+			dbErr = String(e);
+		}
+		dbBusy = false;
+	}
+
+	// Restart služby umí jen instalátor — UI běží pod běžným uživatelem
+	// a na správu služeb nedosáhne. Stejnou cestou se služba zvedá i po
+	// ručním zastavení, takže se nic nového nevymýšlí.
+	async function restartSluzby() {
+		dbBusy = true;
+		try {
+			await invoke('repair_service');
+			dbMsg = 'Služba se restartuje — po naběhnutí se databáze přesune.';
+		} catch (e) {
+			dbErr = String(e);
+		}
+		dbBusy = false;
+	}
+
 	let usage = $state(null);
 	let error = $state('');
 
@@ -78,6 +135,7 @@
 
 	onMount(() => {
 		refresh();
+		nacistDb();
 		const t = setInterval(refresh, 2000);
 		return () => clearInterval(t);
 	});
@@ -246,6 +304,65 @@
 
 	<section class="card">
 		<header class="card-head">
+			<span class="label-tech">// settings / kam se ukládá databáze</span>
+		</header>
+		<p class="note">
+			Historie měření roste do stovek megabajtů. Když máš malý nebo opotřebovaný
+			systémový disk, dá se odsunout jinam — výchozí umístění zůstává tam, kde bylo.
+		</p>
+		{#if dbErr}
+			<p class="note pc-err">{dbErr}</p>
+		{:else if db}
+			<div class="db-rows">
+				<div class="db-row">
+					<span class="db-k">Teď leží v</span>
+					<span class="value-mono db-v">{db.current_path}</span>
+				</div>
+				<div class="db-row">
+					<span class="db-k">Velikost</span>
+					<span class="db-v value-mono"><Num value={db.bytes} format={fmtBytes} /></span>
+				</div>
+				<div class="db-row">
+					<span class="db-k">Volné místo</span>
+					<span class="db-v value-mono"><Num value={db.free_bytes} format={fmtBytes} /></span>
+				</div>
+			</div>
+			{#if db.pending}
+				<!-- Databáze je otevřená, takže se stěhuje až při startu
+				     služby. Říct to nahlas je důležitější než to schovat:
+				     jinak uživatel uvidí starou cestu a bude si myslet,
+				     že se nastavení neuložilo. -->
+				<p class="note db-pending">
+					Přesun do <span class="value-mono">{db.wanted_dir}</span> čeká na restart služby —
+					databáze je teď otevřená a hýbat s ní pod rukama by znamenalo přijít
+					o poslední vzorky. Restartuj službu, nebo počítač.
+				</p>
+			{/if}
+			{#if dbMsg}
+				<p class="note pc-done">{dbMsg}</p>
+			{/if}
+			<div class="ver-actions">
+				<button class="v-btn" disabled={dbBusy} onclick={vybratSlozku}>
+					<FolderOpen size={14} /> Vybrat složku…
+				</button>
+				{#if db.wanted_dir}
+					<button class="v-btn" disabled={dbBusy} onclick={() => ulozitSlozku('')}>
+						Zpátky na výchozí
+					</button>
+				{/if}
+				{#if db.pending}
+					<button class="v-btn primary" disabled={dbBusy} onclick={restartSluzby}>
+						<RefreshCw size={14} /> Restartovat službu
+					</button>
+				{/if}
+			</div>
+		{:else}
+			<p class="note">Načítám…</p>
+		{/if}
+	</section>
+
+	<section class="card">
+		<header class="card-head">
 			<span class="label-tech">// settings / konfigurace</span>
 		</header>
 		<p class="note">
@@ -397,6 +514,29 @@
 	}
 	.pc-err {
 		color: var(--danger);
+	}
+	/* Umístění databáze: hodnoty pod sebou, cesta se smí zalomit. */
+	.db-rows {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+		margin-bottom: 0.8rem;
+	}
+	.db-row {
+		display: grid;
+		grid-template-columns: 8.5rem minmax(0, 1fr);
+		align-items: baseline;
+		gap: 0.6rem;
+	}
+	.db-k {
+		font-size: var(--fs-sm);
+		color: var(--text-dim);
+	}
+	.db-v {
+		word-break: break-all;
+	}
+	.db-pending {
+		color: var(--warn);
 	}
 	.v-btn :global(svg) {
 		vertical-align: -2px;

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// `HardwareReport` přečte razítko času z bajtu příznaku `Option`,
 /// takže vyjde rok 1970 a nikde se nic nezhroutí. Tichý nesmysl je
 /// horší než chybová hláška, protože ho nikdo nenahlásí.
-pub const PROTOCOL_VERSION: u32 = 46;
+pub const PROTOCOL_VERSION: u32 = 47;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -30,6 +30,12 @@ pub enum Request {
     /// Vlastní spotřeba nástroje (SPEC kap. 2.3) — rozpočet musí být
     /// ověřitelný uživatelem, ne slibovaný.
     QuerySelfUsage,
+    /// Kde leží databáze a kam by se dala přesunout.
+    QueryDbLocation,
+    /// Přesune databázi jinam. Prázdný `dir` = zpátky na výchozí místo.
+    /// Sama akce jen ověří místo a zapíše přání do configu — přestěhuje
+    /// se až při příštím startu služby, kdy databázi nikdo nedrží.
+    SetDbDir { dir: String },
     /// Historie systémových metrik ze system_1s (unix rozsah, včetně).
     QuerySystemHistory { from: i64, to: i64 },
     /// Stav procesů v konkrétním čase (nejbližší vzorek ±2 s).
@@ -165,6 +171,21 @@ pub enum Response {
         ws_bytes: u64,
         db_bytes: u64,
     },
+    /// Umístění databáze.
+    DbLocation {
+        /// Kde databáze leží PRÁVĚ TEĎ.
+        current_path: String,
+        /// Kam si ji uživatel přeje; prázdno = výchozí místo.
+        wanted_dir: String,
+        /// Výchozí adresář (`%ProgramData%\syswatch`).
+        default_dir: String,
+        /// Velikost databáze včetně WAL.
+        bytes: u64,
+        /// Volné místo na svazku, kde teď leží.
+        free_bytes: u64,
+        /// Čeká se na restart služby, aby se přesun provedl?
+        pending: bool,
+    },
     SystemHistory(Vec<crate::proc::SystemPoint>),
     /// Stav procesů z historie; `ts` = skutečný čas nalezeného vzorku.
     ProcsAt {
@@ -267,6 +288,8 @@ pub enum Response {
         running: bool,
         report: Option<crate::proc::CleanupReport>,
     },
+    /// Hotovo, není co vracet.
+    Ok,
     /// Chyba zpracování požadavku. Nic neselhává mlčky (SPEC kap. 22).
     Error {
         message: String,
@@ -323,7 +346,7 @@ mod wire_shape {
     /// NIKDY nepřepisuj jen čísla tady.
     #[test]
     fn zmena_tvaru_zpravy_vyzaduje_povyseni_protokolu() {
-        // (jméno, naměřeno, zaznamenáno při PROTOCOL_VERSION 46)
+        // (jméno, naměřeno, zaznamenáno při PROTOCOL_VERSION 47)
         let mereno: Vec<(&str, (usize, u64), (usize, u64))> = vec![
             ("ProcRow", otisk::<ProcRow>(), (23, 2959247389591744881)),
             ("SystemSnapshot", otisk::<SystemSnapshot>(), (31, 1630485381821562429)),

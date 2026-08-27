@@ -43,6 +43,71 @@ heartbeat_ms = 1000
 retention_interval_s = 60
 ";
 
+/// Zapíše do configu nové umístění databáze.
+///
+/// Prázdný `dir` znamená návrat na výchozí místo. Ověří se, že se do
+/// adresáře dá opravdu zapsat — přání, které by při startu služby
+/// selhalo, nemá smysl ukládat: uživatel by se o problému dozvěděl až
+/// z logu, a to nikdo nečte.
+///
+/// Soubor se přepisuje celý ze současné podoby configu, protože ostatní
+/// hodnoty musí zůstat. Hot-reload watcher si změnu přečte sám.
+pub fn set_db_dir(cfg_path: &Path, dir: &str) -> Result<(), Error> {
+    let d = dir.trim();
+    if !d.is_empty() {
+        let p = PathBuf::from(d);
+        std::fs::create_dir_all(&p).map_err(|source| Error::Io {
+            path: p.clone(),
+            source,
+        })?;
+        // Zápis nanečisto: práva na adresář se z metadat spolehlivě
+        // nepoznají, jediné jisté ověření je zkusit to.
+        let zkouska = p.join(".winsent-zkouska");
+        std::fs::write(&zkouska, b"x").map_err(|source| Error::Io {
+            path: zkouska.clone(),
+            source,
+        })?;
+        let _ = std::fs::remove_file(&zkouska);
+    }
+    let mut cfg = load(cfg_path)?;
+    cfg.db_dir = d.to_string();
+    let text = format!(
+        "\
+# syswatch — konfigurace nástroje. Změny se projeví za běhu (hot-reload).
+
+# Interval logu \u{201e}žiju\u{201c} v milisekundách.
+heartbeat_ms = {}
+
+# Interval retenční smyčky v sekundách.
+retention_interval_s = {}
+
+# Adresář databáze. Prázdno = výchozí %ProgramData%\\syswatch.
+# Projeví se až při příštím startu služby.
+db_dir = {}
+",
+        cfg.heartbeat_ms,
+        cfg.retention_interval_s,
+        toml_string(&cfg.db_dir)
+    );
+    std::fs::write(cfg_path, text).map_err(|source| Error::Io {
+        path: cfg_path.to_path_buf(),
+        source,
+    })
+}
+
+/// Řetězec do TOML. Cesty na Windows nesou zpětná lomítka, takže se
+/// použije doslovný literál v apostrofech — jinak by se z `C:\data`
+/// stal tabulátor a nová řádka.
+fn toml_string(s: &str) -> String {
+    if s.contains('\'') {
+        // Apostrof v cestě je vzácný, ale doslovný literál ho neumí
+        // odescapovat — pak se jde přes základní řetězec.
+        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        format!("'{s}'")
+    }
+}
+
 /// Načte config; když soubor neexistuje, založí ho s defaulty.
 pub fn load_or_create(path: &Path) -> Result<Config, Error> {
     if !path.exists() {

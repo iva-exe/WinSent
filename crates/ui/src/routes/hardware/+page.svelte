@@ -474,7 +474,10 @@
 									</dd>
 								</div>
 								<!-- Teplota se nikdy nepředstírá (SPEC 15.2): buňka
-								     zůstane, ale je v ní pomlčka a proč. -->
+								     zůstane, ale je v ní pomlčka a proč. Tady je
+								     mřížka faktů, takže díra po vynechané buňce by
+								     mátla víc než přiznaná pomlčka; v textovém
+								     záznamu se řádek naopak vynechává. -->
 								<div>
 									<dt>Teplota</dt>
 									{#if hw?.cpu_thermal?.celsius != null}
@@ -485,7 +488,10 @@
 									{:else}
 										<dd class="dim">
 											—
-											<span class="note-v">stroj ji z Windows nehlásí; ukáže se s HWiNFO</span>
+											<span class="note-v">
+												Windows teplotu jádra nevydávají; přečte se, když běží HWiNFO
+												se zapnutou sdílenou pamětí nebo LibreHardwareMonitor
+											</span>
 										</dd>
 									{/if}
 								</div>

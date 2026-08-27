@@ -70,6 +70,59 @@ pub fn db_path() -> Result<PathBuf, Error> {
     Ok(data_dir()?.join("syswatch.db"))
 }
 
+/// Jméno souboru databáze. Přípony WAL a shm k němu patří.
+pub const DB_FILE: &str = "syswatch.db";
+
+/// Cesta k databázi podle konfigurace. Prázdný `dir` = výchozí místo.
+pub fn db_path_in(dir: &str) -> Result<PathBuf, Error> {
+    let d = dir.trim();
+    if d.is_empty() {
+        return db_path();
+    }
+    Ok(PathBuf::from(d).join(DB_FILE))
+}
+
+/// Přestěhuje databázi, když si uživatel přál jiné místo.
+///
+/// Volá se JEDINĚ při startu služby, tedy ve chvíli, kdy databázi nikdo
+/// nedrží otevřenou. Stěhovat ji za běhu by znamenalo přijít o rozepsaný
+/// WAL, ve kterém sedí poslední vzorky.
+///
+/// Když se přesun nepovede, vrátí se chyba a volající zůstane u starého
+/// místa — data jsou přednější než přání.
+pub fn move_db(from: &Path, to: &Path) -> Result<(), Error> {
+    if from == to || !from.exists() || to.exists() {
+        return Ok(());
+    }
+    if let Some(dir) = to.parent() {
+        std::fs::create_dir_all(dir).map_err(|source| Error::CreateDir {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+    }
+    // Nejdřív samotná databáze; WAL a shm jsou odvozené soubory, které
+    // SQLite umí dopočítat znovu, takže na jejich selhání se nepadá.
+    std::fs::rename(from, to)
+        .or_else(|_| {
+            // Přes hranici svazku `rename` nefunguje — pak kopie a smazání.
+            std::fs::copy(from, to).and_then(|_| std::fs::remove_file(from))
+        })
+        .map_err(|source| Error::CreateDir {
+            path: to.to_path_buf(),
+            source,
+        })?;
+    for pripona in ["-wal", "-shm"] {
+        let a = PathBuf::from(format!("{}{pripona}", from.display()));
+        let b = PathBuf::from(format!("{}{pripona}", to.display()));
+        if a.exists() {
+            let _ = std::fs::rename(&a, &b).or_else(|_| {
+                std::fs::copy(&a, &b).and_then(|_| std::fs::remove_file(&a))
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Read-only spojení pro dotazy historie z IPC handleru — WAL dovolí
 /// číst souběžně se zapisovacím vláknem bez zámků.
 pub fn open_readonly(db_path: &Path) -> Result<Connection, Error> {

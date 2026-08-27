@@ -109,6 +109,56 @@ pub fn query_self_usage() -> Result<SelfUsage, Error> {
     }
 }
 
+/// Kde leží databáze a kam by se dala přesunout.
+pub fn query_db_location() -> Result<DbLocation, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::QueryDbLocation)? {
+        Response::DbLocation {
+            current_path,
+            wanted_dir,
+            default_dir,
+            bytes,
+            free_bytes,
+            pending,
+        } => Ok(DbLocation {
+            current_path,
+            wanted_dir,
+            default_dir,
+            bytes,
+            free_bytes,
+            pending,
+        }),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Umístění databáze pro UI.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DbLocation {
+    pub current_path: String,
+    pub wanted_dir: String,
+    pub default_dir: String,
+    pub bytes: u64,
+    pub free_bytes: u64,
+    pub pending: bool,
+}
+
+/// Přesune databázi jinam (prázdno = zpět na výchozí místo).
+/// Samotný přesun udělá až start služby.
+pub fn set_db_dir(dir: String) -> Result<(), Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::SetDbDir { dir })? {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Historie systémových metrik [from, to] ze system_1s.
 pub fn query_system_history(from: i64, to: i64) -> Result<Vec<SystemPoint>, Error> {
     let mut stream = connect()?;

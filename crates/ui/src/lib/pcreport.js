@@ -522,9 +522,22 @@ export function reportText(d) {
 		}
 		if (h.cpu_thermal) {
 			const c = h.cpu_thermal;
+			// Teplota se vypisuje, jen když ji někdo opravdu hlásí.
+			//
+			// Windows teplotu jádra běžně nevydávají a kdo ji čte (HWiNFO
+			// a spol.), má na to vlastní ovladač v jádře — tam Winsent
+			// zásadně nesahá. Řádek „teplota — °C (zdroj nedostupné)"
+			// tedy nebyl údaj, jen šum přes celou sekci.
+			const teplota =
+				c.celsius != null ? `teplota ${Math.round(c.celsius)} °C (zdroj ${c.temp_source}), ` : '';
 			L.push(
-				`CPU:    teplota ${c.celsius ?? '—'} °C (zdroj ${c.temp_source}), takt ${c.clock_mhz ?? '?'} / ${c.max_mhz ?? '?'} MHz, omezení: ${c.throttling ? 'ANO' : 'ne'}`
+				`CPU:    ${teplota}takt ${c.clock_mhz ?? '?'} / ${c.max_mhz ?? '?'} MHz, omezení: ${c.throttling ? 'ANO' : 'ne'}`
 			);
+			if (c.celsius == null) {
+				L.push(
+					'        (teplotu jádra Windows samy nevydávají — Winsent ji přečte, když běží HWiNFO se zapnutou sdílenou pamětí nebo LibreHardwareMonitor)'
+				);
+			}
 		}
 		// Stránkovací soubor: když paměť dojde, tohle se používá místo ní
 		// — a je to jeden z hlavních důvodů, proč se počítač zdá pomalý.

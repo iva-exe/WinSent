@@ -683,6 +683,57 @@ fn query_self_usage() -> Result<SelfUsageDto, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Kde leží databáze a kam by se dala přesunout.
+#[tauri::command(async)]
+fn query_db_location() -> Result<ipc::client::DbLocation, String> {
+    ipc::client::query_db_location().map_err(|e| e.to_string())
+}
+
+/// Přesune databázi jinam. Prázdno = zpátky na výchozí místo.
+///
+/// Služba jen ověří, že se do adresáře dá zapsat, a uloží přání —
+/// samotné stěhování udělá až její příští start, kdy databázi nikdo
+/// nedrží otevřenou.
+#[tauri::command(async)]
+fn set_db_dir(dir: String) -> Result<(), String> {
+    ipc::client::set_db_dir(dir).map_err(|e| e.to_string())
+}
+
+/// Nechá uživatele vybrat složku. Vrací prázdno, když výběr zrušil.
+///
+/// Vlastní volání `IFileDialog` místo pluginu: aplikace žádný dialogový
+/// plugin nepoužívá a kvůli jednomu tlačítku ho tahat nemá smysl.
+#[tauri::command(async)]
+fn pick_folder() -> Result<String, String> {
+    use windows::core::Interface;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, IFileOpenDialog, IShellItem, FOS_PICKFOLDERS, SIGDN_FILESYSPATH,
+    };
+
+    // SAFETY: COM se inicializuje pro tohle vlákno; všechna rozhraní
+    // drží Rust a uvolní je Drop.
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
+            .map_err(|e| format!("dialog se nepodařilo otevřít: {e}"))?;
+        let opts = dlg.GetOptions().unwrap_or_default();
+        let _ = dlg.SetOptions(opts | FOS_PICKFOLDERS);
+        // Uživatel zrušil výběr — není to chyba, jen prázdný výsledek.
+        if dlg.Show(None).is_err() {
+            return Ok(String::new());
+        }
+        let item: IShellItem = dlg.GetResult().map_err(|e| e.to_string())?;
+        let p = item
+            .GetDisplayName(SIGDN_FILESYSPATH)
+            .map_err(|e| e.to_string())?;
+        let s = p.to_string().map_err(|e| e.to_string())?;
+        windows::Win32::System::Com::CoTaskMemFree(Some(p.0 as *const _));
+        Ok(s)
+    }
+}
 
 // ── Aktualizace aplikace ───────────────────────────────────────────
 //
@@ -934,6 +985,9 @@ fn main() {
             query_procs,
             query_system,
             query_self_usage,
+            query_db_location,
+            set_db_dir,
+            pick_folder,
             query_system_history,
             query_procs_at,
             query_sys_info,

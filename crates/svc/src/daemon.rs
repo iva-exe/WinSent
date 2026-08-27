@@ -85,7 +85,27 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     // SQLite store: otevření + migrace. Zápis vzorků i retence běží
     // v jediném zapisovacím vlákně (SQLite má jednoho zapisovatele)
     // na BELOW_NORMAL prioritě (SPEC kap. 3.4, 8).
-    let db_path = store::db_path()?;
+    // Umístění databáze si smí uživatel přesunout (config `db_dir`).
+    // Stěhuje se JEDINĚ tady, dokud ji nikdo nedrží otevřenou; kdyby se
+    // přesun nepovedl, zůstane se u starého místa a jen se to zaloguje —
+    // data jsou přednější než přání.
+    let db_path = {
+        let dir = cfg.read().expect("config lock poisoned").db_dir.clone();
+        let vychozi = store::db_path()?;
+        match store::db_path_in(&dir) {
+            Ok(chtena) if chtena != vychozi => match store::move_db(&vychozi, &chtena) {
+                Ok(()) => {
+                    tracing::info!(z = %vychozi.display(), na = %chtena.display(), "databáze přesunuta");
+                    chtena
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, na = %chtena.display(), "přesun databáze selhal — zůstávám na výchozím místě");
+                    vychozi
+                }
+            },
+            _ => vychozi,
+        }
+    };
     let conn = store::open(&db_path)?;
     tracing::info!(db = %db_path.display(), "databáze otevřena, schéma zmigrováno");
 
@@ -721,6 +741,8 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         let stop = Arc::clone(&stop);
         let live = Arc::clone(&live);
         let self_db_path = db_path.clone();
+        let cfg_ipc = Arc::clone(&cfg);
+        let cfg_path_ipc = cfg_path.clone();
         // Read-only spojení pro dotazy historie — čtenář ve WAL režimu
         // neblokuje zapisovací vlákno. Mutex: handler běží ve více
         // obslužných vláknech pipe.
@@ -854,6 +876,45 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     },
                     None => Response::Error {
                         message: "vlastní proces zatím není ve vzorku".into(),
+                    },
+                }
+            }
+            // Kde leží databáze a kam se dá přesunout.
+            Request::QueryDbLocation => {
+                let wanted = cfg_ipc
+                    .read()
+                    .expect("config lock poisoned")
+                    .db_dir
+                    .trim()
+                    .to_string();
+                let default_dir = store::data_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                let current = self_db_path.display().to_string();
+                let chtena = store::db_path_in(&wanted)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| current.clone());
+                Response::DbLocation {
+                    bytes: db_size_bytes(&self_db_path),
+                    free_bytes: self_db_path
+                        .parent()
+                        .and_then(win_sys::volumes::free_bytes)
+                        .unwrap_or(0),
+                    pending: chtena != current,
+                    current_path: current,
+                    wanted_dir: wanted,
+                    default_dir,
+                }
+            }
+            // Změna umístění databáze. Sama se tady nic nestěhuje —
+            // databáze je otevřená a hýbat s ní pod rukama by znamenalo
+            // přijít o rozepsaný WAL. Zapíše se přání a přesun udělá
+            // start služby, kdy ji nikdo nedrží.
+            Request::SetDbDir { dir } => {
+                match crate::config::set_db_dir(&cfg_path_ipc, &dir) {
+                    Ok(()) => Response::Ok,
+                    Err(e) => Response::Error {
+                        message: e.to_string(),
                     },
                 }
             }

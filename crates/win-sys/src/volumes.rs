@@ -123,3 +123,25 @@ pub fn volumes() -> Vec<Volume> {
     }
     out
 }
+
+/// Kolik volného místa je na svazku, kam ta cesta patří.
+///
+/// Používá se před přesunem databáze: nabídnout uživateli místo, kam se
+/// nevejde, by znamenalo rozbít mu sběr dat až při příštím startu služby.
+pub fn free_bytes(path: &std::path::Path) -> Option<u64> {
+    let mut s: Vec<u16> = path.to_string_lossy().encode_utf16().collect();
+    // GetDiskFreeSpaceExW chce adresář nebo kořen; nul-ukončení povinné.
+    s.push(0);
+    let mut volne: u64 = 0;
+    // SAFETY: buffer je nul-ukončený a výstup je lokální proměnná.
+    unsafe {
+        GetDiskFreeSpaceExW(
+            PCWSTR(s.as_ptr()),
+            Some(&mut volne),
+            None,
+            None,
+        )
+        .ok()?;
+    }
+    Some(volne)
+}
