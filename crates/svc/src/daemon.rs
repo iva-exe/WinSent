@@ -1553,12 +1553,26 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
 
     // Heartbeat — v0 jediná „práce“ démona. Interval čte z configu
     // při každém kole, takže hot-reload se projeví hned.
+    let mut last_beat_log: Option<u64> = None;
     while !stop.load(Ordering::SeqCst) {
         let interval = {
             let cfg = cfg.read().expect("config lock poisoned");
             Duration::from_millis(cfg.heartbeat_ms.max(100))
         };
-        tracing::info!(uptime_s = started.elapsed().as_secs(), "žiju");
+        // Do souboru jednou za minutu, ne každou sekundu.
+        //
+        // Heartbeat má dokázat, že vlákno žije; k tomu stačí zápis
+        // jednou za čas. Sekundový rytmus dělal 86 400 řádků denně,
+        // takže se protokol o běhu (strop 8 MB) přetáčel dřív, než
+        // bylo možné dohledat, co se dělo — a při hledání problému
+        // tak zmizelo právě to, kvůli čemu se do něj kouká.
+        let up = started.elapsed().as_secs();
+        if last_beat_log.is_none_or(|t| up.saturating_sub(t) >= 60) {
+            last_beat_log = Some(up);
+            tracing::info!(uptime_s = up, "žiju");
+        } else {
+            tracing::debug!(uptime_s = up, "žiju");
+        }
         wait_or_stop(&stop, interval);
     }
 
