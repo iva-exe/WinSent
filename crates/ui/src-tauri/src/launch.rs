@@ -13,28 +13,43 @@
 //!   2. Zástupce v nabídce Start — pro případ, že shell položku
 //!      nenabídne (skrytá, nezaregistrovaná).
 //!   3. Spustitelný soubor z mapy souborů aplikace (od služby).
-//! Když neuspěje ani jedno, řekne se to — nic se nedomýšlí a nic
-//! „podobného" se nespouští.
+//! Když jeden krok najde kandidáta, ale spuštění selže, pokračuje se
+//! dalším: zastaralé AUMID po odinstalované aplikaci ze Storu není
+//! důvod to vzdát, když zástupce v nabídce Start funguje.
+//!
+//! Jména se porovnávají PO SLOVECH. Skládat písmena natěsno je krátká
+//! cesta k nesmyslům: „git" pak sedí do „diGITální certifikát" i do
+//! „loGITech G HUB". Naměřeno na živém seznamu — bez pravidla o slovech
+//! se klik na „Git" trefil do „Git FAQs" (a otevřel webovou stránku),
+//! „R.E.P.O." do „Report a Problem with Unity" a „SteamVR" do „Steam".
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// Najde a spustí aplikaci. Vrací, co se spustilo (pro hlášku v UI).
 pub fn launch(identity_key: &str, display_name: &str) -> Result<String, String> {
+    let mut chyba: Option<String> = None;
     if let Some(aumid) = najdi_v_appsfolder(display_name) {
-        spust(&format!("shell:AppsFolder\\{aumid}"), None)?;
-        return Ok(display_name.to_string());
+        match spust(&format!("shell:AppsFolder\\{aumid}"), None) {
+            Ok(()) => return Ok(display_name.to_string()),
+            Err(e) => chyba = Some(e),
+        }
     }
     if let Some(lnk) = najdi_zastupce(display_name) {
-        spust(&lnk.to_string_lossy(), lnk.parent())?;
-        return Ok(lnk.display().to_string());
+        match spust(&lnk.to_string_lossy(), lnk.parent()) {
+            Ok(()) => return Ok(lnk.display().to_string()),
+            Err(e) => chyba = Some(e),
+        }
     }
     if let Some(exe) = najdi_exe(identity_key, display_name) {
-        spust(&exe.to_string_lossy(), exe.parent())?;
-        return Ok(exe.display().to_string());
+        match spust(&exe.to_string_lossy(), exe.parent()) {
+            Ok(()) => return Ok(exe.display().to_string()),
+            Err(e) => chyba = Some(e),
+        }
     }
-    Err(format!(
-        "{display_name} neumím spustit — nenašel jsem zástupce ani spustitelný soubor"
-    ))
+    Err(chyba.unwrap_or_else(|| {
+        format!("{display_name} neumím spustit — nenašel jsem zástupce ani spustitelný soubor")
+    }))
 }
 
 /// Otevře cíl přes shell. Zvládne cestu i adresu typu `shell:AppsFolder\…`,
@@ -62,88 +77,178 @@ fn spust(cil: &str, dir: Option<&Path>) -> Result<(), String> {
     }
 }
 
-/// AUMID položky ze složky „Aplikace", jejíž jméno odpovídá aplikaci.
+// ── Složka „Aplikace" ──────────────────────────────────────────────
+
+type Polozky = Vec<(String, String)>;
+
+/// Naposledy načtená složka „Aplikace" a kdy.
 ///
-/// Enumerace stojí pár set milisekund, proto se dělá až při kliknutí,
-/// ne dopředu při psaní: uživatel spustí jednu aplikaci, ne padesát.
+/// Enumerace stojí přes půl sekundy (naměřeno: 260 položek ≈ 530 ms)
+/// a bez cache by se dělala při každém kliknutí. Platnost je krátká,
+/// aby se čerstvě nainstalovaná aplikace neztratila na dlouho.
+static APPSFOLDER: std::sync::OnceLock<std::sync::Mutex<Option<(Instant, Polozky)>>> =
+    std::sync::OnceLock::new();
+const PLATNOST_CACHE: Duration = Duration::from_secs(60);
+
+/// AUMID položky ze složky „Aplikace", jejíž jméno odpovídá aplikaci.
 fn najdi_v_appsfolder(display_name: &str) -> Option<String> {
+    let hledane = slova(display_name);
+    if hledane.is_empty() {
+        return None;
+    }
+    let polozky = appsfolder();
+    let mut nejlepsi: Option<(usize, &str, &str)> = None;
+    for (jmeno, aumid) in &polozky {
+        // Odkaz na webovou stránku není program. Instalátory jich do
+        // nabídky Start sypou spousty („Git FAQs", „Nápověda k…")
+        // a spustit místo aplikace prohlížeč je horší než nespustit nic.
+        if aumid.contains("://") {
+            continue;
+        }
+        let Some(skore) = skore_jmena(jmeno, &hledane) else {
+            continue;
+        };
+        // Kratší jméno vyhrává — „Git CMD" před „Git FAQs (Frequently
+        // Asked Questions)". Při shodné délce rozhoduje abeceda, aby
+        // výsledek nezávisel na pořadí enumerace: to se mezi spuštěními
+        // liší a stejný klik by pak spouštěl pokaždé něco jiného.
+        let lepsi = match nejlepsi {
+            None => true,
+            Some((s, j, _)) => (skore, jmeno.len(), jmeno.as_str()) < (s, j.len(), j),
+        };
+        if lepsi {
+            nejlepsi = Some((skore, jmeno, aumid));
+        }
+    }
+    nejlepsi.map(|(_, _, aumid)| aumid.to_string())
+}
+
+/// Seznam (jméno po slovech, AUMID) z cache, nebo čerstvě načtený.
+fn appsfolder() -> Polozky {
+    let cell = APPSFOLDER.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(c) = cell.lock() {
+        if let Some((kdy, seznam)) = c.as_ref() {
+            if kdy.elapsed() < PLATNOST_CACHE {
+                return seznam.clone();
+            }
+        }
+    }
+    let seznam = enumeruj_appsfolder();
+    if let Ok(mut c) = cell.lock() {
+        *c = Some((Instant::now(), seznam.clone()));
+    }
+    seznam
+}
+
+/// Projde `shell:AppsFolder` a vrátí (jméno po slovech, AUMID).
+fn enumeruj_appsfolder() -> Polozky {
     use windows::core::HSTRING;
-    use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_APARTMENTTHREADED};
+    use windows::Win32::System::Com::{
+        CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED,
+    };
     use windows::Win32::UI::Shell::{
         SHCreateItemFromParsingName, BHID_EnumItems, IEnumShellItems, IShellItem,
         SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY,
     };
 
-    let hledane = normalizuj(display_name);
-    if hledane.is_empty() {
-        return None;
-    }
-
-    // SAFETY: COM se inicializuje pro tohle vlákno; všechna rozhraní
-    // drží Rust a uvolní je Drop. Řetězce z shellu se uvolňují ručně —
-    // patří alokátoru COM, ne Rustu.
+    let mut out: Polozky = Vec::new();
+    // SAFETY: COM se inicializuje pro tohle vlákno a na konci zase
+    // uvolní; všechna rozhraní drží Rust a pouští je Drop na konci
+    // vnitřního bloku, tedy PŘED `CoUninitialize`. Řetězce od shellu
+    // patří alokátoru COM a uvolňují se ručně.
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let cesta = HSTRING::from("shell:AppsFolder");
-        let folder: IShellItem = SHCreateItemFromParsingName(&cesta, None).ok()?;
-        let en: IEnumShellItems = folder.BindToHandler(None, &BHID_EnumItems).ok()?;
-
-        let mut nejlepsi: Option<(usize, String)> = None;
-        loop {
-            let mut davka: [Option<IShellItem>; 1] = [None];
-            let mut nacteno = 0u32;
-            if en.Next(&mut davka, Some(&mut nacteno)).is_err() || nacteno == 0 {
-                break;
-            }
-            let Some(polozka) = davka[0].take() else { break };
-            let Ok(jmeno_w) = polozka.GetDisplayName(SIGDN_NORMALDISPLAY) else {
-                continue;
-            };
-            let jmeno = jmeno_w.to_string().unwrap_or_default();
-            CoTaskMemFree(Some(jmeno_w.0 as *const _));
-
-            let Some(skore) = skore_jmena(&normalizuj(&jmeno), &hledane) else {
-                continue;
-            };
-            if nejlepsi.as_ref().is_some_and(|(s, _)| *s <= skore) {
-                continue;
-            }
-            let Ok(id_w) = polozka.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING) else {
-                continue;
-            };
-            let id = id_w.to_string().unwrap_or_default();
-            CoTaskMemFree(Some(id_w.0 as *const _));
-            if !id.is_empty() {
-                nejlepsi = Some((skore, id));
-            }
-            // Přesnou shodu už nic nepřebije — dál se hledat nemusí.
-            if skore == 0 {
-                break;
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        {
+            let cesta = HSTRING::from("shell:AppsFolder");
+            if let Ok(folder) = SHCreateItemFromParsingName::<_, _, IShellItem>(&cesta, None) {
+                if let Ok(en) = folder.BindToHandler::<_, IEnumShellItems>(None, &BHID_EnumItems) {
+                    loop {
+                        let mut davka: [Option<IShellItem>; 1] = [None];
+                        let mut nacteno = 0u32;
+                        if en.Next(&mut davka, Some(&mut nacteno)).is_err() || nacteno == 0 {
+                            break;
+                        }
+                        let Some(polozka) = davka[0].take() else { break };
+                        let Ok(jmeno_w) = polozka.GetDisplayName(SIGDN_NORMALDISPLAY) else {
+                            continue;
+                        };
+                        let jmeno = slova(&jmeno_w.to_string().unwrap_or_default());
+                        CoTaskMemFree(Some(jmeno_w.0 as *const _));
+                        if jmeno.is_empty() {
+                            continue;
+                        }
+                        let Ok(id_w) = polozka.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING) else {
+                            continue;
+                        };
+                        let id = id_w.to_string().unwrap_or_default();
+                        CoTaskMemFree(Some(id_w.0 as *const _));
+                        if !id.is_empty() {
+                            out.push((jmeno, id));
+                        }
+                    }
+                }
             }
         }
-        nejlepsi.map(|(_, id)| id)
+        // RPC_E_CHANGED_MODE je chyba — vlákno už COM mělo v jiném
+        // režimu a uvolňovat ho po sobě nesmíme.
+        if hr.is_ok() {
+            CoUninitialize();
+        }
     }
+    out
 }
 
-/// Jak dobře jméno odpovídá hledanému: 0 = přesně, 1 = obsahuje ho,
-/// 2 = hledané obsahuje jeho (zkrácený název). `None` = neodpovídá.
+// ── Porovnávání jmen ───────────────────────────────────────────────
+
+/// Jméno rozložené na slova: malá písmena, všechno ostatní je mezera.
 ///
-/// Kratší než čtyři znaky se do třetí kategorie nepouští: „app" nebo
-/// „go" uvnitř názvu je náhoda, ne shoda.
+/// Oproti prostému slepení znaků drží hranice slov, na kterých pak
+/// stojí celé porovnávání (viz komentář u modulu).
+fn slova(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut mezera = true;
+    for c in s.chars().flat_map(|c| c.to_lowercase()) {
+        if c.is_alphanumeric() {
+            out.push(c);
+            mezera = false;
+        } else if !mezera {
+            out.push(' ');
+            mezera = true;
+        }
+    }
+    let konec = out.trim_end().len();
+    out.truncate(konec);
+    out
+}
+
+/// Jak dobře jméno položky odpovídá hledané aplikaci:
+///   0 = přesná shoda,
+///   1 = hledané je celý začátek jména („Docker" → „Docker Desktop"),
+///   2 = jméno je celý začátek hledaného („Zen Browser" → „Zen Browser
+///       (x64)"; instalátory k názvu přilepují verzi a architekturu).
+/// `None` = neodpovídá.
+///
+/// „Celý začátek" znamená po hranici slova, ne po znaku — proto se
+/// „steam" netrefí do „steamvr" a „repo" do „report a problem".
 fn skore_jmena(jmeno: &str, hledane: &str) -> Option<usize> {
-    if jmeno.is_empty() {
+    if jmeno.is_empty() || hledane.is_empty() {
         return None;
     }
     if jmeno == hledane {
-        Some(0)
-    } else if jmeno.contains(hledane) {
-        Some(1)
-    } else if hledane.contains(jmeno) && jmeno.len() >= 4 {
-        Some(2)
-    } else {
-        None
+        return Some(0);
     }
+    // `starts_with` zaručuje, že délka předpony je platná hranice
+    // znaku, takže indexace bajtem je v pořádku.
+    if jmeno.starts_with(hledane) && jmeno.as_bytes()[hledane.len()] == b' ' {
+        return Some(1);
+    }
+    if hledane.starts_with(jmeno) && hledane.as_bytes()[jmeno.len()] == b' ' {
+        return Some(2);
+    }
+    None
 }
+
+// ── Zástupci a spustitelné soubory ─────────────────────────────────
 
 /// Složky nabídky Start — uživatelská i společná.
 fn start_menu_dirs() -> Vec<PathBuf> {
@@ -159,36 +264,40 @@ fn start_menu_dirs() -> Vec<PathBuf> {
 
 /// Zástupce, jehož jméno odpovídá aplikaci.
 ///
-/// Přesná shoda vyhrává; jinak se bere ten, který jméno obsahuje —
-/// instalátory k němu často přilepí verzi („GIMP 2.10"). Prohledává se
-/// do omezené hloubky, ať se z toho nestane skenování disku.
+/// Prohledává se do omezené hloubky, ať se z toho nestane skenování
+/// disku. Při shodném skóre vyhrává kratší jméno — ze stejného důvodu
+/// jako u složky „Aplikace".
 fn najdi_zastupce(display_name: &str) -> Option<PathBuf> {
-    let hledane = normalizuj(display_name);
+    let hledane = slova(display_name);
     if hledane.is_empty() {
         return None;
     }
-    let mut nejlepsi: Option<(usize, PathBuf)> = None;
+    let mut nejlepsi: Option<(usize, String, PathBuf)> = None;
     for dir in start_menu_dirs() {
         projdi(&dir, 0, &mut |p| {
             if p.extension().is_none_or(|e| !e.eq_ignore_ascii_case("lnk")) {
                 return;
             }
-            let jmeno = normalizuj(&p.file_stem().unwrap_or_default().to_string_lossy());
+            let jmeno = slova(&p.file_stem().unwrap_or_default().to_string_lossy());
             let Some(skore) = skore_jmena(&jmeno, &hledane) else {
                 return;
             };
-            if nejlepsi.as_ref().is_none_or(|(s, _)| skore < *s) {
-                nejlepsi = Some((skore, p.to_path_buf()));
+            let lepsi = match &nejlepsi {
+                None => true,
+                Some((s, j, _)) => (skore, jmeno.len(), &jmeno) < (*s, j.len(), j),
+            };
+            if lepsi {
+                nejlepsi = Some((skore, jmeno, p.to_path_buf()));
             }
         });
     }
-    nejlepsi.map(|(_, p)| p)
+    nejlepsi.map(|(_, _, p)| p)
 }
 
 /// Spustitelný soubor z mapy souborů aplikace.
 fn najdi_exe(identity_key: &str, display_name: &str) -> Option<PathBuf> {
     let mapa = ipc::client::query_app_map(identity_key.to_string()).ok()?;
-    let hledane = normalizuj(display_name);
+    let hledane = slova(display_name);
     let mut nejlepsi: Option<(usize, PathBuf)> = None;
     for radek in mapa.iter().filter(|r| r.role == "install") {
         let dir = PathBuf::from(&radek.path);
@@ -199,7 +308,7 @@ fn najdi_exe(identity_key: &str, display_name: &str) -> Option<PathBuf> {
             if p.extension().is_none_or(|e| !e.eq_ignore_ascii_case("exe")) {
                 return;
             }
-            let stem = normalizuj(&p.file_stem().unwrap_or_default().to_string_lossy());
+            let stem = slova(&p.file_stem().unwrap_or_default().to_string_lossy());
             // Odinstalátory a pomocné nástroje spouštět NECHCEME —
             // kliknutí na aplikaci nesmí náhodou spustit odinstalaci.
             if ["uninstall", "uninst", "unins000", "setup", "crashreport", "update"]
@@ -208,6 +317,10 @@ fn najdi_exe(identity_key: &str, display_name: &str) -> Option<PathBuf> {
             {
                 return;
             }
+            // Jméno souboru bývá zkomolené („chrome" pro „Google
+            // Chrome"), takže se tu pouští i shoda uvnitř řetězce —
+            // ale jen v rámci JEDNÉ instalační složky té aplikace,
+            // kde už si na nic jiného sáhnout nemůžeme.
             let skore = if stem == hledane {
                 0
             } else if hledane.contains(&stem) || stem.contains(&hledane) {
@@ -243,38 +356,48 @@ fn projdi(dir: &Path, hloubka: u8, f: &mut impl FnMut(&Path)) {
     }
 }
 
-/// Jméno pro porovnání: malá písmena, jen písmena a číslice.
-fn normalizuj(s: &str) -> String {
-    s.to_lowercase()
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn slova_drzi_hranice() {
+        assert_eq!(slova("Zen Browser (x64)"), "zen browser x64");
+        assert_eq!(slova("osu!"), "osu");
+        assert_eq!(slova("R.E.P.O."), "r e p o");
+        assert_eq!(slova("  "), "");
+    }
+
+    #[test]
     fn skore_radi_od_presne_shody() {
         assert_eq!(skore_jmena("discord", "discord"), Some(0));
         // Instalátory přilepují verzi — pořád je to ta aplikace.
-        assert_eq!(skore_jmena("gimp210", "gimp"), Some(1));
-        // Zkrácený název zástupce („Zen" pro „Zen Browser").
-        assert_eq!(skore_jmena("zenbrowser", "zenbrowserprohlizec"), Some(2));
-        assert_eq!(skore_jmena("cosijineho", "discord"), None);
+        assert_eq!(skore_jmena("docker desktop", "docker"), Some(1));
+        // Zkrácený název zástupce proti názvu z inventáře.
+        assert_eq!(skore_jmena("zen browser", "zen browser x64"), Some(2));
+        assert_eq!(skore_jmena("cosi jineho", "discord"), None);
     }
 
     #[test]
-    fn kratke_jmeno_neprojde_jako_zkracene() {
-        // „osu" uvnitř jiného názvu je náhoda, ne shoda — jinak by
-        // kliknutí spustilo úplně jinou aplikaci.
-        assert_eq!(skore_jmena("osu", "osusomethingelse"), None);
+    fn shoda_uvnitr_slova_neprojde() {
+        // Přesně tyhle případy klikaly na úplně jinou aplikaci:
+        // naměřeno na živém seznamu 260 položek složky „Aplikace".
+        assert_eq!(skore_jmena("digitalni certifikat pro vba", "git"), None);
+        assert_eq!(skore_jmena("logitech g hub", "git"), None);
+        assert_eq!(skore_jmena("report a problem with unity", "r e p o"), None);
+        assert_eq!(skore_jmena("steam", "steamvr"), None);
+        assert_eq!(
+            skore_jmena("excel", "security update for microsoft office excel 2007"),
+            None
+        );
     }
 
     #[test]
-    fn normalizace_zahodi_vypln() {
-        assert_eq!(normalizuj("Zen Browser (x64)"), "zenbrowserx64");
-        assert_eq!(normalizuj("osu!"), "osu");
+    fn kratsi_jmeno_vyhrava_pri_shodnem_skore() {
+        // Bez tohohle pravidla rozhodovalo pořadí enumerace a stejný
+        // klik spouštěl pokaždé něco jiného.
+        let a = ("git cmd", 1usize);
+        let b = ("git faqs frequently asked questions", 1usize);
+        assert!((a.1, a.0.len(), a.0) < (b.1, b.0.len(), b.0));
     }
 }

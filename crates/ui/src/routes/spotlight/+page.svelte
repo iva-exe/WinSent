@@ -31,17 +31,43 @@
 		}
 	}
 
+	// Okno se při zavření jen schovává, takže se komponenta neodmontuje
+	// a `onMount` podruhé neproběhne — vyprázdnění potřebuje vnější
+	// podnět. Podnětem je ZAMĚŘENÍ okna, ne vlastní událost: wry
+	// přeposílá WM_SETFOCUS do webview, takže focus dorazí pokaždé, když
+	// se lišta vyvolá, a nezávisí to na doručení zprávy ani na
+	// oprávněních.
+	//
+	// Naletěl jsem na to: samotná událost `spotlight:route` se nikdy
+	// nedoručila, protože okno lišty nespadalo do žádné Tauri capability
+	// (`capabilities/default.json` má `windows: ["main"]`) a ACL
+	// `plugin:event|listen` zamítlo. Slib skončil odmítnutý, v release
+	// buildu bez konzole to nebylo nikde vidět a lišta se prostě
+	// otvírala s tím, co v ní zbylo z minula. Capability teď existuje
+	// (`capabilities/spotlight.json`), ale reset už na ní nestojí.
+	let posledniProbuzeni = 0;
+	function probud() {
+		// Oba podněty chodí těsně po sobě; druhý by jen zbytečně znovu
+		// tahal inventář a stav indexu přes pipe.
+		const ted = Date.now();
+		if (ted - posledniProbuzeni < 400) return;
+		posledniProbuzeni = ted;
+		hledani?.vycisti();
+		hledani?.zaostri();
+	}
+
 	onMount(() => {
-		const un = listen('spotlight:route', () => {
-			// Okno se vyvolalo znovu — začít s prázdným polem, ne tam,
-			// kde uživatel skončil minule.
-			hledani?.vycisti();
-			hledani?.zaostri();
-		});
+		window.addEventListener('focus', probud);
+		// Záloha a zároveň cesta pro budoucí přepínání sekcí. `.catch`
+		// je tu schválně — bez něj se zamítnutí od ACL ztratí
+		// v neošetřeném slibu, což je přesně ta chyba, která tenhle
+		// reset dlouho tiše vypínala.
+		const un = listen('spotlight:route', probud).catch(() => () => {});
 		hledani?.zaostri();
 		window.addEventListener('keydown', klavesa);
 		return () => {
 			un.then((f) => f());
+			window.removeEventListener('focus', probud);
 			window.removeEventListener('keydown', klavesa);
 		};
 	});
@@ -64,8 +90,8 @@
 		border-radius: 14px;
 		background: #1c1d24;
 		background: color-mix(in srgb, #1c1d24 92%, transparent);
-		backdrop-filter: blur(48px) saturate(150%);
-		-webkit-backdrop-filter: blur(48px) saturate(150%);
+		backdrop-filter: blur(72px) saturate(150%);
+		-webkit-backdrop-filter: blur(72px) saturate(150%);
 		box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
 	}
 </style>

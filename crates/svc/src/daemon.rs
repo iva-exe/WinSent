@@ -413,10 +413,22 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     // MFT indexy svazků (v4C, SPEC 11.2): staví se on-demand, drží se
     // v paměti a po 5 min nečinnosti je janitor uvolní (paměťový
     // rozpočet — velký svazek je ~50 MB indexu).
-    type FsIndexes =
-        Arc<std::sync::Mutex<std::collections::HashMap<char, (fs_index::VolumeIndex, Instant)>>>;
+    //
+    // Hodnotou je Arc, ne index sám: díky tomu se dá vložit do mapy
+    // hned po stavbě a zároveň si ho nechat pro úklidovou analýzu, aniž
+    // by se přes ni musel držet zámek mapy (ta analýza běží desítky
+    // sekund a hledání by po tu dobu čekalo).
+    type FsIndexes = Arc<
+        std::sync::Mutex<std::collections::HashMap<char, (Arc<fs_index::VolumeIndex>, Instant)>>,
+    >;
     let fs_indexes: FsIndexes = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let fs_indexes_janitor = Arc::clone(&fs_indexes);
+    // Pojistka proti souběžným stavbám. Hledání umí index dostavět
+    // (janitor ho po nečinnosti uvolní), jenže UI se ptá na všechny
+    // svazky naráz a při psaní i několikrát za sebou — bez tohohle
+    // zámku by pár úhozů do klávesnice znamenalo několik souběžných
+    // čtení celé $MFT.
+    let fs_build_lock: Arc<std::sync::Mutex<()>> = Arc::new(std::sync::Mutex::new(()));
 
     // Úklidová analýza (v4E): auto-indexace všech NTFS svazků na pozadí
     // + duplicity/0B/junk. Stav sdílený s IPC (progres do UI).
@@ -457,6 +469,19 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     }) {
                         Ok(idx) => {
                             let entries = idx.len() as u64;
+                            let idx = Arc::new(idx);
+                            // Do sdílené mapy JEŠTĚ PŘED ohlášením
+                            // „hotovo". Opačné pořadí dělalo okno, kdy
+                            // UI svazek nabízelo a služba na něj
+                            // odpovídala „index svazku není postavený":
+                            // index se totiž vkládal až za úklidovou
+                            // analýzou a za největšími položkami všech
+                            // svazků — naměřeno sedm minut, po které
+                            // hledání na tom disku tiše nenacházelo nic.
+                            fs_indexes_auto
+                                .lock()
+                                .expect("fs index lock")
+                                .insert(letter, (Arc::clone(&idx), Instant::now()));
                             let mut c = cleanup.lock().expect("cleanup lock");
                             if let Some(e) = c.indexing.iter_mut().find(|e| e.0 == letter) {
                                 *e = (letter, entries, true, None);
@@ -476,12 +501,11 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         }
                     }
                 }
-                // Analýza nad lokálně drženými indexy (zámek map se
-                // nedrží — search jede dál); pak indexy do sdílené mapy
-                // pro rychlé hledání.
+                // Analýza nad indexy, které už jsou i ve sdílené mapě
+                // (zámek se nedrží — hledání jede dál).
                 cleanup.lock().expect("cleanup lock").running = true;
                 let t0 = Instant::now();
-                let refs: Vec<&fs_index::VolumeIndex> = built.iter().collect();
+                let refs: Vec<&fs_index::VolumeIndex> = built.iter().map(|i| i.as_ref()).collect();
                 let rep = fs_index::cleanup_analysis(&refs);
                 tracing::info!(
                     dups = rep.dups.len(),
@@ -524,10 +548,6 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         big_files,
                         big_dirs,
                     });
-                }
-                let mut map = fs_indexes_auto.lock().expect("fs index lock");
-                for idx in built {
-                    map.insert(idx.letter, (idx, Instant::now()));
                 }
             })?
     };
@@ -774,6 +794,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         let icons = icon_store;
         let rescan_flag = Arc::clone(&rescan);
         let fs_idx = Arc::clone(&fs_indexes);
+        let fs_build = Arc::clone(&fs_build_lock);
         let cleanup_state = cleanup_ipc;
         let orch = Arc::clone(&orch);
         // Hardwarový přehled na 5 s (v9) — tepelná kaskáda jde přes WMI.
@@ -1166,7 +1187,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     fs_idx
                         .lock()
                         .expect("fs index lock")
-                        .insert(letter, (idx, Instant::now()));
+                        .insert(letter, (Arc::new(idx), Instant::now()));
                     tracing::info!(volume = %letter, entries, "MFT index postaven");
                     Response::IndexInfo { letter, entries }
                 }
@@ -1179,12 +1200,66 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 query,
                 limit,
             } => {
-                let mut map = fs_idx.lock().expect("fs index lock");
-                match map.get_mut(&letter) {
-                    Some((idx, last)) => {
+                // Index nemusí být v paměti: janitor ho po pěti
+                // minutách nečinnosti uvolní. Dřív se v takovém případě
+                // vracela chyba, UI ji spolklo a hledání na tom svazku
+                // od té chvíle tvrdilo „nic se nenašlo" — napořád, samo
+                // se z toho nedostalo. Teď se index dostaví na místě.
+                let hotovy = {
+                    let mut map = fs_idx.lock().expect("fs index lock");
+                    map.get_mut(&letter).map(|(idx, last)| {
                         *last = Instant::now();
+                        Arc::clone(idx)
+                    })
+                };
+                let index = match hotovy {
+                    Some(idx) => Ok(idx),
+                    None => {
+                        // Stavba trvá sekundy a UI se ptá na všechny
+                        // svazky naráz; zámek souběžné dotazy slije do
+                        // jedné stavby místo několika čtení $MFT vedle
+                        // sebe.
+                        let _staveni = fs_build.lock().expect("fs build lock");
+                        let mezitim = fs_idx
+                            .lock()
+                            .expect("fs index lock")
+                            .get(&letter)
+                            .map(|(idx, _)| Arc::clone(idx));
+                        match mezitim {
+                            Some(idx) => Ok(idx),
+                            None => match fs_index::VolumeIndex::build(letter) {
+                                Ok(idx) => {
+                                    let entries = idx.len() as u64;
+                                    let idx = Arc::new(idx);
+                                    fs_idx
+                                        .lock()
+                                        .expect("fs index lock")
+                                        .insert(letter, (Arc::clone(&idx), Instant::now()));
+                                    // Ať stav v UI odpovídá skutečnosti:
+                                    // svazek je zase prohledatelný a
+                                    // případná stará chyba neplatí.
+                                    if let Ok(mut c) = cleanup_state.lock() {
+                                        if let Some(e) =
+                                            c.indexing.iter_mut().find(|e| e.0 == letter)
+                                        {
+                                            *e = (letter, entries, true, None);
+                                        }
+                                    }
+                                    tracing::info!(
+                                        volume = %letter,
+                                        entries,
+                                        "MFT index dostavěn při hledání"
+                                    );
+                                    Ok(idx)
+                                }
+                                Err(e) => Err(format!("index svazku nejde postavit: {e}")),
+                            },
+                        }
+                    }
+                };
+                match index {
+                    Ok(idx) => {
                         let hits = idx.search(&query, limit.min(300) as usize);
-                        drop(map);
                         let rows = hits
                             .into_iter()
                             .map(|h| {
@@ -1203,9 +1278,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             .collect();
                         Response::Files(rows)
                     }
-                    None => Response::Error {
-                        message: "index svazku není postavený".into(),
-                    },
+                    Err(message) => Response::Error { message },
                 }
             }
             // Duplicity (v4D, SPEC 11.3) — pomalé, on-demand, jen čte.

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "spotlight",
+  "description": "Oprávnění vyhledávací lišty. Vlastní soubor, ne přidané okno do 'default': lišta je bez rámu, bez tlačítek a mimo hlavní panel, takže zavírání, minimalizaci ani tažení za titulek nepotřebuje. Bez téhle capability je v okně lišty mrtvé celé core:default — mimo jiné 'listen', kterým se lišta dozvídá, že ji uživatel vyvolal znovu, a má se proto vyprázdnit. Odmítnutí přitom nikam nepíše: ACL vrátí zamítnutý slib a v release buildu bez konzole to nikdo neuvidí.",
+  "windows": ["spotlight"],
+  "permissions": ["core:default"]
+}

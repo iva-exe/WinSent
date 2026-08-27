@@ -41,7 +41,7 @@
 	import SystemBadge from '$lib/SystemBadge.svelte';
 	import { isSystemApp, systemPathInfo } from '$lib/mandatory.js';
 	import { typSouboru } from '$lib/filetype.js';
-	import { nacti as nactiPosledni, zapamatuj, zapomen } from '$lib/recent.js';
+	import { nacti as nactiPosledni, zapamatuj, zapomen, zapomenJednu } from '$lib/recent.js';
 	import { openMenu, akceKopirovat, oddelovac } from '$lib/itemmenu.svelte.js';
 
 	let {
@@ -112,7 +112,10 @@
 		try {
 			const c = await invoke('query_cleanup');
 			indexStav = c?.indexing ?? [];
-			svazky = indexStav.filter(([, , hotovo]) => hotovo).map(([l]) => l);
+			// Svazek, jehož index selhal, má taky hotovo=true — jen
+			// k tomu důvod. Prohledat se nedá, takže do seznamu ani
+			// mezi přepínače nepatří.
+			svazky = indexStav.filter(([, , hotovo, chyba]) => hotovo && !chyba).map(([l]) => l);
 		} catch {
 			svazky = [];
 		}
@@ -123,11 +126,13 @@
 	let nactenoAppsMs = 0;
 	async function nacistApps(force = false) {
 		if (!force && Date.now() - nactenoAppsMs < 60_000) return;
-		nactenoAppsMs = Date.now();
 		try {
 			apps = await invoke('query_apps');
+			// Razítko až po úspěchu. Když je služba při startu ještě
+			// dole, nesmí se minutu čekat s prázdným seznamem programů.
+			nactenoAppsMs = Date.now();
 		} catch {
-			/* služba mimo — hledají se aspoň soubory */
+			/* služba mimo — zkusí se při příštím otevření */
 		}
 		try {
 			procs = await invoke('query_procs');
@@ -161,8 +166,10 @@
 			const icon = await invoke('query_icon', { identityKey: key });
 			if (icon) {
 				iconUrls[key] = rgbaToUrl(icon);
-				iconState.set(key, 'done');
 			}
+			// I „ikonu nemá" je odpověď. Bez tohohle se na aplikace bez
+			// ikony ptáme znovu při každém stisku klávesy.
+			iconState.set(key, 'done');
 		} catch {
 			/* služba mimo — zkusí se příště */
 		}
@@ -178,6 +185,10 @@
 	let timer;
 	function napsano() {
 		clearTimeout(timer);
+		// Zneplatnit i dotaz, který už letí. Bez toho se po smazání
+		// znaku na ~90 ms vrátí výsledky předchozího, delšího dotazu —
+		// a to je přesně to, co má čítač běhů hlídat.
+		beh++;
 		vybrany = 0;
 		if (dotaz.length < 2) {
 			hits = [];
@@ -197,16 +208,25 @@
 		const muj = ++beh;
 		try {
 			// Napříč všemi svazky naráz; služba je má v paměti zvlášť.
+			// Chyba jednoho svazku nesmí shodit ostatní, ale ani zmizet:
+			// dřív se tiše měnila na prázdné pole a hledání pak jen
+			// tvrdilo „nic se nenašlo".
 			const davky = await Promise.all(
 				svazky.map((l) =>
-					invoke('search_files', { letter: l, query: q, limit: LIMIT }).catch(() => [])
+					invoke('search_files', { letter: l, query: q, limit: LIMIT })
+						.then((r) => ({ l, r }))
+						.catch((e) => ({ l, r: [], e: String(e) }))
 				)
 			);
 			if (muj !== beh) return;
+			const spatne = davky.filter((d) => d.e);
+			chyba = spatne.length
+				? `${spatne.map((d) => d.l + ':').join(' ')} se nepodařilo prohledat — ${spatne[0].e}`
+				: '';
 			// Složky napřed, pak podle délky cesty: co je blíž kořeni,
 			// bývá to hledané. Uvnitř abecedně, ať pořadí neposkakuje.
 			hits = davky
-				.flat()
+				.flatMap((d) => d.r)
 				.sort((a, b) => {
 					const da = (a.attrs & ATTR_DIR) !== 0;
 					const db = (b.attrs & ATTR_DIR) !== 0;
@@ -217,7 +237,6 @@
 					return a.name.localeCompare(b.name, 'cs');
 				})
 				.slice(0, LIMIT);
-			chyba = '';
 		} catch (e) {
 			if (muj !== beh) return;
 			chyba = String(e);
@@ -318,16 +337,20 @@
 			kind: r.kind,
 			key: r.key,
 			name: r.name,
-			sub: r.sub ?? '',
-			path: r.path ?? '',
-			identity_key: r.identity_key ?? '',
-			attrs: r.attrs ?? 0,
-			disk: r.disk ?? '',
+			sub: r.sub,
+			path: r.path,
+			identity_key: r.identity_key,
+			attrs: r.attrs,
+			disk: r.disk,
 			size: null,
 			missing: false,
 			system:
 				r.kind === 'app' &&
-				isSystemApp({ identity_key: r.identity_key, display_name: r.name, publisher: r.sub }),
+				isSystemApp({
+					identity_key: r.identity_key,
+					display_name: r.name,
+					publisher: r.sub
+				}),
 			systemInfo: r.path ? systemPathInfo(r.path) : null,
 			nedavne: true
 		};
@@ -367,23 +390,24 @@
 		return [...appHits, ...hits.map(polozkaSoubor)];
 	});
 
-	/// Co se opravdu kreslí. Ve „Vše" se aplikace ořezávají, ať
-	/// nevytlačí soubory z první obrazovky.
-	let vysledky = $derived.by(() => {
-		const v = vse.filter((it) => projde(it, filtr));
-		if (filtr !== 'vse') return v;
+	/// Co by seznam ukázal pro daný filtr. Ve „Vše" se aplikace
+	/// ořezávají, ať nevytlačí soubory z první obrazovky.
+	///
+	/// Počty u přepínačů jdou přes tutéž funkci schválně: dokud se
+	/// počítaly zvlášť, hlásil přepínač „Vše 240" nad seznamem
+	/// o 206 řádcích a dvě čísla na jedné obrazovce si odporovala.
+	function proFiltr(zdroj, f) {
+		const v = zdroj.filter((it) => projde(it, f));
+		if (f !== 'vse') return v;
 		const a = v.filter((it) => it.kind === 'app').slice(0, APPS_VE_VSEM);
 		return [...a, ...v.filter((it) => it.kind !== 'app')];
-	});
+	}
+
+	let vysledky = $derived(proFiltr(vse, filtr));
 
 	let pocty = $derived.by(() => {
 		const m = new Map();
-		for (const f of filtry) m.set(f.id, 0);
-		for (const it of vse) {
-			m.set('vse', (m.get('vse') ?? 0) + 1);
-			m.set(it.kind, (m.get(it.kind) ?? 0) + 1);
-			if (it.disk) m.set(`disk:${it.disk}`, (m.get(`disk:${it.disk}`) ?? 0) + 1);
-		}
+		for (const f of filtry) m.set(f.id, proFiltr(vse, f.id).length);
 		return m;
 	});
 
@@ -439,7 +463,11 @@
 	/// Cesta bez posledního dílu — ten je už v názvu.
 	function slozka(p) {
 		const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'));
-		return i > 0 ? p.slice(0, i) : p;
+		if (i < 0) return p;
+		// Kořen svazku si musí nechat lomítko: „C:" místo „C:\\" vypadá
+		// jako uříznutá cesta.
+		if (i === 2 && p[1] === ':') return p.slice(0, 3);
+		return p.slice(0, i) || p;
 	}
 
 	/// Zvýrazní část názvu, která odpovídá dotazu. Bez toho není poznat,
@@ -456,7 +484,16 @@
 	}
 
 	// ── Akce ─────────────────────────────────────────────────────────
+	/// Klíč položky, která se zrovna spouští.
+	///
+	/// Najít aplikaci ve složce „Aplikace" trvá až půl sekundy (naměřeno
+	/// 260 položek ≈ 530 ms). Bez viditelného stavu vypadá lišta po
+	/// Enteru zamrzle a uživatel mačká znovu.
+	let spousti = $state('');
+
 	async function otevrit(it) {
+		if (spousti) return;
+		spousti = it.key;
 		try {
 			if (it.kind === 'app') {
 				await invoke('launch_app', { identityKey: it.identity_key, displayName: it.name });
@@ -470,6 +507,8 @@
 			// přečíst a vypadalo by to, že se prostě nic nestalo.
 			chyba = String(e);
 			return;
+		} finally {
+			spousti = '';
 		}
 		onhotovo();
 	}
@@ -480,7 +519,10 @@
 			posunFiltr(e.shiftKey ? -1 : 1);
 		} else if (e.key === 'ArrowDown') {
 			e.preventDefault();
-			vybrany = Math.min(vyber + 1, vysledky.length - 1);
+			// Math.max(0, …) je tu kvůli prázdnému seznamu: bez něj
+			// šipka dolů nastavila −1 a odvozený výběr se z toho už
+			// nedostal — žádný řádek nebyl vybraný a Enter nedělal nic.
+			vybrany = Math.max(0, Math.min(vyber + 1, vysledky.length - 1));
 			doHledu();
 		} else if (e.key === 'ArrowUp') {
 			e.preventDefault();
@@ -493,10 +535,40 @@
 	}
 
 	// Vybraný řádek musí zůstat vidět při ovládání z klávesnice.
+	//
+	// Zároveň se tím odstaví myš: po odrolování pošle prohlížeč
+	// mouseenter řádku, který se ocitl pod nehybným kurzorem, a ten by
+	// výběr přepsal — při držení šipky dolů se výběr „lepil" k myši
+	// místo aby šel dolů. Myš se vrátí ke slovu, jakmile se pohne.
+	let klavesniceVede = false;
 	function doHledu() {
+		klavesniceVede = true;
 		queueMicrotask(() => {
 			document.querySelector('.fs-row.sel')?.scrollIntoView({ block: 'nearest' });
 		});
+	}
+
+	/// Položky menu, které se týkají historie. Ukazují se jen u řádků,
+	/// které z historie opravdu jsou — u výsledku hledání by nedávaly
+	/// smysl. Odebrat jednu je zvlášť od vymazání všeho: kvůli jednomu
+	/// omylem otevřenému souboru nemá uživatel přijít o celý seznam.
+	function akceHistorie(it) {
+		if (!it.nedavne) return [];
+		return [
+			oddelovac,
+			{
+				label: 'Odebrat z historie',
+				icon: 'trash',
+				hint: it.name,
+				run: () => (posledni = zapomenJednu(it.key))
+			},
+			{
+				label: 'Vymazat celou historii',
+				icon: 'trash',
+				danger: true,
+				run: () => (posledni = zapomen())
+			}
+		];
 	}
 
 	function menuPolozky(e, it) {
@@ -510,9 +582,7 @@
 					{ label: 'Spustit', icon: 'open', run: () => otevrit(it) },
 					oddelovac,
 					akceKopirovat(it.name, 'Kopírovat název'),
-					it.nedavne
-						? { label: 'Vymazat historii', icon: 'trash', run: () => (posledni = zapomen()) }
-						: null
+					...akceHistorie(it)
 				]
 			});
 			return;
@@ -538,9 +608,7 @@
 				oddelovac,
 				akceKopirovat(it.name, 'Kopírovat název'),
 				akceKopirovat(it.path, 'Kopírovat celou cestu'),
-				it.nedavne
-					? { label: 'Vymazat historii', icon: 'trash', run: () => (posledni = zapomen()) }
-					: null
+				...akceHistorie(it)
 			]
 		});
 	}
@@ -580,8 +648,13 @@
 		zaostri();
 		// Index se staví na pozadí; dokud není hotový, hlásí se to
 		// a po dokončení se seznam svazků doplní sám.
+		// Ptát se dál jen dokud se opravdu něco staví. Porovnávat počty
+		// nešlo: svazek s trvalou chybou by se do seznamu nikdy nedostal
+		// a dotaz po pipe by pak běžel každé dvě sekundy až do zavření.
 		const t = setInterval(() => {
-			if (svazky.length < indexStav.length || !indexStav.length) nacistSvazky();
+			if (!indexStav.length || indexStav.some(([, , hotovo, chyba]) => !hotovo && !chyba)) {
+				nacistSvazky();
+			}
 		}, 2000);
 		// Druhé okno (lišta vs. sekce) sdílí totéž úložiště — když si
 		// tam uživatel něco otevře, seznam se má srovnat i tady.
@@ -596,16 +669,27 @@
 
 	let stavIndexu = $derived.by(() => {
 		if (!indexStav.length) return 'Index se připravuje — zatím se nemusí nic najít.';
-		const chybi = indexStav.filter(([, , hotovo]) => !hotovo).map(([l]) => `${l}:`);
-		if (!chybi.length) return '';
-		return `Prohledávám ${chybi.join(' ')} — index se ještě staví a výsledky nemusí být úplné.`;
+		const stavi = indexStav
+			.filter(([, , hotovo, chyba]) => !hotovo && !chyba)
+			.map(([l]) => `${l}:`);
+		if (stavi.length) {
+			return `Prohledávám ${stavi.join(' ')} — index se ještě staví a výsledky nemusí být úplné.`;
+		}
+		// Svazek, který se zaindexovat nepodařilo, se z hledání tiše
+		// vynechá — bez tohohle řádku by po něm nezůstala ani stopa
+		// a uživatel by jen viděl, že se na tom disku nikdy nic nenajde.
+		const spatne = indexStav.filter(([, , , chyba]) => chyba);
+		if (spatne.length) {
+			return `${spatne.map(([l]) => `${l}:`).join(' ')} se nepodařilo zaindexovat — ${spatne[0][3]}`;
+		}
+		return '';
 	});
 </script>
 
 <!-- Klávesnice se obsluhuje na celém bloku, ne jen na vstupu: TAB má
      přepínat filtr i ve chvíli, kdy je zaměřený řádek seznamu. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="fs" class:compact onkeydown={klavesa}>
+<div class="fs" class:compact onkeydown={klavesa} onmousemove={() => (klavesniceVede = false)}>
 	<div class="fs-bar">
 		<Search size={compact ? 20 : 17} />
 		<input
@@ -668,7 +752,9 @@
 						class="fs-row"
 						class:sel={i === vyber}
 						onclick={() => otevrit(it)}
-						onmouseenter={() => (vybrany = i)}
+						onmouseenter={() => {
+							if (!klavesniceVede) vybrany = i;
+						}}
 						oncontextmenu={(e) => menuPolozky(e, it)}
 					>
 						<span class="fs-ico">
@@ -713,7 +799,9 @@
 						{#if it.size != null}
 							<span class="fs-size mono">{fmtSize(it.size)}</span>
 						{/if}
-						{#if i === vyber}
+						{#if spousti === it.key}
+							<span class="fs-enter"><Loader size={14} class="fs-spin" /></span>
+						{:else if i === vyber}
 							<span class="fs-enter">
 								{#if it.kind === 'app'}<Play size={13} />{:else}<CornerDownLeft size={14} />{/if}
 							</span>

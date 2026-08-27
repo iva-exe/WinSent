@@ -46,7 +46,7 @@ fn cerstve_zobrazeno() -> bool {
         < OCHRANNA_LHUTA_MS
 }
 
-const WIDTH: f64 = 720.0;
+const WIDTH: f64 = 860.0;
 const HEIGHT: f64 = 520.0;
 
 /// Poznámka do vlastního protokolu.
