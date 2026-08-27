@@ -5,6 +5,7 @@
 
 mod display;
 mod hotkey;
+mod launch;
 mod repair;
 mod spotlight;
 mod uninstall;
@@ -762,6 +763,15 @@ fn open_settings_page(page: String) -> Result<(), String> {
     }
 }
 
+/// Spustí nainstalovanou aplikaci z vyhledávání.
+///
+/// Spouští UI proces, protože běží v relaci uživatele — služba je
+/// v session 0 a okno by nemělo kam vykreslit.
+#[tauri::command(async)]
+fn launch_app(identity_key: String, display_name: String) -> Result<String, String> {
+    launch::launch(&identity_key, &display_name)
+}
+
 /// Jaká zkratka vyvolává vyhledávací lištu.
 #[tauri::command]
 fn get_spotlight_hotkey() -> String {
@@ -827,7 +837,6 @@ fn set_db_dir(dir: String) -> Result<(), String> {
 /// plugin nepoužívá a kvůli jednomu tlačítku ho tahat nemá smysl.
 #[tauri::command(async)]
 fn pick_folder() -> Result<String, String> {
-    use windows::core::Interface;
     use windows::Win32::System::Com::{
         CoCreateInstance, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
     };
@@ -1117,6 +1126,7 @@ fn main() {
             query_db_location,
             search_web,
             open_settings_page,
+            launch_app,
             get_spotlight_hotkey,
             set_spotlight_hotkey,
             hide_spotlight,
