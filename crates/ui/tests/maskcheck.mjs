@@ -120,6 +120,85 @@ if (!bez.includes('<uživatel>')) {
 	console.log('  ok    bez seznamu účtů se maskuje dál');
 }
 
+// Detail incidentu a událostí jde do záznamu jako SUROVÝ JSON, kde je
+// každé zpětné lomítko zapsané dvakrát. Maska, která trvala na jednom
+// oddělovači, takový řádek pustila celý — i se jménem uživatele.
+// Naměřeno na detailu pádu Discordu a na události proc_crash.
+const JSON_PRIPADY = [
+	[
+		'detail incidentu',
+		{
+			incidents: [
+				{
+					ts: now - 10,
+					kind: 'app_crash',
+					culprit: 'Discord',
+					detail: JSON.stringify({
+						exit_code: 3221225477,
+						name: 'Discord.exe',
+						path: 'C:\\Users\\Jan Novak\\AppData\\Local\\Discord\\Discord.exe'
+					})
+				}
+			]
+		}
+	],
+	[
+		'detail události',
+		{
+			events: [
+				{ ts: now - 20, kind: 'proc_crash', pid: 1, detail: 'C:\\\\Users\\\\Jan Novak\\\\x.exe' }
+			]
+		}
+	],
+	[
+		'cíl v auditu',
+		{
+			audit: [
+				{
+					ts: now - 30,
+					action: 'delete',
+					target: 'C:\\Users\\Jan Novak\\Desktop\\x.txt',
+					class: 'T1',
+					verdict: 'allow',
+					outcome: 'ok'
+				}
+			]
+		}
+	],
+	[
+		'velká písmena v cestě',
+		{
+			audit: [
+				{
+					ts: now - 40,
+					action: 'delete',
+					target: 'C:\\USERS\\JAN NOVAK\\x.txt',
+					class: 'T1',
+					verdict: 'allow',
+					outcome: 'ok'
+				}
+			]
+		}
+	]
+];
+
+for (const [popis, data] of JSON_PRIPADY) {
+	const txt = reportText({ now, from: now - 86400, users: UCTY, ...data });
+	// Sekce ÚČTY jméno uvádí ZÁMĚRNĚ (viz legenda v hlavičce záznamu),
+	// takže se z kontroly vyjme; jde o cesty.
+	const bezUctu = txt.replace(/^.*Přihlášený účet:.*$/gm, '').replace(/^ {2}Jan Novak.*$/gm, '');
+	if (/novak/i.test(bezUctu)) {
+		console.log('  CHYBA  ' + popis + ': jméno uživatele uniklo');
+		bezUctu
+			.split('\n')
+			.filter((l) => /novak/i.test(l))
+			.forEach((l) => console.log('          ' + l.trim()));
+		chyb++;
+	} else {
+		console.log('  ok    ' + popis);
+	}
+}
+
 // Jméno účtu nesmí zůstat nikde v celém souboru jako součást cesty.
 const cely = reportText({
 	now,

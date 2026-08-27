@@ -50,7 +50,14 @@ const RE_SID = /\bS-1-5-21-\d+-\d+-\d+-(\d+)\b/g;
 //
 // Síťová cesta `\\server\Users\Jméno` nemá písmeno disku, proto je
 // začátek volitelný.
-const RE_PROFILE = /((?:[A-Za-z]:|\\\\[^\\/]+)[\\/]Users[\\/])([^\\/:*?"<>|\r\n]+)/gi;
+//
+// Oddělovač smí být i zdvojený. Detail incidentu a událostí jde do
+// záznamu jako SUROVÝ JSON, kde je každé zpětné lomítko zapsané dvakrát
+// (`C:\\Users\\Jan Novak\\…`). Maska, která trvala na jednom, takový
+// řádek pustila celý — a s ním jméno uživatele. Naměřeno na detailu
+// pádu Discordu a na události proc_crash.
+const RE_PROFILE =
+	/((?:[A-Za-z]:|\\{2,4}[^\\/]+)[\\/]{1,2}Users[\\/]{1,2})([^\\/:*?"<>|\r\n]+)/gi;
 
 // Složky pod C:\Users, které nepatří žádnému člověku. Maskovat je nemá
 // co chránit a výstup to jen znečistí: `C:\Users\All Users` se dřív
