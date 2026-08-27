@@ -165,9 +165,13 @@
 		padding: 5px;
 		border: 1px solid var(--border-strong, var(--border));
 		border-radius: var(--radius-lg);
-		background: color-mix(in srgb, var(--surface) 78%, transparent);
-		backdrop-filter: blur(18px) saturate(140%);
-		-webkit-backdrop-filter: blur(18px) saturate(140%);
+		/* Podklad se bere z `--bg`, ne z `--surface`.
+		   `--surface` je světlý závoj (bílá na 4 %), takže menu z něj
+		   vycházelo skoro průhledné a text pod ním prosvítal. Tmavý
+		   základ s vysokým rozostřením drží menu čitelné nad čímkoli. */
+		background: color-mix(in srgb, var(--bg) 88%, transparent);
+		backdrop-filter: blur(30px) saturate(150%);
+		-webkit-backdrop-filter: blur(30px) saturate(150%);
 		box-shadow:
 			0 12px 32px rgba(0, 0, 0, 0.45),
 			0 2px 8px rgba(0, 0, 0, 0.3);
