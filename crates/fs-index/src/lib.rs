@@ -6,6 +6,8 @@
 //! záznamů se projde v desítkách ms. Mazání sem NEPATŘÍ (v8, přes
 //! validační vrstvu).
 
+pub mod snapshot;
+
 use std::collections::HashMap;
 
 /// Chyby této crate.

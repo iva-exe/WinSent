@@ -26,5 +26,7 @@ windows = { workspace = true, features = [
 # porovnat čísla, která hlásí služba.
 [dev-dependencies]
 serde_json = "1"
+# Jen kvůli bráně searchcheck: ta se dívá i na uložené indexy svazků.
+fs-index = { workspace = true }
 validate = { workspace = true }
 win-sys = { workspace = true }

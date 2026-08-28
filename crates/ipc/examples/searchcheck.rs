@@ -77,5 +77,24 @@ fn main() {
         eprintln!("BRÁNA searchcheck: FAIL ({selhani} svazků)");
         std::process::exit(1);
     }
+    // Uložené indexy: bez nich se po každém uvolnění z paměti staví
+    // znovu z MFT a uživatel na to čeká uvnitř svého dotazu.
+    if let Some(dir) = fs_index::snapshot::adresar() {
+        let mut ulozenych = 0;
+        for (letter, _, hotovo, chyba) in &indexing {
+            if !hotovo || chyba.is_some() {
+                continue;
+            }
+            match fs_index::snapshot::velikost(*letter) {
+                Some(b) => {
+                    println!("  {letter}: uložený index {:.0} MB", b as f64 / 1e6);
+                    ulozenych += 1;
+                }
+                None => println!("  {letter}: uložený index zatím není"),
+            }
+        }
+        println!("  adresář: {}", dir.display());
+        println!("  uložených indexů: {ulozenych} z {zkusenych}");
+    }
     println!("BRÁNA searchcheck: PASS ({zkusenych} svazků)");
 }

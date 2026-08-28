@@ -117,8 +117,25 @@
 			// k tomu důvod. Prohledat se nedá, takže do seznamu ani
 			// mezi přepínače nepatří.
 			svazky = indexStav.filter(([, , hotovo, chyba]) => hotovo && !chyba).map(([l]) => l);
+			zahrej();
 		} catch {
 			svazky = [];
+		}
+	}
+
+	// Ohřátí indexu při otevření vyhledávání.
+	//
+	// Služba index po nečinnosti uvolňuje z paměti a hledání by ho pak
+	// muselo obstarat až uvnitř dotazu. Otevření lišty je na to nejlepší
+	// chvíle: než člověk napíše druhý znak, je index připravený a
+	// odpověď chodí v jednotkách milisekund. Odpověď nás nezajímá —
+	// jde jen o to, ať se služba probere dřív než uživatel dopíše.
+	let ohratoMs = 0;
+	function zahrej() {
+		if (Date.now() - ohratoMs < 30_000) return;
+		ohratoMs = Date.now();
+		for (const l of svazky) {
+			invoke('build_file_index', { letter: l }).catch(() => {});
 		}
 	}
 
