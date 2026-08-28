@@ -557,6 +557,41 @@
 		}
 	}
 
+	/// Dožene body, které se nenavzorkovaly, protože bylo okno zavřené.
+	///
+	/// Zavřením do oznamovací oblasti se webview uspí (jinak by na
+	/// pozadí kreslilo a ptalo se služby naprázdno), takže se po tu dobu
+	/// nesbírá. Služba měří dál, jen si to UI musí po probuzení dojít —
+	/// bez toho zůstane v grafu díra, která vypadá, jako by služba
+	/// neběžela.
+	let dohaniSe = false;
+	async function dohonHistorii() {
+		if (dohaniSe || !ts.length) return;
+		const posledni = ts[ts.length - 1];
+		const ted = Math.floor(Date.now() / 1000);
+		// Pár sekund mezery je běžné škubnutí, ne díra.
+		if (ted - posledni < 5) return;
+		dohaniSe = true;
+		try {
+			const points = await invoke('query_system_history', { from: posledni + 1, to: ted });
+			const total = Math.max(system?.mem_total_mb ?? 1, 1);
+			for (const p of points) {
+				if (p.ts <= ts[ts.length - 1]) continue;
+				const memPct = (p.mem_used_mb / total) * 100;
+				push(ts, p.ts);
+				push(cpu, p.cpu_pct);
+				push(mem, memPct);
+				push(sys, sysLoad([p.cpu_pct, memPct, p.gpu_pct]));
+				push(gpu, p.gpu_pct);
+				push(down, p.net_rx_bps ?? 0);
+				push(up, p.net_tx_bps ?? 0);
+			}
+		} catch {
+			/* služba mimo — díra zůstane, ale to je pravda o stavu */
+		}
+		dohaniSe = false;
+	}
+
 	async function loadHistory(s, now) {
 		try {
 			const points = await invoke('query_system_history', { from: now - 86400, to: now - 1 });
@@ -752,9 +787,18 @@
 			pollProcs();
 		}, 1000);
 		const t2 = setInterval(pollIncidents, 30000);
+		// Probuzení okna: dohnat, co se mezitím nenavzorkovalo.
+		const probuzeni = () => {
+			if (document.visibilityState !== 'visible') return;
+			dohonHistorii();
+			pollSystem();
+			pollProcs();
+		};
+		document.addEventListener('visibilitychange', probuzeni);
 		return () => {
 			clearInterval(t);
 			clearInterval(t2);
+			document.removeEventListener('visibilitychange', probuzeni);
 		};
 	});
 

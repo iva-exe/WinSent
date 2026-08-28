@@ -539,10 +539,18 @@
 	});
 
 	$effect(() => {
-		// závislosti: jen data
-		ts;
-		values;
-		values2;
+		// Závislosti: data — ale čtou se DÉLKA a POSLEDNÍ prvek, ne jen
+		// odkaz na pole.
+		//
+		// Řady se plní na místě, takže se odkaz nemění a samotné `ts;`
+		// by po prvním vykreslení nikdy víc nespustilo překreslení:
+		// graf by se jednou nakreslil a pak zamrzl. Poslední prvek osy
+		// je časové razítko, takže se s každým vzorkem prokazatelně
+		// liší — na tom se dá závislost postavit.
+		ts.length;
+		ts[ts.length - 1];
+		values.length;
+		values2?.length;
 		untrack(() => {
 			if (!u) return;
 			u.setData(chartData(), false);
