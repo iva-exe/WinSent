@@ -94,6 +94,38 @@ pub fn toggle(app: &AppHandle, route: &str) -> Result<(), String> {
     create(app, route)
 }
 
+/// Zaostří okno lišty znovu.
+///
+/// Okno se staví rovnou zaměřené, jenže webview se v tu chvíli teprve
+/// vytváří a zprávu o zaměření nemá kdo přijmout — wry ji přeposílá
+/// až v obsluze WM_SETFOCUS, a ta při stavbě přijde dřív, než
+/// controller existuje. Proto se při ÚPLNĚ PRVNÍM vyvolání nedalo
+/// hned psát, zatímco každé další už bylo v pořádku: tam už se okno
+/// jen ukazuje a webview zprávu zachytí.
+///
+/// Tohle je ta chybějící druhá polovina — zaměření se zopakuje, až je
+/// co zaměřit. Říká si o to sama stránka, protože jen ona ví, kdy je
+/// vykreslená.
+pub fn zaostri(app: &AppHandle) {
+    let Some(w) = app.get_webview_window(LABEL) else {
+        return;
+    };
+    if !w.is_visible().unwrap_or(false) {
+        return;
+    }
+    // Nejdřív okno, POTOM webview — v tomhle pořadí.
+    //
+    // Samotné okenní zaostření nestačí: tao ho přeskočí, když už okno
+    // JE popředí, což je přesně náš případ. A webview se zaostřit
+    // nedá, dokud okno popředí není. Teprve tahle dvojice pošle
+    // MoveFocus, kterým se do stránky začnou dostávat klávesy.
+    let _ = w.set_focus();
+    // `as_ref` vede na webview uvnitř okna; na tomhle typu je jediná
+    // implementace AsRef, takže se to nemá s čím splést.
+    let webview: &tauri::Webview<tauri::Wry> = w.as_ref();
+    let _ = webview.set_focus();
+}
+
 /// Schová okno, pokud existuje.
 pub fn hide(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(LABEL) {

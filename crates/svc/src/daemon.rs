@@ -64,20 +64,35 @@ struct CleanupState {
 type FsIndexes =
     Arc<std::sync::Mutex<std::collections::HashMap<char, (Arc<fs_index::VolumeIndex>, Instant)>>>;
 
+type CleanupShared = Arc<std::sync::Mutex<CleanupState>>;
+
+/// Svazky, pro které zrovna běží obnova na pozadí.
+type Obnovovane = Arc<std::sync::Mutex<std::collections::HashSet<char>>>;
+
 /// Zajistí, že je index svazku v paměti, a vrátí ho.
 ///
 /// Pořadí je schválně tohle: co je v paměti → uložený index z disku →
 /// stavba z MFT. Uložený index se čte ve stovkách milisekund, stavba
 /// trvá sekundy (naměřeno 8,1 s pro systémový svazek). Právě tudy
-/// chodí hledání ve chvíli, kdy janitor index po nečinnosti uvolnil —
-/// dřív se v takové chvíli čekalo těch osm sekund s kurzorem v liště.
+/// chodí hledání ve chvíli, kdy janitor index po nečinnosti uvolnil.
+///
+/// Uložený index je ale STAV K OKAMŽIKU ULOŽENÍ. Kdyby se používal
+/// bez dalšího, hledání by po prvním uvolnění zamrzlo na tom, jak disk
+/// vypadal při startu služby, a nové soubory by nenašlo NIKDY — na
+/// stroji, který se nerestartuje, přibývá deset tisíc záznamů denně.
+/// Proto se starý snímek použije na okamžitou odpověď a zároveň si
+/// řekne o čerstvou stavbu na pozadí; do vteřin je index aktuální,
+/// aniž by na to kdokoli čekal.
 ///
 /// Zámek stavby slévá souběžné požadavky: UI se ptá na všechny svazky
-/// naráz a při psaní i několikrát za sebou.
+/// naráz a při psaní i několikrát za sebou. Ukládání na disk se dělá
+/// AŽ po jeho uvolnění — `sync_all` přes 116 MB drží stovky milisekund
+/// a po tu dobu by za zámkem stála všechna ostatní hledání.
 fn zajisti_index(
     fs_idx: &FsIndexes,
     stavba: &Arc<std::sync::Mutex<()>>,
     cleanup: &CleanupShared,
+    obnovovane: &Obnovovane,
     letter: char,
 ) -> Result<Arc<fs_index::VolumeIndex>, String> {
     if let Some(idx) = fs_idx
@@ -92,32 +107,35 @@ fn zajisti_index(
         return Ok(idx);
     }
 
-    let _drzim = stavba.lock().expect("fs build lock");
-    // Mezitím ho mohl postavit někdo jiný, kdo čekal na týž zámek.
-    if let Some(idx) = fs_idx
-        .lock()
-        .expect("fs index lock")
-        .get(&letter)
-        .map(|(idx, _)| Arc::clone(idx))
-    {
-        return Ok(idx);
-    }
-
     let t0 = Instant::now();
-    let (idx, odkud) = match fs_index::snapshot::nacti(letter) {
-        Some(idx) => (idx, "uložený"),
-        None => match fs_index::VolumeIndex::build(letter) {
-            Ok(idx) => {
-                // Uložit hned: příští uvolnění janitorem pak nestojí
-                // další stavbu z MFT.
-                if let Err(e) = fs_index::snapshot::uloz(&idx) {
-                    tracing::warn!(volume = %letter, error = %e, "index se nepodařilo uložit");
-                }
-                (idx, "z MFT")
+    let (idx, odkud, ulozit, zastaraly) = {
+        let _drzim = stavba.lock().expect("fs build lock");
+        // Mezitím ho mohl obstarat někdo jiný, kdo čekal na týž zámek.
+        if let Some(idx) = fs_idx
+            .lock()
+            .expect("fs index lock")
+            .get(&letter)
+            .map(|(idx, _)| Arc::clone(idx))
+        {
+            return Ok(idx);
+        }
+        match fs_index::snapshot::nacti(letter) {
+            Some((idx, ulozeno)) => {
+                let stari = (unix_now() as u64).saturating_sub(ulozeno);
+                (idx, "uložený", false, stari > fs_index::snapshot::CERSTVOST_S)
             }
-            Err(e) => return Err(format!("index svazku nejde postavit: {e}")),
-        },
+            None => {
+                // Nepoužitelný snímek nemá cenu držet — příště by se
+                // na něm ztratil čas znovu.
+                fs_index::snapshot::zahod(letter);
+                match fs_index::VolumeIndex::build(letter) {
+                    Ok(idx) => (idx, "z MFT", true, false),
+                    Err(e) => return Err(format!("index svazku nejde postavit: {e}")),
+                }
+            }
+        }
     };
+
     let entries = idx.len() as u64;
     let idx = Arc::new(idx);
     fs_idx
@@ -136,10 +154,82 @@ fn zajisti_index(
         ms = t0.elapsed().as_millis() as u64,
         "index připraven"
     );
+    if ulozit {
+        uloz_index(&idx, letter);
+    }
+    if zastaraly {
+        obnov_na_pozadi(fs_idx, stavba, cleanup, obnovovane, letter);
+    }
     Ok(idx)
 }
 
-type CleanupShared = Arc<std::sync::Mutex<CleanupState>>;
+/// Uloží index a případné selhání jen ohlásí — bez uloženého indexu
+/// aplikace funguje, jen pomaleji.
+fn uloz_index(idx: &fs_index::VolumeIndex, letter: char) {
+    let t0 = Instant::now();
+    match fs_index::snapshot::uloz(idx) {
+        Ok(p) => tracing::info!(
+            volume = %letter,
+            ms = t0.elapsed().as_millis() as u64,
+            bytes = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0),
+            "index uložen"
+        ),
+        Err(e) => tracing::warn!(volume = %letter, error = %e, "index se nepodařilo uložit"),
+    }
+}
+
+/// Postaví index svazku znovu z MFT, mimo cestu uživatelova dotazu.
+///
+/// Pro jeden svazek běží nejvýš jedna obnova; bez toho by ji objednalo
+/// každé hledání, dokud by ta první nedoběhla.
+fn obnov_na_pozadi(
+    fs_idx: &FsIndexes,
+    stavba: &Arc<std::sync::Mutex<()>>,
+    cleanup: &CleanupShared,
+    obnovovane: &Obnovovane,
+    letter: char,
+) {
+    {
+        let mut b = obnovovane.lock().expect("obnovovane lock");
+        if !b.insert(letter) {
+            return;
+        }
+    }
+    let fs_idx = Arc::clone(fs_idx);
+    let stavba = Arc::clone(stavba);
+    let cleanup = Arc::clone(cleanup);
+    let obnovovane = Arc::clone(obnovovane);
+    let _ = std::thread::Builder::new()
+        .name(format!("index-{letter}"))
+        .spawn(move || {
+            let _ = win_sys::threading::set_current_thread_below_normal();
+            let postaveny = {
+                let _drzim = stavba.lock().expect("fs build lock");
+                fs_index::VolumeIndex::build(letter)
+            };
+            match postaveny {
+                Ok(nova) => {
+                    let entries = nova.len() as u64;
+                    let nova = Arc::new(nova);
+                    fs_idx
+                        .lock()
+                        .expect("fs index lock")
+                        .insert(letter, (Arc::clone(&nova), Instant::now()));
+                    if let Ok(mut c) = cleanup.lock() {
+                        if let Some(e) = c.indexing.iter_mut().find(|e| e.0 == letter) {
+                            *e = (letter, entries, true, None);
+                        }
+                    }
+                    tracing::info!(volume = %letter, entries, "index obnoven na pozadí");
+                    uloz_index(&nova, letter);
+                }
+                Err(e) => {
+                    tracing::warn!(volume = %letter, error = %e, "obnova indexu selhala")
+                }
+            }
+            obnovovane.lock().expect("obnovovane lock").remove(&letter);
+        });
+}
 
 /// Spustí démona a blokuje, dokud `stop` nenastaví okolí (SCM handler
 /// nebo Ctrl+C). Vrací se až po korektním úklidu.
@@ -510,6 +600,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     // zámku by pár úhozů do klávesnice znamenalo několik souběžných
     // čtení celé $MFT.
     let fs_build_lock: Arc<std::sync::Mutex<()>> = Arc::new(std::sync::Mutex::new(()));
+    let fs_obnovovane: Obnovovane = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
 
     // Úklidová analýza (v4E): auto-indexace všech NTFS svazků na pozadí
     // + duplicity/0B/junk. Stav sdílený s IPC (progres do UI).
@@ -536,13 +627,17 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 // uklidněním systému. Hledání má fungovat od první
                 // vteřiny, ne až za půl minuty; čtení souboru je proti
                 // stavbě z MFT zlomek času.
-                let mut nactenych = 0;
+                // Po pádu uprostřed zápisu zůstávají rozpracované
+                // soubory a nikdo jiný je neuklidí.
+                fs_index::snapshot::uklid_rozpracovane();
+
+                let mut nactene: std::collections::HashSet<char> = std::collections::HashSet::new();
                 for &letter in &letters {
                     if stop.load(Ordering::SeqCst) {
                         return;
                     }
                     let t0 = Instant::now();
-                    let Some(idx) = fs_index::snapshot::nacti(letter) else {
+                    let Some((idx, _ulozeno)) = fs_index::snapshot::nacti(letter) else {
                         continue;
                     };
                     let entries = idx.len() as u64;
@@ -555,7 +650,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             *e = (letter, entries, true, None);
                         }
                     }
-                    nactenych += 1;
+                    nactene.insert(letter);
                     tracing::info!(
                         volume = %letter,
                         entries,
@@ -564,12 +659,16 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     );
                 }
 
-                // Uklidnit systém po startu má smysl jen tehdy, když je
-                // co ukazovat. Bez uloženého indexu by uživatel čekal
-                // na hledání o těch patnáct sekund déle úplně zbytečně.
-                if nactenych > 0 {
-                    wait_or_stop(&stop, Duration::from_secs(15));
-                }
+                // Odklad před čtením MFT všech svazků. Když je z čeho
+                // hledat, počká se, až se systém po startu usadí;
+                // když ne, čeká na index uživatel a protahovat mu to
+                // o půl minuty nemá důvod. Úplně bez odkladu to ale
+                // taky nejde — vlákno má sice nižší prioritu procesoru,
+                // ale ne I/O, takže by se pralo se startem Windows.
+                wait_or_stop(
+                    &stop,
+                    Duration::from_secs(if nactene.is_empty() { 3 } else { 15 }),
+                );
                 if stop.load(Ordering::SeqCst) {
                     return;
                 }
@@ -578,6 +677,16 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     if stop.load(Ordering::SeqCst) {
                         return;
                     }
+                    // Starou kopii pustit PŘED stavbou nové: jinak
+                    // by obě existovaly současně a u systémového svazku
+                    // je to čtvrt gigabajtu navíc (naměřeno ~227 MB na
+                    // kopii). Hledání, které mezitím přijde, si index
+                    // obstará samo.
+                    let stara = fs_indexes_auto
+                        .lock()
+                        .expect("fs index lock")
+                        .remove(&letter)
+                        .is_some();
                     let progress = Arc::clone(&cleanup);
                     match fs_index::VolumeIndex::build_with(letter, move |n| {
                         let mut c = progress.lock().expect("cleanup lock");
@@ -612,30 +721,33 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             // Uložit na disk: příští start i příští
                             // uvolnění janitorem pak nestojí novou
                             // stavbu z MFT.
-                            let t0 = Instant::now();
-                            match fs_index::snapshot::uloz(&idx) {
-                                Ok(p) => tracing::info!(
-                                    volume = %letter,
-                                    ms = t0.elapsed().as_millis() as u64,
-                                    bytes = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0),
-                                    "index uložen"
-                                ),
-                                Err(e) => tracing::warn!(
-                                    volume = %letter,
-                                    error = %e,
-                                    "index se nepodařilo uložit"
-                                ),
-                            }
+                            uloz_index(&idx, letter);
                             built.push(idx);
                         }
                         Err(e) => {
                             // Chybu si pamatujeme a řekneme ji v UI —
                             // „disk chybí" je horší než „nešel a proč".
-                            let mut c = cleanup.lock().expect("cleanup lock");
-                            if let Some(slot) = c.indexing.iter_mut().find(|s| s.0 == letter) {
-                                *slot = (letter, 0, true, Some(index_error_human(&e)));
+                            //
+                            // Ale JEN když opravdu není z čeho hledat.
+                            // Když se před chvílí načetl uložený index,
+                            // svazek prohledat jde; označit ho za vadný
+                            // by ho vyhodilo z nabídky až do restartu
+                            // služby, protože chybu odsud nikdo nemaže.
+                            if !stara {
+                                let mut c = cleanup.lock().expect("cleanup lock");
+                                if let Some(slot) = c.indexing.iter_mut().find(|s| s.0 == letter) {
+                                    *slot = (letter, 0, true, Some(index_error_human(&e)));
+                                }
+                            } else if let Some(idx) = fs_indexes_auto
+                                .lock()
+                                .expect("fs index lock")
+                                .get(&letter)
+                                .map(|(i, _)| Arc::clone(i))
+                            {
+                                // Index si mezitím obstaralo hledání —
+                                // ať se neztratí ze seznamu k analýze.
+                                built.push(idx);
                             }
-                            drop(c);
                             tracing::warn!(volume = %letter, error = %e, "auto-index selhal")
                         }
                     }
@@ -934,6 +1046,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         let rescan_flag = Arc::clone(&rescan);
         let fs_idx = Arc::clone(&fs_indexes);
         let fs_build = Arc::clone(&fs_build_lock);
+        let fs_obnov = Arc::clone(&fs_obnovovane);
         let cleanup_state = cleanup_ipc;
         let orch = Arc::clone(&orch);
         // Hardwarový přehled na 5 s (v9) — tepelná kaskáda jde přes WMI.
@@ -1322,7 +1435,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             // z MFT. UI si tím ohřívá index při otevření vyhledávání,
             // ať uživatel nečeká, až dopíše dotaz.
             Request::BuildFileIndex { letter } => {
-                match zajisti_index(&fs_idx, &fs_build, &cleanup_state, letter) {
+                match zajisti_index(&fs_idx, &fs_build, &cleanup_state, &fs_obnov, letter) {
                     Ok(idx) => Response::IndexInfo {
                         letter,
                         entries: idx.len() as u64,
@@ -1340,7 +1453,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 // vracela chyba, UI ji spolklo a hledání na tom svazku
                 // od té chvíle tvrdilo „nic se nenašlo" — napořád.
                 // Teď se index obstará na místě, přednostně z disku.
-                match zajisti_index(&fs_idx, &fs_build, &cleanup_state, letter) {
+                match zajisti_index(&fs_idx, &fs_build, &cleanup_state, &fs_obnov, letter) {
                     Ok(idx) => {
                         let hits = idx.search(&query, limit.min(300) as usize);
                         let rows = hits
@@ -1781,6 +1894,19 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         let app = key
                             .as_ref()
                             .and_then(|k| apps.iter().find(|a| &a.identity_key == k));
+                        // Vlastní služba: přepínač se nenabízí.
+                        // Validační vrstva by ho stejně odmítla
+                        // a nefunkční ovladač je horší než žádný.
+                        let vlastni = it.id.eq_ignore_ascii_case("service|syswatch");
+                        let je_system = system_reason.is_some();
+                        let duvod = system_reason.or_else(|| {
+                            vlastni.then(|| {
+                                "Tohle je sám Winsent. Jeho automatický start se odsud \
+                                 nepřepíná — bez něj by po restartu počítače přestal sbírat \
+                                 historii i incidenty."
+                                    .to_string()
+                            })
+                        });
                         core_types::proc::StartupRow {
                             id: it.id,
                             name: it.name,
@@ -1788,9 +1914,9 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             command: it.command,
                             enabled: it.enabled,
                             running: it.running,
-                            toggleable: it.source.toggleable() && system_reason.is_none(),
-                            system: system_reason.is_some(),
-                            system_reason,
+                            toggleable: it.source.toggleable() && !je_system && !vlastni,
+                            system: je_system,
+                            system_reason: duvod,
                             identity_key: key,
                             app_name: app.map(|a| a.display_name.clone()),
                             publisher: app.and_then(|a| a.publisher.clone()),

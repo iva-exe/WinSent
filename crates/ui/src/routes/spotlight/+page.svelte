@@ -16,6 +16,7 @@
 	let hledani = $state(null);
 
 	async function zavri() {
+		zrusHlidku();
 		try {
 			await invoke('hide_spotlight');
 		} catch {
@@ -54,6 +55,54 @@
 		posledniProbuzeni = ted;
 		hledani?.vycisti();
 		hledani?.zaostri();
+		overZaostreni();
+	}
+
+	/// Pojistka na to, že se opravdu dá psát.
+	///
+	/// Zaměřit vstup uvnitř stránky nestačí, když zaměření nemá celé
+	/// okno — psaní pak nikam nejde, přestože kurzor v poli bliká.
+	/// Přesně to se dělo při úplně prvním vyvolání lišty: webview se
+	/// teprve vytvářelo a zprávu o zaměření nemělo kdo převzít.
+	/// `document.hasFocus()` je na tuhle otázku přímá odpověď, takže se
+	/// nehádá — změří se to a případně se řekne hostiteli, ať zaostří
+	/// znovu.
+	///
+	/// Schválně se NEptáme, co je zaměřené UVNITŘ stránky. Když si
+	/// uživatel šipkami nebo myší vybere řádek výsledků, je to jeho
+	/// volba a přetáhnout mu zaměření zpátky do pole by bylo horší než
+	/// nedělat nic.
+	let hlidka = null;
+
+	function zrusHlidku() {
+		if (hlidka !== null) clearTimeout(hlidka);
+		hlidka = null;
+	}
+
+	/// Běží vždycky jen jedna hlídka. Ověřování se objednává ze dvou
+	/// míst (namontování a probuzení) a dva nezávislé řetězce by si
+	/// jen zdvojnásobily práci i zápisy do protokolu.
+	function overZaostreni() {
+		zrusHlidku();
+		let pokusu = 0;
+		const zkus = () => {
+			hlidka = null;
+			// Klávesy do stránky chodí — hotovo.
+			if (document.hasFocus()) return;
+			if (++pokusu > 3) {
+				invoke('spotlight_note', {
+					msg: 'lišta nedostala zaměření ani na třetí pokus'
+				}).catch(() => {});
+				return;
+			}
+			// Hostitel sám pozná, že okno mezitím zmizelo, a nic
+			// neudělá — Escape nebo kliknutí jinam tedy hlídku
+			// nepřebije.
+			invoke('focus_spotlight').catch(() => {});
+			hledani?.zaostri();
+			hlidka = setTimeout(zkus, 120);
+		};
+		hlidka = setTimeout(zkus, 60);
 	}
 
 	onMount(() => {
@@ -64,8 +113,13 @@
 		// reset dlouho tiše vypínala.
 		const un = listen('spotlight:route', probud).catch(() => () => {});
 		hledani?.zaostri();
+		// První vyvolání nemá co spustit `probud` — okno teprve vzniklo,
+		// takže žádná událost ani změna zaměření nepřijde. Ověření
+		// zaměření se proto pouští i odsud.
+		overZaostreni();
 		window.addEventListener('keydown', klavesa);
 		return () => {
+			zrusHlidku();
 			un.then((f) => f());
 			window.removeEventListener('focus', probud);
 			window.removeEventListener('keydown', klavesa);

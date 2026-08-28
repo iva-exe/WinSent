@@ -323,7 +323,7 @@
 										<ShieldCheck size={16} />
 									</span>
 								{:else}
-									<span class="locked" title="Systémová položka — jen k náhledu">
+									<span class="locked" title={i.system_reason ?? 'Systémová položka — jen k náhledu'}>
 										<TriangleAlert size={16} />
 									</span>
 								{/if}

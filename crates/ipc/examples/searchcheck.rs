@@ -85,12 +85,18 @@ fn main() {
             if !hotovo || chyba.is_some() {
                 continue;
             }
-            match fs_index::snapshot::velikost(*letter) {
-                Some(b) => {
-                    println!("  {letter}: uložený index {:.0} MB", b as f64 / 1e6);
+            match (
+                fs_index::snapshot::velikost(*letter),
+                fs_index::snapshot::stari_s(*letter),
+            ) {
+                (Some(b), Some(stari)) => {
+                    println!(
+                        "  {letter}: uložený index {:.0} MB, starý {stari} s",
+                        b as f64 / 1e6
+                    );
                     ulozenych += 1;
                 }
-                None => println!("  {letter}: uložený index zatím není"),
+                _ => println!("  {letter}: uložený index zatím není"),
             }
         }
         println!("  adresář: {}", dir.display());

@@ -40,11 +40,32 @@ use crate::{Node, VolumeIndex};
 /// „WSIDX" + verze formátu. Změna formátu = změna magie; starý soubor
 /// se pak neuzná a svazek se postaví znovu, což je přesně to, co má
 /// nekompatibilní změna udělat.
-const MAGIE: &[u8; 8] = b"WSIDX\x00\x00\x01";
-const VERZE: u32 = 1;
-const HLAVICKA: usize = 40;
+const MAGIE: &[u8; 8] = b"WSIDX\x00\x00\x02";
+const VERZE: u32 = 2;
+/// magie(8) verze(4) písmeno(4) kořen(8) počet(8) délka_arény(8) uloženo(8)
+const HLAVICKA: usize = 48;
 const ZAZNAM: usize = 32;
 const SOUCET: usize = 8;
+
+/// Nejvyšší velikost souboru, kterou jsme ochotni vůbec přečíst.
+///
+/// Adresář je zapisovatelný i pro běžného uživatele, takže velikost
+/// souboru je nedůvěryhodný údaj — a přitom z něj plyne, kolik se
+/// alokuje. Bez stropu stačí podstrčit dvougigabajtový soubor a služba
+/// se pokusí sáhnout po několika gigabajtech; selhání alokace v Rustu
+/// není chyba k odchycení, ale ABORT procesu (profil release má
+/// panic = "abort"). Naměřeno: 512 MB vstupu → 1,4 GB v tabulce.
+/// Systémový svazek s 1,85 milionu záznamů má 116 MB, takže 320 MB je
+/// s velkou rezervou a zároveň řádově pod tím, čím by šlo ublížit.
+const STROP_SOUBORU: u64 = 320 * 1024 * 1024;
+
+/// Jak starý smí být uložený index, aby se z něj dalo rovnou žít.
+///
+/// Starší se pořád použije — je to nejrychlejší způsob, jak uživateli
+/// hned odpovědět —, ale volající si k tomu má objednat čerstvou
+/// stavbu na pozadí. Bez toho by hledání zamrzlo na stavu disku
+/// k poslednímu uložení a nové soubory by nikdy nenašlo.
+pub const CERSTVOST_S: u64 = 60;
 
 /// Kam se ukládají indexy svazků.
 ///
@@ -64,6 +85,15 @@ pub fn soubor(letter: char) -> Option<PathBuf> {
         return None;
     }
     Some(adresar()?.join(format!("{}.idx", letter.to_ascii_uppercase())))
+}
+
+/// Sekundy od epochy. Razítko v hlavičce, ne čas souboru: kopírování
+/// nebo obnova ze zálohy by čas souboru změnily, obsah ne.
+fn ted_s() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn fnv(data: &[u8], mut h: u64) -> u64 {
@@ -99,6 +129,7 @@ pub fn zapis(idx: &VolumeIndex, w: &mut impl Write) -> std::io::Result<()> {
     poslat(w, &idx.root.to_le_bytes(), &mut h)?;
     poslat(w, &(idx.nodes.len() as u64).to_le_bytes(), &mut h)?;
     poslat(w, &(arena_len as u64).to_le_bytes(), &mut h)?;
+    poslat(w, &ted_s().to_le_bytes(), &mut h)?;
 
     let mut off: u32 = 0;
     for (file_ref, n) in &idx.nodes {
@@ -133,29 +164,66 @@ pub fn uloz(idx: &VolumeIndex) -> std::io::Result<PathBuf> {
     // Píše se vedle a přejmenovává až hotové. Kdyby služba spadla
     // uprostřed zápisu, zůstal by jinak useknutý soubor, který by se
     // příště sice zahodil, ale mezitím by vypadal jako platný.
-    let docasny = cil.with_extension("idx.tmp");
+    // Pevné jméno by šlo obsadit: adresář je zapisovatelný pro
+    // běžného uživatele, takže by si tam mohl předem založit soubor
+    // (nebo adresář) toho jména a ukládání by od té chvíle mlčky
+    // selhávalo napořád. Náhodná přípona a `create_new` to vylučují —
+    // a zároveň se tím nesrazí dva souběžné zápisy.
+    let docasny = cil.with_extension(format!("idx.{}.tmp", ted_s() ^ (idx.nodes.len() as u64)));
     {
-        let mut w = BufWriter::with_capacity(1 << 20, std::fs::File::create(&docasny)?);
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&docasny)?;
+        let mut w = BufWriter::with_capacity(1 << 20, f);
         zapis(idx, &mut w)?;
         let f = w.into_inner().map_err(|e| e.into_error())?;
         f.sync_all()?;
     }
-    std::fs::rename(&docasny, &cil)?;
+    if let Err(e) = std::fs::rename(&docasny, &cil) {
+        let _ = std::fs::remove_file(&docasny);
+        return Err(e);
+    }
     Ok(cil)
 }
 
 /// Načte uložený index svazku. `None` = není, nesedí, nebo je vadný;
 /// v každém z těch případů je odpověď stejná — postavit ho znovu.
-pub fn nacti(letter: char) -> Option<VolumeIndex> {
+pub fn nacti(letter: char) -> Option<(VolumeIndex, u64)> {
     let cil = soubor(letter)?;
+    let f = std::fs::File::open(&cil).ok()?;
+    // Strop se dává na ČTENÍ, ne až na velikost z metadat: soubor může
+    // mezi zjištěním velikosti a čtením vyrůst a řídkému souboru
+    // metadata stejně nic neřeknou.
     let mut data = Vec::new();
-    std::fs::File::open(&cil).ok()?.read_to_end(&mut data).ok()?;
+    std::io::Read::take(f, STROP_SOUBORU + 1)
+        .read_to_end(&mut data)
+        .ok()?;
+    if data.len() as u64 > STROP_SOUBORU {
+        return None;
+    }
     rozbal(letter, &data)
+}
+
+/// Jak dlouho už uložený index leží — v sekundách. `None` = není.
+pub fn stari_s(letter: char) -> Option<u64> {
+    let data = precti_hlavicku(letter)?;
+    let uloz_v = u64::from_le_bytes(data.get(40..48)?.try_into().ok()?);
+    Some(ted_s().saturating_sub(uloz_v))
+}
+
+fn precti_hlavicku(letter: char) -> Option<Vec<u8>> {
+    let f = std::fs::File::open(soubor(letter)?).ok()?;
+    let mut hlava = Vec::new();
+    std::io::Read::take(f, HLAVICKA as u64)
+        .read_to_end(&mut hlava)
+        .ok()?;
+    (hlava.len() == HLAVICKA && &hlava[..8] == MAGIE).then_some(hlava)
 }
 
 /// Rozbalí obsah souboru na index. Oddělené od čtení kvůli testům —
 /// a proto, že tohle je jediné místo, které sahá na cizí data.
-fn rozbal(letter: char, data: &[u8]) -> Option<VolumeIndex> {
+fn rozbal(letter: char, data: &[u8]) -> Option<(VolumeIndex, u64)> {
     if data.len() < HLAVICKA + SOUCET || &data[..8] != MAGIE {
         return None;
     }
@@ -177,6 +245,13 @@ fn rozbal(letter: char, data: &[u8]) -> Option<VolumeIndex> {
     let root = u64_na(16)?;
     let pocet = u64_na(24)? as usize;
     let arena_len = u64_na(32)? as usize;
+    let ulozeno = u64_na(40)?;
+    // Prázdný index je platný soubor, ale k ničemu: svazek by se pak
+    // tvářil jako připravený a hledání na něm by vždycky vracelo nic.
+    // Lepší je postavit ho znovu.
+    if pocet == 0 {
+        return None;
+    }
 
     // Délka musí sedět na bajt. Tahle jediná kontrola zaručuje, že
     // všechna krájení níž jsou v mezích.
@@ -220,11 +295,30 @@ fn rozbal(letter: char, data: &[u8]) -> Option<VolumeIndex> {
             },
         );
     }
-    Some(VolumeIndex {
-        letter,
-        nodes,
-        root,
-    })
+    Some((
+        VolumeIndex {
+            letter,
+            nodes,
+            root,
+        },
+        ulozeno,
+    ))
+}
+
+/// Smaže po sobě zapomenuté rozpracované soubory.
+///
+/// Zůstávají po pádu uprostřed zápisu. Samy o sobě nevadí, ale nikdo
+/// jiný je neuklidí — `zahod` sahá jen na hotový index.
+pub fn uklid_rozpracovane() {
+    let Some(dir) = adresar() else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        if e.file_name().to_string_lossy().ends_with(".tmp") {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// Smaže uložený index svazku (po nepovedeném načtení nemá co dělat).
@@ -283,7 +377,7 @@ mod tests {
         let idx = vzorek();
         let mut buf = Vec::new();
         zapis(&idx, &mut buf).expect("zápis do paměti nemůže selhat");
-        let zpet = rozbal('C', &buf).expect("platný soubor se musí načíst");
+        let (zpet, _kdy) = rozbal('C', &buf).expect("platný soubor se musí načíst");
         assert_eq!(zpet.len(), idx.len());
         assert_eq!(zpet.root, idx.root);
         let hits = zpet.search("účtenka", 10);
@@ -317,6 +411,32 @@ mod tests {
 
     /// Nesmysly v hlavičce nesmí vést k sáhnutí mimo data. Kontrola
     /// délky je jediná pojistka, na které to celé stojí.
+    /// Prázdný index je platný soubor, ale znamenal by svazek, který
+    /// se tváří připravený a nikdy nic nenajde.
+    #[test]
+    fn prazdny_index_se_neuzna() {
+        let idx = VolumeIndex {
+            letter: 'C',
+            nodes: HashMap::new(),
+            root: 5,
+        };
+        let mut buf = Vec::new();
+        zapis(&idx, &mut buf).expect("zápis do paměti nemůže selhat");
+        assert!(rozbal('C', &buf).is_none());
+    }
+
+    /// Razítko v hlavičce je to, podle čeho se pozná zastaralý index.
+    /// Bez něj by hledání zamrzlo na stavu disku k poslednímu uložení.
+    #[test]
+    fn hlavicka_nese_cas_ulozeni() {
+        let idx = vzorek();
+        let mut buf = Vec::new();
+        zapis(&idx, &mut buf).expect("zápis do paměti nemůže selhat");
+        let (_, kdy) = rozbal('C', &buf).expect("platný soubor");
+        let ted = ted_s();
+        assert!(kdy <= ted && ted - kdy < 5, "kdy={kdy} ted={ted}");
+    }
+
     #[test]
     fn vymysleny_pocet_zaznamu_neprojde() {
         let idx = vzorek();

@@ -879,6 +879,28 @@ fn set_spotlight_hotkey(accel: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Lišta hlásí, že je vykreslená a chce zaostřit.
+///
+/// Volá se při každém vyvolání, ale záleží na tom hlavně při prvním:
+/// tehdy okno teprve vzniká a zaměření se ztratí dřív, než ho má kdo
+/// převzít. Okna se smějí obsluhovat jen z hlavního vlákna.
+#[tauri::command(async)]
+fn focus_spotlight(app: tauri::AppHandle) {
+    let h = app.clone();
+    let _ = app.run_on_main_thread(move || spotlight::zaostri(&h));
+}
+
+/// Poznámka od lišty do jejího protokolu.
+///
+/// UI je windows_subsystem "windows" a nemá konzoli, takže když se
+/// něco pokazí ve stránce, není to kde vidět. Tohle je jediná cesta,
+/// jak takový problém vyšetřit u uživatele — píše se jen na
+/// nestandardní cestě, ne při běžném běhu.
+#[tauri::command(async)]
+fn spotlight_note(msg: String) {
+    spotlight::log(&msg);
+}
+
 /// Schová vyhledávací lištu. Volá ji samotná lišta při Escape —
 /// okno nemá křížek, takže tohle je jediná cesta ven zevnitř.
 #[tauri::command]
@@ -1208,7 +1230,15 @@ fn main() {
         // nasčítaly se ikony jedna za druhou. Teď druhá instance jen
         // ukáže okno té běžící a sama hned skončí: první spuštění
         // rozjede aplikaci, každé další je „otevři okno".
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // Druhé spuštění s --tray okno NEVYTAHUJE. Stane se to,
+            // když Windows po přihlášení obnoví aplikaci z minulé
+            // relace a hned nato ji pustí i položka po spuštění —
+            // uživatel by dostal okno přes celou plochu, přestože si
+            // vybral tichý start.
+            if argv.iter().any(|a| a == autostart::PREPINAC_TRAY) {
+                return;
+            }
             show_main_window(app);
         }))
         .invoke_handler(tauri::generate_handler![
@@ -1227,6 +1257,8 @@ fn main() {
             get_spotlight_hotkey,
             set_spotlight_hotkey,
             hide_spotlight,
+            focus_spotlight,
+            spotlight_note,
             show_spotlight,
             set_db_dir,
             pick_folder,

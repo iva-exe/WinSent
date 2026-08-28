@@ -97,7 +97,7 @@ pub fn validate(action: &Action, ctx: &mut LiveContext) -> Verdict {
             // v Nastavení, kde je u toho napsáno, o co uživatel přijde.
             if source == "service" && name.eq_ignore_ascii_case(SELF_SERVICE) {
                 return Verdict::deny(
-                    "tohle je sám Winsent — bez automatického startu by po restartu počítače přestal sbírat historii i incidenty. Vypnout to jde v Nastavení, kde je vysvětleno, o co přijdeš.",
+                    "tohle je sám Winsent — bez automatického startu by po restartu počítače přestal sbírat historii i incidenty. Přestat měřit se dá odinstalací; přepínač v Nastavení řídí jen okno aplikace, ne službu.",
                 );
             }
             // Co patří Windows, se nepřepíná. NIKDY. Klasifikace běží

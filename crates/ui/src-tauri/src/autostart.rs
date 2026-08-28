@@ -103,11 +103,16 @@ pub fn nastav(zapnout: bool) -> Result<(), String> {
 pub fn zajisti_vychozi() {
     let p = priznak();
     if !p.exists() {
-        let _ = nastav(true);
-        if let Some(d) = p.parent() {
-            let _ = std::fs::create_dir_all(d);
+        // Značka se zapisuje AŽ po povedeném zápisu do registru.
+        // Kdyby vznikla i po neúspěchu, výchozí zapnutí by se už nikdy
+        // nezkusilo a Nastavení by hlásilo „vypnuto" nad volbou, kterou
+        // uživatel nikdy neudělal.
+        if nastav(true).is_ok() {
+            if let Some(d) = p.parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            let _ = std::fs::write(&p, b"1");
         }
-        let _ = std::fs::write(&p, b"1");
         return;
     }
     // Aplikace se mezitím mohla přeinstalovat jinam. Když je spouštění
