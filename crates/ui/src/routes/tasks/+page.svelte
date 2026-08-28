@@ -490,7 +490,23 @@
 		resort();
 	}
 
-	const push = (arr, v) => [...arr.slice(-(CAP - 1)), v];
+	/// Přidá vzorek do řady a ořízne ji na strop.
+	///
+	/// Zapisuje se NA MÍSTĚ. Dřív to bylo `[...arr.slice(-(CAP-1)), v]`,
+	/// tedy dvě celé kopie pole na každou ze sedmi řad každou sekundu —
+	/// a protože pole roste ke stropu 90 000, cena rostla s dobou, co
+	/// aplikace běží. Po pár hodinách to samo dělalo procenta systému
+	/// a vypadalo to, že Winsent žere v klidu. Svelte 5 na změnu uvnitř
+	/// pole reaguje, takže nová kopie kvůli překreslení potřeba není.
+	///
+	/// Ořezává se po dávkách, ne po jednom: `splice` z čela je taky
+	/// průchod celým polem, a při stropu by běžel každou sekundu.
+	const ODREZ_PO = 512;
+	function push(arr, v) {
+		arr.push(v);
+		if (arr.length > CAP + ODREZ_PO) arr.splice(0, arr.length - CAP);
+		return arr;
+	}
 
 	async function pollSystem() {
 		try {

@@ -17,6 +17,7 @@
 	import { goto } from '$app/navigation';
 	import { SEKCE } from '$lib/sections.js';
 	import { prefs, prvniViditelnaSekce } from '$lib/prefs.svelte.js';
+	import { jeSkryty, klicIncidentu } from '$lib/hidden.svelte.js';
 	import { Settings, Download, Minus, Square, X } from 'lucide-svelte';
 
 	let { children } = $props();
@@ -75,21 +76,33 @@
 
 	// Badge zdraví na navigaci (SPEC 9.2): incidenty za 24 h → Incidents,
 	// plný disk / opotřebený SSD → Files. Jen upozornění, ne poplach.
-	let badges = $state({});
-	async function pollBadges() {
+	// Surová data zvlášť od odznaku: co uživatel skryje, má zhasnout
+	// OKAMŽITĚ, ne až s příštím dotazem po minutě. Proto se odznak
+	// odvozuje a skryté se odečítají až tady.
+	let incRaw = $state([]);
+	let volBadge = $state(null);
+
+	let badges = $derived.by(() => {
 		const b = {};
+		const day = Date.now() / 1000 - 86400;
+		const recent = incRaw.filter((i) => i.ts > day && !jeSkryty(klicIncidentu(i.id)));
+		if (recent.length) {
+			b['/incidents'] = {
+				count: recent.length,
+				color: recent.some((i) => i.kind === 'bsod') ? 'var(--danger)' : 'var(--warn)'
+			};
+		}
+		if (volBadge) b['/files'] = volBadge;
+		return b;
+	});
+
+	async function pollBadges() {
 		try {
-			const inc = await invoke('query_incidents', { limit: 50 });
-			const day = Date.now() / 1000 - 86400;
-			const recent = inc.filter((i) => i.ts > day);
-			if (recent.length) {
-				b['/incidents'] = {
-					count: recent.length,
-					color: recent.some((i) => i.kind === 'bsod') ? 'var(--danger)' : 'var(--warn)'
-				};
-			}
+			incRaw = await invoke('query_incidents', { limit: 50 });
 		} catch {
-			/* služba mimo */
+			// Když je služba mimo, odznak zhasne — svítit nad daty,
+			// o kterých nevíme, jestli ještě platí, by bylo horší.
+			incRaw = [];
 		}
 		try {
 			const v = await invoke('query_volumes');
@@ -97,13 +110,11 @@
 				(x) => x.total_bytes && (x.total_bytes - x.free_bytes) / x.total_bytes >= 0.9
 			);
 			const worn = v.health.some((h) => (h.used_pct ?? 0) >= 80 || h.critical);
-			if (full || worn) {
-				b['/files'] = { count: null, color: worn ? 'var(--danger)' : 'var(--warn)' };
-			}
+			volBadge =
+				full || worn ? { count: null, color: worn ? 'var(--danger)' : 'var(--warn)' } : null;
 		} catch {
-			/* služba mimo */
+			volBadge = null;
 		}
-		badges = b;
 	}
 
 

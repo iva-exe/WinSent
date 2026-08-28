@@ -163,6 +163,26 @@ fn zajisti_index(
     Ok(idx)
 }
 
+/// Uloží index, ale jen když se od toho uloženého liší.
+///
+/// Přestavba na pozadí často skončí prakticky stejným souborem —
+/// naměřeno, že datový svazek dal pětkrát po sobě bajtově identických
+/// 25 MB a systémový se mezi dvěma stavbami změnil o dvě setiny
+/// procenta záznamů. Zapisovat to pokaždé znamená stovky megabajtů
+/// denně za nic; rozpočet nástroje je přitom 250 MB/den na všechno.
+///
+/// Jednou za hodinu se uloží i beze změny, ať razítko čerstvosti
+/// nezůstane viset a nespouští přestavbu při každém otevření lišty.
+fn uloz_pokud_se_zmenil(idx: &fs_index::VolumeIndex, letter: char) {
+    let stejny = fs_index::snapshot::pocet_v_souboru(letter) == Some(idx.len() as u64);
+    let cerstvy = fs_index::snapshot::stari_s(letter).is_some_and(|s| s < 3600);
+    if stejny && cerstvy {
+        tracing::debug!(volume = %letter, "index beze změny, neukládá se");
+        return;
+    }
+    uloz_index(idx, letter);
+}
+
 /// Uloží index a případné selhání jen ohlásí — bez uloženého indexu
 /// aplikace funguje, jen pomaleji.
 fn uloz_index(idx: &fs_index::VolumeIndex, letter: char) {
@@ -221,7 +241,7 @@ fn obnov_na_pozadi(
                         }
                     }
                     tracing::info!(volume = %letter, entries, "index obnoven na pozadí");
-                    uloz_index(&nova, letter);
+                    uloz_pokud_se_zmenil(&nova, letter);
                 }
                 Err(e) => {
                     tracing::warn!(volume = %letter, error = %e, "obnova indexu selhala")
@@ -721,7 +741,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             // Uložit na disk: příští start i příští
                             // uvolnění janitorem pak nestojí novou
                             // stavbu z MFT.
-                            uloz_index(&idx, letter);
+                            uloz_pokud_se_zmenil(&idx, letter);
                             built.push(idx);
                         }
                         Err(e) => {

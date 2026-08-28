@@ -14,11 +14,32 @@
 	let autostart = $state(false);
 	let autostartChyba = $state('');
 
+	// Vyhledávací lišta jako celek. Stav drží hostitel v ui.json, protože
+	// s ním souvisí i registrace klávesové zkratky — dvě pravdy na dvou
+	// místech by se rozešly.
+	let spotlight = $state(true);
+	let spotlightChyba = $state('');
+
+	async function prepniSpotlight() {
+		try {
+			await invoke('set_spotlight_enabled', { enabled: !spotlight });
+			spotlight = !spotlight;
+			spotlightChyba = '';
+		} catch (e) {
+			spotlightChyba = String(e);
+		}
+	}
+
 	onMount(async () => {
 		try {
 			autostart = await invoke('query_autostart');
 		} catch (e) {
 			autostartChyba = String(e);
+		}
+		try {
+			spotlight = await invoke('get_spotlight_enabled');
+		} catch {
+			/* starší hostitel to neumí — bere se jako zapnutá */
 		}
 	});
 
@@ -346,7 +367,21 @@
 	<section class="card">
 		<header class="card-head"><span class="label-tech">// vyhledávací lišta</span></header>
 
-		<div class="row">
+		<button class="row opt" role="switch" aria-checked={spotlight} onclick={prepniSpotlight}>
+			<span class="row-main">
+				<span class="row-name">Vyhledávací lišta</span>
+				<span class="row-why">
+					Okno na klávesovou zkratku kdekoli ve Windows. Vypnutá lišta uvolní i tu zkratku —
+					sekce Vyhledávání v aplikaci funguje dál.
+				</span>
+				{#if spotlightChyba}
+					<span class="row-err">{spotlightChyba}</span>
+				{/if}
+			</span>
+			<span class="sw" class:on={spotlight}><span class="knob"></span></span>
+		</button>
+
+		<div class="row" class:vypnuto={!spotlight}>
 			<span class="row-main">
 				<span class="row-name">Klávesová zkratka</span>
 				<span class="row-why">
@@ -654,6 +689,11 @@
 	.opt {
 		cursor: pointer;
 	}
+	/* Zkratka se dá pořád nastavit, ale když je lišta vypnutá, nemá co
+	   dělat — ztlumí se, aby bylo vidět, že na ní teď nezáleží. */
+	.row.vypnuto {
+		opacity: 0.45;
+	}
 
 	/* ── Sekce aplikace ──────────────────────────────────────────
 	   Mřížka, ne sloupec: čtrnáct řádků pod sebou by z karty udělalo
@@ -689,10 +729,11 @@
 		color: var(--text-dim);
 		line-height: 1.4;
 	}
+	/* Jeden sloupec, ne mřížka. Vedle sebe se sekce hůř čtou: oko musí
+	   skákat mezi sloupci a přepínače nejsou v jedné ose. */
 	.sek-mriz {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(214px, 1fr));
-		gap: 2px 1.1rem;
+		display: flex;
+		flex-direction: column;
 	}
 	.sek {
 		display: flex;
@@ -708,6 +749,9 @@
 		text-align: left;
 		cursor: pointer;
 		border-radius: var(--radius-sm);
+	}
+	.sek + .sek {
+		border-top: 1px solid var(--border);
 	}
 	.sek:hover {
 		background: var(--surface-hover);

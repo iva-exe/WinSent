@@ -253,17 +253,21 @@
 				: '';
 			// Složky napřed, pak podle délky cesty: co je blíž kořeni,
 			// bývá to hledané. Uvnitř abecedně, ať pořadí neposkakuje.
+			// Bez seskupování: složky a soubory jdou v jedné řadě.
+			// Rozhoduje, jak blízko je nález hledanému, ne co to je za
+			// typ — složka „Zálohy" nemá být nad souborem „Zaloha.txt"
+			// jen proto, že je to složka.
+			const qn = bezDiakritiky(q);
 			hits = davky
 				.flatMap((d) => d.r)
+				.map((h) => ({ h, k: poradiSouboru(h, qn) }))
 				.sort((a, b) => {
-					const da = (a.attrs & ATTR_DIR) !== 0;
-					const db = (b.attrs & ATTR_DIR) !== 0;
-					if (da !== db) return da ? -1 : 1;
-					const la = a.path.split(/[\\/]/).length;
-					const lb = b.path.split(/[\\/]/).length;
-					if (la !== lb) return la - lb;
-					return a.name.localeCompare(b.name, 'cs');
+					for (let i = 0; i < a.k.length; i++) {
+						if (a.k[i] !== b.k[i]) return a.k[i] - b.k[i];
+					}
+					return a.h.name.localeCompare(b.h.name, 'cs');
 				})
+				.map((x) => x.h)
 				.slice(0, LIMIT);
 		} catch (e) {
 			if (muj !== beh) return;
@@ -325,6 +329,28 @@
 		if (v >= 0) return v + 3;
 		const k = skore(bezDiakritiky(it.identity_key), q);
 		return k >= 0 ? k + 3 : -1;
+	}
+
+	/// Klíč řazení nálezu v souborech.
+	///
+	/// Nejdřív úplná shoda jména, pak POLOHA hledaného v názvu: co jím
+	/// začíná, patří výš. Na dotaz „al" tak vyjde „Aluminium" nad
+	/// „Zákal". Při stejné poloze vyhrává kratší jméno (míň přílepků
+	/// kolem hledaného) a nakonec cesta blíž ke kořeni.
+	///
+	/// Služba už výsledky takhle seřadila, ale každý svazek odpovídá
+	/// zvlášť — tohle je slévá do jednoho pořadí.
+	function poradiSouboru(h, qn) {
+		const jmeno = bezDiakritiky(h.name);
+		const kde = jmeno.indexOf(qn);
+		return [
+			jmeno === qn ? 0 : 1,
+			// Index svazku porovnává diakritiku jinak než my, takže se
+			// shoda nemusí najít; takový nález patří dozadu, ne pryč.
+			kde < 0 ? 9999 : kde,
+			h.name.length,
+			h.path.split(/[\\/]/).length
+		];
 	}
 
 	/// Jméno jako klíč pro párování dvou zdrojů: malá písmena, slova
@@ -744,6 +770,23 @@
 				...akceHistorie(it)
 			]
 		});
+	}
+
+	/// Obnoví kurzor ve vstupu, aniž by cokoli přepsal.
+	///
+	/// Vypadá to zbytečně vedle `zaostri()`, ale řeší úplně jinou věc.
+	/// Když se okno lišty teprve staví, dorazí do něj zaměření dřív, než
+	/// v něm existuje načtený dokument. Výsledek je zákeřný: vstup JE
+	/// `document.activeElement`, `document.hasFocus()` vrací true — a
+	/// přesto se do pole nedá psát, protože rámec nemá VÝBĚR (naměřeno
+	/// `getSelection().rangeCount === 0`). Blink pak nemá kam vkládat:
+	/// `keydown` dorazí, `beforeinput` a `input` už ne.
+	///
+	/// Opakované `focus()` je proti tomu k ničemu — prvek už zaměřený
+	/// je. Zabere jedině nastavení výběru.
+	export function obnovKurzor() {
+		if (!vstup) return;
+		vstup.setSelectionRange(vstup.selectionStart ?? 0, vstup.selectionEnd ?? 0);
 	}
 
 	export function zaostri() {

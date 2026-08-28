@@ -65,7 +65,7 @@ const STROP_SOUBORU: u64 = 320 * 1024 * 1024;
 /// hned odpovědět —, ale volající si k tomu má objednat čerstvou
 /// stavbu na pozadí. Bez toho by hledání zamrzlo na stavu disku
 /// k poslednímu uložení a nové soubory by nikdy nenašlo.
-pub const CERSTVOST_S: u64 = 60;
+pub const CERSTVOST_S: u64 = 900;
 
 /// Kam se ukládají indexy svazků.
 ///
@@ -203,6 +203,12 @@ pub fn nacti(letter: char) -> Option<(VolumeIndex, u64)> {
         return None;
     }
     rozbal(letter, &data)
+}
+
+/// Kolik záznamů má uložený index. Levné — čte se jen hlavička.
+pub fn pocet_v_souboru(letter: char) -> Option<u64> {
+    let data = precti_hlavicku(letter)?;
+    u64::from_le_bytes(data.get(24..32)?.try_into().ok()?).into()
 }
 
 /// Jak dlouho už uložený index leží — v sekundách. `None` = není.

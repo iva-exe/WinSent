@@ -108,6 +108,11 @@ pub fn set(accel: &str) {
 
 /// Zaregistruje zkratku. Vrací, jestli se to povedlo.
 fn register(accel: &str) -> bool {
+    // Prázdný zápis znamená „nemá se registrovat" — tak se lišta vypíná
+    // v Nastavení. Není to chyba a nemá se to hlásit jako chyba.
+    if accel.trim().is_empty() {
+        return false;
+    }
     let Some((m, vk)) = parse(accel) else {
         tracing_warn(&format!("zkratku {accel:?} neumím přečíst"));
         return false;
@@ -202,6 +207,37 @@ pub fn prefs_path() -> std::path::PathBuf {
     std::path::PathBuf::from(base).join("Winsent").join("ui.json")
 }
 
+/// Je vyhledávací lišta vůbec zapnutá?
+///
+/// Výchozí je ano. Kdo ji nechce, vypne si ji v Nastavení a zkratka se
+/// odregistruje — Alt+mezerník pak zase patří systému.
+pub fn zapnuta() -> bool {
+    let Ok(text) = std::fs::read_to_string(prefs_path()) else {
+        return true;
+    };
+    !text.contains("\"spotlight_enabled\": false")
+}
+
+/// Uloží, jestli je lišta zapnutá. Zkratka se zachová.
+pub fn save_zapnuta(zapnuta: bool) -> Result<(), String> {
+    zapis(&load(), zapnuta)
+}
+
+/// Zapíše celý soubor. Obě hodnoty vždycky pohromadě — kdyby se psaly
+/// zvlášť, druhý zápis by ten první přemazal.
+fn zapis(accel: &str, zapnuta: bool) -> Result<(), String> {
+    let p = prefs_path();
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d).map_err(|e| format!("nelze vytvořit {}: {e}", d.display()))?;
+    }
+    let text = format!(
+        "{{\n  \"spotlight_hotkey\": \"{}\",\n  \"spotlight_enabled\": {}\n}}\n",
+        accel.replace('"', ""),
+        zapnuta
+    );
+    std::fs::write(&p, text).map_err(|e| format!("nelze zapsat {}: {e}", p.display()))
+}
+
 /// Přečte uloženou zkratku; když soubor není nebo je vadný, výchozí.
 pub fn load() -> String {
     let Ok(text) = std::fs::read_to_string(prefs_path()) else {
@@ -233,10 +269,5 @@ pub fn save(accel: &str) -> Result<(), String> {
             "zkratce {accel:?} nerozumím — potřebuje modifikátor (Alt, Ctrl, Shift, Win) a klávesu"
         ));
     }
-    let p = prefs_path();
-    if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d).map_err(|e| format!("nelze vytvořit {}: {e}", d.display()))?;
-    }
-    let text = format!("{{\n  \"spotlight_hotkey\": \"{}\"\n}}\n", accel.replace('"', ""));
-    std::fs::write(&p, text).map_err(|e| format!("nelze zapsat {}: {e}", p.display()))
+    zapis(accel, zapnuta())
 }

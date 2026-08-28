@@ -879,6 +879,29 @@ fn set_spotlight_hotkey(accel: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Je vyhledávací lišta zapnutá?
+#[tauri::command(async)]
+fn get_spotlight_enabled() -> bool {
+    hotkey::zapnuta()
+}
+
+/// Zapne nebo vypne vyhledávací lištu.
+///
+/// Vypnutá znamená, že se odregistruje i klávesová zkratka — jinak by
+/// Winsent dál držel Alt+mezerník, který by pak nefungoval ani jemu,
+/// ani nikomu jinému.
+#[tauri::command(async)]
+fn set_spotlight_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    hotkey::save_zapnuta(enabled)?;
+    let zapis = if enabled { hotkey::load() } else { String::new() };
+    hotkey::set(&zapis);
+    if !enabled {
+        let h = app.clone();
+        let _ = app.run_on_main_thread(move || spotlight::hide(&h));
+    }
+    Ok(())
+}
+
 /// Lišta hlásí, že je vykreslená a chce zaostřit.
 ///
 /// Volá se při každém vyvolání, ale záleží na tom hlavně při prvním:
@@ -911,6 +934,9 @@ fn hide_spotlight(app: tauri::AppHandle) {
 /// Otevře lištu i bez zkratky (z hlavního okna).
 #[tauri::command]
 fn show_spotlight(app: tauri::AppHandle) -> Result<(), String> {
+    if !hotkey::zapnuta() {
+        return Err("vyhledávací lišta je v Nastavení vypnutá".into());
+    }
     spotlight::toggle(&app, SPOTLIGHT_ROUTE)
 }
 
@@ -1178,10 +1204,33 @@ fn launch_elevated(exe: &std::path::Path, args: &str) -> Result<(), String> {
 /// Ukáže a vyzdvihne hlavní okno.
 fn show_main_window(app: &tauri::AppHandle) {
     use tauri::Manager;
+    // Nejdřív probrat webview, teprve pak ukázat okno — jinak by se
+    // první snímek kreslil do něčeho, co má vypnutou kompozici.
+    uspi_webview(app, "main", false);
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
+    }
+}
+
+/// Uspí nebo probudí webview daného okna.
+///
+/// Schování okna samo o sobě webview NEZASTAVÍ: Tauri sáhne jen na
+/// okno Windows, kdežto WebView2 dál kreslí, tiká časovači a chodí se
+/// ptát služby. Naměřeno: aplikace zavřená do oznamovací oblasti brala
+/// úplně stejně jako otevřená — přes dvě procenta systému a stovky
+/// megabajtů, a to všechno do okna, které nikdo nevidí.
+///
+/// Tohle je to chybějící slovo, kterým se WebView2 řekne, že se na něj
+/// nikdo nedívá. Chromium si pak sám utlumí časovače a zastaví
+/// kompozici; ve stránce k tomu navíc začne platit `document.hidden`,
+/// takže se na to dá časem navázat i tam.
+fn uspi_webview(app: &tauri::AppHandle, label: &str, uspat: bool) {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window(label) {
+        let v: &tauri::Webview<tauri::Wry> = w.as_ref();
+        let _ = if uspat { v.hide() } else { v.show() };
     }
 }
 
@@ -1258,6 +1307,8 @@ fn main() {
             set_spotlight_hotkey,
             hide_spotlight,
             focus_spotlight,
+            get_spotlight_enabled,
+            set_spotlight_enabled,
             spotlight_note,
             show_spotlight,
             set_db_dir,
@@ -1334,7 +1385,14 @@ fn main() {
             // Globální zkratka pro vyhledávací lištu. Registruje se ve
             // vlastním vlákně (viz hotkey) a jen posílá práci sem.
             let handle = app.handle().clone();
-            hotkey::start(&hotkey::load(), move || {
+            // Prázdný zápis = neregistrovat. Vlákno běží tak jako tak,
+            // aby se zkratka dala zapnout za běhu bez restartu.
+            let zkratka = if hotkey::zapnuta() {
+                hotkey::load()
+            } else {
+                String::new()
+            };
+            hotkey::start(&zkratka, move || {
                 let h = handle.clone();
                 // Okna se smějí obsluhovat jen z hlavního vlákna.
                 let _ = handle.run_on_main_thread(move || {
@@ -1357,8 +1415,12 @@ fn main() {
             // Spotlight se jen schovává — zavřít ho znamená zahodit
             // webview a příští vyvolání by se zdrželo jeho stavbou.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                use tauri::Manager;
                 api.prevent_close();
                 let _ = window.hide();
+                // Uspat i webview, jinak běží dál naprázdno (viz
+                // `uspi_webview`). Spotlight se schovává vlastní cestou.
+                uspi_webview(window.app_handle(), window.label(), true);
             }
         })
         .run(tauri::generate_context!())

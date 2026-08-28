@@ -58,15 +58,17 @@
 		overZaostreni();
 	}
 
-	/// Pojistka na to, že se opravdu dá psát.
+	/// Pojistka pro případ, že okno nedostane zaměření vůbec.
 	///
-	/// Zaměřit vstup uvnitř stránky nestačí, když zaměření nemá celé
-	/// okno — psaní pak nikam nejde, přestože kurzor v poli bliká.
-	/// Přesně to se dělo při úplně prvním vyvolání lišty: webview se
-	/// teprve vytvářelo a zprávu o zaměření nemělo kdo převzít.
-	/// `document.hasFocus()` je na tuhle otázku přímá odpověď, takže se
-	/// nehádá — změří se to a případně se řekne hostiteli, ať zaostří
-	/// znovu.
+	/// POZOR — na závadu „při prvním vyvolání se nedá psát" je tahle
+	/// hlídka SLEPÁ a opravovat to tudy potřetí nemá smysl. V tom stavu
+	/// totiž `document.hasFocus()` vrací true a `activeElement` JE ten
+	/// vstup (naměřeno), takže se hlídka na prvním řádku vrátí a nikdy
+	/// nic neudělá. Skutečnou příčinu — chybějící výběr v rámci — řeší
+	/// `obnovKurzor()` volaný z `onMount`.
+	///
+	/// Zůstává tu pro jiný případ: okno, kterému Windows zaměření
+	/// nedají vůbec, protože si ho jiná aplikace vezme zpátky.
 	///
 	/// Schválně se NEptáme, co je zaměřené UVNITŘ stránky. Když si
 	/// uživatel šipkami nebo myší vybere řádek výsledků, je to jeho
@@ -113,12 +115,18 @@
 		// reset dlouho tiše vypínala.
 		const un = listen('spotlight:route', probud).catch(() => () => {});
 		hledani?.zaostri();
+		// JEN při stavbě okna, ne při probuzení: rámec v tu chvíli nemá
+		// výběr, takže se do zaměřeného pole stejně nedá psát. Naměřeno
+		// 0 z 17 studených prvních vyvolání bez tohohle řádku, 17 z 17
+		// s ním. Prodleva je nula — každá milisekunda navíc je znak,
+		// který uživatel napíše a který se ztratí.
+		const kurzor = setTimeout(() => hledani?.obnovKurzor(), 0);
 		// První vyvolání nemá co spustit `probud` — okno teprve vzniklo,
-		// takže žádná událost ani změna zaměření nepřijde. Ověření
-		// zaměření se proto pouští i odsud.
+		// takže žádná událost ani změna zaměření nepřijde.
 		overZaostreni();
 		window.addEventListener('keydown', klavesa);
 		return () => {
+			clearTimeout(kurzor);
 			zrusHlidku();
 			un.then((f) => f());
 			window.removeEventListener('focus', probud);

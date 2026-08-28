@@ -3,6 +3,7 @@
 	// jedním modelem. Seznam + detail s křivkou okna T-5min..T+30s.
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
+	import { skryte, skryj, odkryj } from '$lib/hidden.svelte.js';
 	import { openMenu, akceKopirovat, akceOtevritUmisteni, oddelovac } from '$lib/itemmenu.svelte.js';
 	import {
 		TriangleAlert,
@@ -228,27 +229,14 @@
 	// Smazat se nedá — je to jejich záznam, ne náš, a sahat do protokolu
 	// událostí by bylo přesně to, co tenhle nástroj nedělá. Schová se
 	// tedy jen z našeho seznamu a pamatuje se to mezi spuštěními.
-	const HIDDEN_KEY = 'winsent.hiddenCrashes';
-	let hidden = $state(new Set());
-
-	function loadHidden() {
-		try {
-			hidden = new Set(JSON.parse(localStorage.getItem(HIDDEN_KEY) ?? '[]'));
-		} catch {
-			hidden = new Set();
-		}
-	}
+	// Klíč i celá logika skrývání bydlí v $lib/hidden.svelte.js.
+	// Skryté drží sdílený modul, ne tahle stránka: závisí na nich
+	// i odznak v navigaci a ten má zhasnout hned při kliknutí.
+	let hidden = $derived(skryte.klice);
 
 	function hideReport(row, ev) {
 		ev?.stopPropagation();
-		const s = new Set(hidden);
-		s.add(row.key);
-		hidden = s;
-		try {
-			localStorage.setItem(HIDDEN_KEY, JSON.stringify([...s]));
-		} catch {
-			/* bez úložiště to platí aspoň do zavření okna */
-		}
+		skryj(row.key);
 		if (selRow?.key === row.key) {
 			selRow = null;
 			selected = null;
@@ -258,18 +246,21 @@
 	// Vrácení skryté položky zpět mezi ostatní.
 	function unhideReport(row, ev) {
 		ev?.stopPropagation();
-		const s = new Set(hidden);
-		s.delete(row.key);
-		hidden = s;
-		try {
-			localStorage.setItem(HIDDEN_KEY, JSON.stringify([...s]));
-		} catch {
-			/* bez úložiště to platí aspoň do zavření okna */
-		}
+		odkryj(row.key);
 	}
 
 	// Sekce skrytých je po startu zavřená — je to archiv, ne seznam.
 	let showHidden = $state(false);
+	// Když je archiv jediné, co na stránce je, otevře se sám — jinak by
+	// uživatel koukal na jediný zavřený řádek. Jednorázově, ať se dá
+	// pořád zavřít.
+	let archivOtevrenSam = false;
+	$effect(() => {
+		if (!archivOtevrenSam && timeline.length === 0 && hiddenRows.length > 0) {
+			archivOtevrenSam = true;
+			showHidden = true;
+		}
+	});
 
 	// Hlášení o pádech, která mají uložená Windows.
 	//
@@ -631,7 +622,6 @@
 	}
 
 	onMount(() => {
-		loadHidden();
 		load();
 		loadCrashes();
 		const want = Number(new URLSearchParams(window.location.search).get('id'));
@@ -653,7 +643,10 @@
 
 	{#if loadError}
 		<p class="empty">Nelze načíst incidenty: {loadError}</p>
-	{:else if timeline.length === 0}
+	<!-- Podmínka je na VŠECHNY řádky, ne na viditelné. Když se skryly
+	     všechny, celý seznam i s kategorií skrytých zmizel a nebylo se
+	     k nim jak vrátit — skrytí není smazání a nesmí se tak chovat. -->
+	{:else if allRows.length === 0}
 		<div class="empty explain">
 			<p><b>Zatím žádné incidenty — to je dobře.</b></p>
 			<p>
@@ -711,6 +704,13 @@
 						</button>
 					</li>
 				{/each}
+
+					{#if timeline.length === 0}
+						<li class="list-empty">
+							<p><b>Všechno je skryté.</b></p>
+							<p>Nic se nesmazalo — níž ve „Skrytých položkách" je ikonou oka vrátíš zpět.</p>
+						</li>
+					{/if}
 
 					<!-- Skryté položky nejdou pryč, jen dolů a došeda. Kdo si
 					     řádek schoval omylem, musí ho mít kde najít; a seznam,
@@ -1267,6 +1267,18 @@
 		margin-top: 4px;
 	}
 	/* Archiv skrytých položek: šedivý, sbalený, ale na dosah. */
+	/* Prázdný seznam se skrytými pod ním — vysvětlení, ne jen mezera. */
+	.list-empty {
+		padding: 14px 12px;
+		font-size: var(--fs-sm);
+		color: var(--text-dim);
+	}
+	.list-empty p {
+		margin: 0 0 0.35rem;
+	}
+	.list-empty p:last-child {
+		margin-bottom: 0;
+	}
 	.hid-head {
 		margin-top: 10px;
 		border-top: 1px solid var(--border);

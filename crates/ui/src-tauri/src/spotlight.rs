@@ -85,6 +85,10 @@ pub fn toggle(app: &AppHandle, route: &str) -> Result<(), String> {
         let (x, y) = pozice(app);
         let _ = w.set_position(tauri::LogicalPosition::new(x, y));
         oznac_zobrazeni();
+        // Webview napřed: schování ho uspalo a probrat ho až po
+        // zobrazení okna by znamenalo první snímek do vypnuté kompozice.
+        let webview: &tauri::Webview<tauri::Wry> = w.as_ref();
+        let _ = webview.show();
         let _ = w.show();
         let _ = w.set_focus();
         // Přeposlat, kterou sekci ukázat — okno může být z minula jiné.
@@ -127,9 +131,14 @@ pub fn zaostri(app: &AppHandle) {
 }
 
 /// Schová okno, pokud existuje.
+///
+/// Webview se uspává spolu s ním: samotné schování okna ho nezastaví
+/// a lišta by na pozadí dál tikala časovači a ptala se služby.
 pub fn hide(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(LABEL) {
         let _ = w.hide();
+        let webview: &tauri::Webview<tauri::Wry> = w.as_ref();
+        let _ = webview.hide();
     }
 }
 

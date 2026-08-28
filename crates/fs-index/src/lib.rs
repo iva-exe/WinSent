@@ -117,28 +117,64 @@ impl VolumeIndex {
         out
     }
 
-    /// Hledání podřetězce v názvech (ASCII case-insensitive). Vrací max
-    /// `limit` nálezů; kratší cesty (blíž kořeni) první.
+    /// Hledání podřetězce v názvech (ASCII case-insensitive).
+    ///
+    /// Vrací nejvýš `limit` nálezů, a to TY NEJLEPŠÍ — ne prvních
+    /// `limit` nalezených. To je rozdíl, na kterém všechno stojí:
+    /// svazek má přes milion záznamů a rozhoduje se tu, kterých dvě stě
+    /// z nich uživatel vůbec uvidí. Dřív se braly v pořadí, v jakém
+    /// ležely v mapě, takže se ta správná položka nemusela do výsledku
+    /// vejít vůbec.
+    ///
+    /// Řadí se podle toho, KDE v názvu shoda začíná: co začíná hledaným
+    /// slovem, jde nahoru. Na dotaz „al" tak vyjde „Aluminium" před
+    /// „Zákal". Úplná shoda jména je vždycky první. Při stejné poloze
+    /// vyhrává kratší jméno (méně přílepků kolem hledaného) a pak cesta
+    /// blíž ke kořeni.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Hit> {
         let q = query.trim();
-        if q.is_empty() {
+        if q.is_empty() || limit == 0 {
             return Vec::new();
         }
         let q_lc = q.to_ascii_lowercase();
-        let mut out = Vec::new();
+
+        // Nejdřív se sbírají jen klíče a skóre. Skládat cesty (což je
+        // chůze po rodičích až ke kořeni) pro každý nález by u obecného
+        // dotazu znamenalo statisíce zbytečných řetězců — dělá se to až
+        // pro tu dvoustovku, která se opravdu vrátí.
+        let mut kandidati: Vec<(u8, u32, u32, u64)> = Vec::new();
         for (file_ref, n) in &self.nodes {
-            if contains_ignore_ascii_case(&n.name, &q_lc) {
-                out.push(Hit {
-                    path: self.path_of(*file_ref),
+            let Some(kde) = index_ignore_ascii_case(&n.name, &q_lc) else {
+                continue;
+            };
+            let presna = (n.name.len() == q_lc.len()) as u8;
+            kandidati.push((
+                1 - presna,
+                kde as u32,
+                n.name.len() as u32,
+                *file_ref,
+            ));
+        }
+        if kandidati.len() > limit {
+            kandidati.select_nth_unstable(limit - 1);
+            kandidati.truncate(limit);
+        }
+        kandidati.sort_unstable();
+
+        let mut out: Vec<Hit> = kandidati
+            .into_iter()
+            .filter_map(|(_, _, _, file_ref)| {
+                let n = self.nodes.get(&file_ref)?;
+                Some(Hit {
+                    path: self.path_of(file_ref),
                     name: n.name.to_string(),
                     attrs: n.attrs,
-                });
-                if out.len() >= limit {
-                    break;
-                }
-            }
-        }
-        out.sort_by_key(|h| h.path.len());
+                })
+            })
+            .collect();
+        // Poslední slovo má hloubka cesty, ale jen mezi jinak stejně
+        // dobrými nálezy — proto stabilní řazení až tady.
+        out.sort_by_key(|h| h.path.matches('\\').count());
         out
     }
 }
@@ -535,22 +571,27 @@ fn dir_size_bounded(path: &str, max_entries: usize) -> u64 {
 }
 
 /// Podřetězec bez alokace: `needle_lc` už je lowercase.
-fn contains_ignore_ascii_case(haystack: &str, needle_lc: &str) -> bool {
+/// Kde v `haystack` začíná `needle_lc` (ASCII case-insensitive)?
+///
+/// Poloha je to, podle čeho se výsledky řadí: co začíná hledaným
+/// slovem, patří výš než to, co ho má někde uvnitř.
+fn index_ignore_ascii_case(haystack: &str, needle_lc: &str) -> Option<usize> {
+    if needle_lc.is_empty() {
+        return Some(0);
+    }
     let h = haystack.as_bytes();
     let n = needle_lc.as_bytes();
-    if n.is_empty() || h.len() < n.len() {
-        return false;
+    if h.len() < n.len() {
+        return None;
     }
-    'outer: for start in 0..=(h.len() - n.len()) {
-        for (i, &nc) in n.iter().enumerate() {
-            if h[start + i].to_ascii_lowercase() != nc {
-                continue 'outer;
-            }
-        }
-        return true;
-    }
-    false
+    (0..=h.len() - n.len()).find(|&i| {
+        h[i..i + n.len()]
+            .iter()
+            .zip(n)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    })
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -558,8 +599,19 @@ mod tests {
 
     #[test]
     fn substring_matches_case_insensitive() {
-        assert!(contains_ignore_ascii_case("Config.SYS", "config"));
-        assert!(contains_ignore_ascii_case("abcDEF", "cde"));
-        assert!(!contains_ignore_ascii_case("abc", "abcd"));
+        assert_eq!(index_ignore_ascii_case("Config.SYS", "config"), Some(0));
+        assert_eq!(index_ignore_ascii_case("abcDEF", "cde"), Some(2));
+        assert_eq!(index_ignore_ascii_case("abc", "abcd"), None);
+    }
+
+    /// Poloha shody je to, podle čeho se řadí — na dotaz „al" musí
+    /// „Aluminium" (poloha 0) vyjít před „Zakal" (poloha 3).
+    #[test]
+    fn poloha_shody_urcuje_poradi() {
+        let a = index_ignore_ascii_case("Aluminium", "al").unwrap();
+        let z = index_ignore_ascii_case("Zakal", "al").unwrap();
+        assert!(a < z, "a={a} z={z}");
+        // Diakritika sem nepatří: index svazku porovnává ASCII.
+        assert_eq!(index_ignore_ascii_case("ALUMINIUM", "al"), Some(0));
     }
 }
