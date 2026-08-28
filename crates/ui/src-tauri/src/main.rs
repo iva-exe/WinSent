@@ -3,6 +3,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod autostart;
 mod display;
 mod hotkey;
 mod launch;
@@ -776,6 +777,24 @@ fn launch_app(
     launch::launch(&identity_key, &display_name, aumid.as_deref())
 }
 
+/// Spouští se Winsent po přihlášení uživatele?
+///
+/// Čte se ze systému, ne z uloženého nastavení: uživatel může položku
+/// vypnout ve Správci úloh a přepínač v Nastavení by pak tvrdil něco
+/// jiného, než co se doopravdy děje.
+#[tauri::command(async)]
+fn query_autostart() -> bool {
+    autostart::zapnuto()
+}
+
+/// Zapne nebo vypne spouštění po přihlášení. Vrací stav, jaký po
+/// změně opravdu platí — ne ten, o který se žádalo.
+#[tauri::command(async)]
+fn set_autostart(enabled: bool) -> Result<bool, String> {
+    autostart::nastav(enabled)?;
+    Ok(autostart::zapnuto())
+}
+
 /// Jedna spustitelná položka složky „Aplikace".
 #[derive(Debug, Serialize)]
 struct LaunchableRow {
@@ -1203,6 +1222,8 @@ fn main() {
             launch_app,
             query_launchables,
             query_launchable_icon,
+            query_autostart,
+            set_autostart,
             get_spotlight_hotkey,
             set_spotlight_hotkey,
             hide_spotlight,
@@ -1263,6 +1284,21 @@ fn main() {
         ])
         .setup(|app| {
             setup_tray(app)?;
+            // Spouštění po přihlášení. Ve výchozím stavu zapnuté a
+            // zabere to jen při úplně prvním startu; pak rozhoduje
+            // uživatel přepínačem v Nastavení.
+            autostart::zajisti_vychozi();
+            // Start po přihlášení patří do oznamovací oblasti, ne přes
+            // celou plochu. Okno se schovává AŽ TADY, ne stavbou
+            // skrytého okna: postavit okno skryté a hned nato ho
+            // ukázat už jednou v tomhle projektu nefungovalo (viz
+            // spotlight.rs) a cena za to je jen krátké bliknutí.
+            if autostart::tichy_start() {
+                use tauri::Manager;
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
             // Globální zkratka pro vyhledávací lištu. Registruje se ve
             // vlastním vlákně (viz hotkey) a jen posílá práci sem.
             let handle = app.handle().clone();

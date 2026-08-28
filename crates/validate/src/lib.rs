@@ -12,6 +12,11 @@
 
 use core_types::action::Action;
 
+/// Jméno vlastní služby. Winsent se v seznamu startovacích položek
+/// objevuje jako každá jiná a jedním kliknutím by si tam šlo vypnout
+/// vlastní automatický start.
+const SELF_SERVICE: &str = "syswatch";
+
 /// Verdikt validace. Žádný exekutor se nesmí spustit bez `Allow`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
@@ -82,6 +87,18 @@ pub fn validate(action: &Action, ctx: &mut LiveContext) -> Verdict {
             };
             if name.trim().is_empty() {
                 return Verdict::deny("prázdný název položky");
+            }
+            // Winsent si nesmí vypnout sám sebe. Vlastní služba je
+            // v seznamu jako každá jiná a jedno kliknutí by ji přehodilo
+            // na ruční spouštění — jenže služba by běžela dál a pravda
+            // by vyšla najevo až po restartu počítače. „Bylo to zapnuté
+            // a najednou se to nespouští, nevím od kdy" je pak přesně
+            // ten příznak, který se nedá vystopovat. Vypnout to jde
+            // v Nastavení, kde je u toho napsáno, o co uživatel přijde.
+            if source == "service" && name.eq_ignore_ascii_case(SELF_SERVICE) {
+                return Verdict::deny(
+                    "tohle je sám Winsent — bez automatického startu by po restartu počítače přestal sbírat historii i incidenty. Vypnout to jde v Nastavení, kde je vysvětleno, o co přijdeš.",
+                );
             }
             // Co patří Windows, se nepřepíná. NIKDY. Klasifikace běží
             // ZNOVU a nezávisle na tom, co ukázalo UI (SPEC 17.3):
@@ -1094,6 +1111,24 @@ mod tests {
 
     // ── Cesty selhání se testují víc než cesty úspěchu (brána v5) ──
 
+    #[test]
+    fn startup_vlastni_sluzba_denied() {
+        // Jedno kliknutí by Winsentu vyplo vlastní automatický start.
+        // Služba by běžela dál, takže by se to poznalo až po restartu
+        // počítače — a to je přesně ten druh závady, který se nedá
+        // vystopovat zpětně.
+        let mut ctx = LiveContext::new();
+        for id in ["service|syswatch", "service|SysWatch"] {
+            let v = validate(
+                &Action::StartupToggle {
+                    id: id.into(),
+                    on: false,
+                },
+                &mut ctx,
+            );
+            assert!(matches!(v, Verdict::Deny { .. }), "{id} musí být zamítnut");
+        }
+    }
     #[test]
     fn startup_shell_hook_denied() {
         let mut ctx = LiveContext::new();

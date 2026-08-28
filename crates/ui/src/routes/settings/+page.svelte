@@ -8,6 +8,31 @@
 	import { prefs, setPref, prepniSekci } from '$lib/prefs.svelte.js';
 	import { SEKCE } from '$lib/sections.js';
 
+	// Spouštění po přihlášení. Stav se čte ZE SYSTÉMU, ne z uloženého
+	// nastavení: uživatel může položku vypnout ve Správci úloh a
+	// přepínač by pak tvrdil něco jiného, než co se doopravdy děje.
+	let autostart = $state(false);
+	let autostartChyba = $state('');
+
+	onMount(async () => {
+		try {
+			autostart = await invoke('query_autostart');
+		} catch (e) {
+			autostartChyba = String(e);
+		}
+	});
+
+	async function prepniAutostart() {
+		try {
+			// Vrací se stav, jaký po změně opravdu platí — ne ten,
+			// o který se žádalo.
+			autostart = await invoke('set_autostart', { enabled: !autostart });
+			autostartChyba = '';
+		} catch (e) {
+			autostartChyba = String(e);
+		}
+	}
+
 	/// Kolik sekcí je zapnutých. V hlavičce karty, ať je na první pohled
 	/// vidět, že je něco vypnuté — jinak se člověk diví, kam se sekce
 	/// poděla, a hledá chybu tam, kde žádná není.
@@ -231,6 +256,29 @@
 	     Každý řádek má jméno, jednu větu proč a ovládání vpravo. Delší
 	     vysvětlení, která tu byla dřív, natáhla stránku tak, že se v ní
 	     nedalo najít, co vlastně jde přepnout. -->
+
+	<section class="card">
+		<header class="card-head"><span class="label-tech">// spouštění</span></header>
+
+		<button class="row opt" role="switch" aria-checked={autostart} onclick={prepniAutostart}>
+			<span class="row-main">
+				<span class="row-name">Spouštět Winsent po přihlášení</span>
+				<span class="row-why">
+					Naskočí rovnou do oznamovací oblasti. Bez toho po restartu počítače nefunguje ani
+					vyhledávací lišta na klávesovou zkratku — registruje ji až běžící aplikace.
+				</span>
+				{#if autostartChyba}
+					<span class="row-err">{autostartChyba}</span>
+				{/if}
+			</span>
+			<span class="sw" class:on={autostart}><span class="knob"></span></span>
+		</button>
+
+		<p class="row-why faint">
+			Měření na pozadí běží jako služba Windows a startuje se systémem nezávisle na tomhle
+			přepínači — historie i incidenty se sbírají, i když aplikaci nemáš otevřenou.
+		</p>
+	</section>
 
 	<section class="card">
 		<header class="card-head"><span class="label-tech">// zobrazení</span></header>
