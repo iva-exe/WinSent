@@ -159,10 +159,16 @@
 		overflow: hidden;
 		border: 1px solid var(--border-strong);
 		border-radius: 14px;
-		/* Tón nese CSS, ne barva efektu: ta platí jen na Windows 10
-		   a na jedenáctkách se ignoruje, takže lišta tam vycházela bledá
-		   až bílá. Takhle vypadá na obou systémech stejně. */
-		background: rgba(24, 25, 31, 0.74);
+		/* Tón nese CSS, ne barva efektu: ta platí jen na Windows 10.
+		   Na jedenáctkách si materiál řídí systém a ve světlém motivu ho
+		   dodá SVĚTLÝ — proto tam lišta vycházela bledá až bílá, i když
+		   na desítkách vypadala tmavě.
+
+		   Krytí je proto tak vysoké: i kdyby pod tím ležel skoro bílý
+		   materiál (240), vyjde z toho tmavý panel kolem rgb(46,47,52).
+		   Rozostření tím nemizí — právě ono dělá text za oknem
+		   nečitelným —, jen se přes něj dívá tmavým sklem. */
+		background: rgba(24, 25, 31, 0.9);
 		box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
 	}
 </style>

@@ -239,13 +239,28 @@ fn zaobli_rohy(w: &tauri::WebviewWindow) {
         return;
     };
     let volba = DWMWCP_ROUND;
-    // SAFETY: platný handle okna a hodnota o velikosti, kterou API čeká.
+    // SAFETY: platný handle okna a hodnoty o velikosti, kterou API čeká.
     unsafe {
         let _ = DwmSetWindowAttribute(
             hwnd,
             DWMWA_WINDOW_CORNER_PREFERENCE,
             &volba as *const _ as *const core::ffi::c_void,
             std::mem::size_of_val(&volba) as u32,
+        );
+        // A rovnou i „tohle okno je tmavé".
+        //
+        // Na Windows 11 si materiál pozadí řídí systém sám a ve světlém
+        // motivu ho dodá SVĚTLÝ — proto lišta u testera vycházela bledá,
+        // ačkoli na desítkách vypadá tmavě. Tímhle atributem si řekneme
+        // o tmavou variantu. Na desítkách atribut neexistuje a volání se
+        // tiše nepovede; tam tón nese CSS.
+        // BOOL je pro DWM čtyřbajtová nenulová hodnota; i32 je přesně to.
+        let tmave: i32 = 1;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            windows::Win32::Graphics::Dwm::DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &tmave as *const _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&tmave) as u32,
         );
     }
 }

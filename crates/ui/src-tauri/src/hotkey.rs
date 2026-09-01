@@ -241,10 +241,11 @@ fn zapis(accel: &str, zapnuta: bool, zvetseni: f64) -> Result<(), String> {
 
 /// Meze zvětšení UI.
 ///
-/// Pod sedmdesáti procenty přestává být text čitelný a nad sto padesáti
-/// se rozbíjí rozvržení, které počítá s tím, že se sekce vejde na
-/// obrazovku. Uvnitř těch mezí ať si každý nastaví, co mu vyhovuje.
-pub const ZVETSENI_MIN: f64 = 0.7;
+/// Padesát procent je hodně málo a text je na hraně čitelnosti, ale na
+/// malé obrazovce s vysokým rozlišením to má smysl — a je to volba
+/// uživatele, ne naše. Nad sto padesáti se rozvržení rozbíjí, protože
+/// počítá s tím, že se sekce vejde na obrazovku.
+pub const ZVETSENI_MIN: f64 = 0.5;
 pub const ZVETSENI_MAX: f64 = 1.5;
 
 /// Zvětšení uživatelského rozhraní (1.0 = beze změny).

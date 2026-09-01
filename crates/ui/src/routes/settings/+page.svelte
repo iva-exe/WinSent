@@ -19,11 +19,15 @@
 	// by ho posunula a rámečky nechala, kde byly. Na malém notebooku
 	// s poměrem 16:10 je i devadesát procent znát.
 	const ZVETSENI = [
+		{ v: 0.5, popis: '50 %' },
+		{ v: 0.6, popis: '60 %' },
+		{ v: 0.7, popis: '70 %' },
 		{ v: 0.8, popis: '80 %' },
 		{ v: 0.9, popis: '90 %' },
 		{ v: 1.0, popis: '100 %' },
 		{ v: 1.1, popis: '110 %' },
-		{ v: 1.25, popis: '125 %' }
+		{ v: 1.25, popis: '125 %' },
+		{ v: 1.5, popis: '150 %' }
 	];
 	let zoom = $state(1);
 	let zoomChyba = $state('');
@@ -738,8 +742,13 @@
 		cursor: pointer;
 	}
 	/* Tvar stejný jako ostatní přepínače v aplikaci — jeden jazyk. */
+	/* Devět kroků se na úzkém okně na řádek nevejde — ať se zalomí
+	   a drží se vpravo, jako ostatní ovládání v seznamu. */
 	.zoomy {
 		gap: 4px;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		max-width: 60%;
 	}
 	.zoom {
 		padding: 3px 8px;
