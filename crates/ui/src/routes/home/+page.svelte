@@ -1,99 +1,66 @@
 <script>
-	// Home (v4D, SPEC 9.2): grid dlaždic s živými daty ze všech sekcí.
-	// Klik na dlaždici = skok do příslušné sekce.
+	// Home — nástěnka z dlaždic, kterou si uživatel skládá sám.
+	//
+	// Dřív to byla pevná mřížka sedmi karet. Teď je Home to jediné
+	// místo v aplikaci, které si každý srovná po svém: co ho zajímá,
+	// dá nahoru a zvětší, zbytek odebere. Sekce zůstávají tak, jak
+	// jsou — dlaždice je zkratka do nich, ne jejich náhrada.
+	//
+	// Data si dlaždice nestahují samy. Přihlásí se o sadu (viz
+	// data.svelte.js) a několik dlaždic nad touž sadou stojí jeden
+	// dotaz — jinak by deset karet znamenalo deset dotazů za sekundu
+	// na jedna a tatáž čísla.
 	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
-	import { invoke } from '@tauri-apps/api/core';
-	import Num from '$lib/Num.svelte';
-	import {
-		Cpu,
-		MemoryStick,
-		Zap,
-		HardDrive,
-		Wifi,
-		TriangleAlert,
-		Blocks,
-		Activity
-	} from 'lucide-svelte';
+	import { Pencil, Check, LayoutGrid } from 'lucide-svelte';
+	import Dlazdice from '$lib/widgets/Dlazdice.svelte';
+	import Pridat from '$lib/widgets/Pridat.svelte';
+	import { REGISTR } from '$lib/widgets/registr.js';
+	import { rozlozeni, SLOUPCU, mrizka } from '$lib/widgets/rozlozeni.svelte.js';
+	import { odebirej, dohon } from '$lib/widgets/data.svelte.js';
+	import { sekceViditelna } from '$lib/prefs.svelte.js';
 
-	let system = $state(null);
-	let procs = $state([]);
-	let incidents = $state([]);
-	let volumes = $state([]);
-	let health = $state([]);
-	let appCount = $state(null);
+	let edit = $state(false);
+	let plocha = $state(null);
 
-	function colorForLoad(v) {
-		if (v == null) return 'var(--text-dim)';
-		if (v <= 55) return 'var(--ok)';
-		if (v <= 90) return 'var(--warn)';
-		return 'var(--danger)';
-	}
-	function fmtBps(v) {
-		if (v == null) return '—';
-		const mb = v / (1024 * 1024);
-		return mb >= 1 ? `${mb.toFixed(1)} MB/s` : `${(v / 1024).toFixed(0)} kB/s`;
-	}
-	function fmtSize(b) {
-		if (b == null) return '—';
-		return b >= 1e9 ? (b / 1e9).toFixed(0) + ' GB' : (b / 1e6).toFixed(0) + ' MB';
-	}
-	function fmtAgo(ts) {
-		const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
-		if (s < 3600) return `před ${Math.floor(s / 60)} min`;
-		if (s < 86400) return `před ${Math.floor(s / 3600)} h`;
-		return `před ${Math.floor(s / 86400)} dny`;
-	}
-
-	let topProcs = $derived.by(() =>
-		[...procs].sort((a, b) => b.cpu_pct - a.cpu_pct).slice(0, 5)
+	/// Dlaždice k vykreslení: platné id a sekce, kterou si uživatel
+	/// nevypnul. Widget do vypnuté sekce by nabízel odkaz, který
+	/// v navigaci není.
+	let dlazdice = $derived(
+		rozlozeni.dlazdice
+			.map((d) => ({ ...d, w: REGISTR[d.id] }))
+			.filter((d) => d.w && sekceViditelna(d.w.href))
 	);
-	let memPct = $derived(
-		system?.mem_total_mb ? (system.mem_used_mb / system.mem_total_mb) * 100 : null
-	);
-	let lastIncident = $derived(incidents[0] ?? null);
-	const kindLabel = {
-		stall: 'zásek systému',
-		app_crash: 'pád aplikace',
-		bsod: 'BSOD / tvrdý pád'
-	};
 
-	async function pollFast() {
-		try {
-			system = await invoke('query_system');
-			procs = await invoke('query_procs');
-		} catch {
-			system = null;
-		}
-	}
-	async function pollSlow() {
-		try {
-			incidents = await invoke('query_incidents', { limit: 5 });
-		} catch {
-			incidents = [];
-		}
-		try {
-			const v = await invoke('query_volumes');
-			volumes = v.volumes;
-			health = v.health;
-		} catch {
-			volumes = [];
-		}
-		try {
-			appCount = (await invoke('query_apps')).length;
-		} catch {
-			appCount = null;
-		}
+	// Jeden odběr za celý přehled. Kdyby se přihlašovala každá dlaždice
+	// zvlášť, střídalo by se přihlášení a odhlášení při každé změně
+	// rozložení a časovač by se pokaždé restartoval.
+	let sady = $derived([...new Set(dlazdice.flatMap((d) => d.w.sady))].sort().join(','));
+	$effect(() => {
+		const klice = sady ? sady.split(',') : [];
+		return odebirej(klice);
+	});
+
+	// Kolik sloupců se vejde. Pod 200 px na dlaždici už není co ukázat.
+	function prepocti() {
+		const w = plocha?.clientWidth ?? 0;
+		if (!w) return;
+		mrizka.sloupcu = Math.max(1, Math.min(SLOUPCU, Math.floor(w / 200)));
 	}
 
 	onMount(() => {
-		pollFast();
-		pollSlow();
-		const t1 = setInterval(pollFast, 1000);
-		const t2 = setInterval(pollSlow, 20000);
+		prepocti();
+		const ro = new ResizeObserver(prepocti);
+		if (plocha) ro.observe(plocha);
+		// Po probuzení okna (WebView2 se ve schovaném stavu uspí) se
+		// všechny sady jednou dotáhnou, ať dlaždice neukazují stav
+		// z doby, kdy se uživatel díval naposledy.
+		const probuzeni = () => {
+			if (!document.hidden) dohon();
+		};
+		document.addEventListener('visibilitychange', probuzeni);
 		return () => {
-			clearInterval(t1);
-			clearInterval(t2);
+			ro.disconnect();
+			document.removeEventListener('visibilitychange', probuzeni);
 		};
 	});
 </script>
@@ -101,98 +68,46 @@
 <div class="page">
 	<header class="head">
 		<h1>Home</h1>
-		<span class="sub">souhrn systému — klik na dlaždici otevře sekci</span>
+		<span class="sub">
+			{edit ? 'přetažením přesuneš, čtvereček mění velikost' : 'souhrn systému — klik na dlaždici otevře sekci'}
+		</span>
+		<button class="rezim" class:on={edit} onclick={() => (edit = !edit)}>
+			{#if edit}<Check size={14} /> Hotovo{:else}<Pencil size={14} /> Upravit{/if}
+		</button>
 	</header>
 
-	<div class="grid">
-		<!-- CPU / RAM / GPU / síť -->
-		<button class="tile" onclick={() => goto('/tasks')}>
-			<span class="t-head"><Cpu size={15} /> CPU</span>
-			<span class="t-big mono" style:color={colorForLoad(system?.cpu_pct)}>
-				{#if system}<Num value={system.cpu_pct} format={(v) => v.toFixed(0) + ' %'} />{:else}—{/if}
-			</span>
-			<span class="t-sub">{system?.cpu_clock_mhz ? (system.cpu_clock_mhz / 1000).toFixed(2) + ' GHz' : ''}</span>
-		</button>
-		<button class="tile" onclick={() => goto('/tasks')}>
-			<span class="t-head"><MemoryStick size={15} /> RAM</span>
-			<span class="t-big mono" style:color={colorForLoad(memPct)}>
-				{#if memPct != null}<Num value={memPct} format={(v) => v.toFixed(0) + ' %'} />{:else}—{/if}
-			</span>
-			<span class="t-sub"
-				>{system ? `${(system.mem_used_mb / 1024).toFixed(1)} / ${(system.mem_total_mb / 1024).toFixed(0)} GB` : ''}</span
-			>
-		</button>
-		<button class="tile" onclick={() => goto('/tasks')}>
-			<span class="t-head"><Zap size={15} /> GPU</span>
-			<span class="t-big mono" style:color={colorForLoad(system?.gpu_pct)}>
-				{#if system?.gpu_pct != null}<Num value={system.gpu_pct} format={(v) => v.toFixed(0) + ' %'} />{:else}—{/if}
-			</span>
-			<span class="t-sub">{system?.gpu?.temp_c != null ? system.gpu.temp_c + ' °C' : ''}</span>
-		</button>
-		<button class="tile" onclick={() => goto('/tasks')}>
-			<span class="t-head"><Wifi size={15} /> Síť</span>
-			<span class="t-mid mono net-down">↓ {fmtBps(system?.net_rx_bps)}</span>
-			<span class="t-mid mono net-up">↑ {fmtBps(system?.net_tx_bps)}</span>
-		</button>
+	{#if edit}
+		<Pridat />
+	{/if}
 
-		<!-- Top procesy -->
-		<button class="tile wide tall" onclick={() => goto('/tasks')}>
-			<span class="t-head"><Activity size={15} /> Top procesy</span>
-			<ul class="t-list">
-				{#each topProcs as p (p.pid)}
-					<li>
-						<span class="t-name">{p.app_name || p.name}</span>
-						<span class="mono" style:color={colorForLoad(p.cpu_pct)}>{p.cpu_pct.toFixed(1)} %</span>
-					</li>
-				{/each}
-			</ul>
-		</button>
+	<div class="plocha" bind:this={plocha}>
+		<div class="grid" style:grid-template-columns="repeat({mrizka.sloupcu}, 1fr)">
+			{#each dlazdice as d (d.id)}
+				{@const Karta = d.w.komp}
+				<Dlazdice widget={d.w} velikost={d.velikost} {edit}>
+					<!-- Dlaždic je na ploše deset a čtou data z devíti různých
+					     míst. Kdyby jedna spadla na neočekávaném tvaru
+					     odpovědi, vzala by s sebou celý přehled — takhle
+					     zůstane u své karty a zbytek jede dál. -->
+					<svelte:boundary>
+						<Karta typ={d.w.typ} velikost={d.velikost} />
+						{#snippet failed(error)}
+							<span class="w-empty" title={String(error)}>
+								Tuhle dlaždici se nepodařilo vykreslit.
+							</span>
+						{/snippet}
+					</svelte:boundary>
+				</Dlazdice>
+			{/each}
+		</div>
 
-		<!-- Poslední incident -->
-		<button class="tile wide" onclick={() => goto('/incidents')}>
-			<span class="t-head warn-h"><TriangleAlert size={15} /> Poslední incident</span>
-			{#if lastIncident}
-				<span class="t-mid">{kindLabel[lastIncident.kind] ?? lastIncident.kind}
-					{#if lastIncident.culprit}— {lastIncident.culprit}{/if}</span>
-				<span class="t-sub">{fmtAgo(lastIncident.ts)}</span>
-			{:else}
-				<span class="t-mid dim">žádný — systém jede čistě</span>
-			{/if}
-		</button>
-
-		<!-- Disky -->
-		<button class="tile wide tall" onclick={() => goto('/files')}>
-			<span class="t-head"><HardDrive size={15} /> Disky</span>
-			<ul class="t-list">
-				{#each volumes as v (v.letter)}
-					{@const pct = v.total_bytes ? ((v.total_bytes - v.free_bytes) / v.total_bytes) * 100 : 0}
-					<li>
-						<span class="t-name mono">{v.letter}:</span>
-						<span class="v-bar"><span
-								class="v-fill"
-								style:width="{pct}%"
-								style:background={pct >= 90 ? 'var(--danger)' : pct >= 75 ? 'var(--warn)' : 'var(--ok)'}
-							></span></span>
-						<span class="mono dim">{fmtSize(v.free_bytes)} volných</span>
-					</li>
-				{/each}
-				{#each health.filter((h) => h.temp_c != null) as h (h.index)}
-					<li>
-						<span class="t-name">{h.model}</span>
-						<span class="mono" style:color={(h.used_pct ?? 0) >= 80 ? 'var(--warn)' : 'var(--ok)'}
-							>{100 - Math.min(h.used_pct ?? 0, 100)} % život.</span
-						>
-					</li>
-				{/each}
-			</ul>
-		</button>
-
-		<!-- Aplikace -->
-		<button class="tile" onclick={() => goto('/programs')}>
-			<span class="t-head"><Blocks size={15} /> Aplikace</span>
-			<span class="t-big mono">{appCount ?? '—'}</span>
-			<span class="t-sub">{system ? system.proc_count + ' procesů běží' : ''}</span>
-		</button>
+		{#if !dlazdice.length}
+			<div class="prazdno">
+				<LayoutGrid size={22} />
+				<p>Přehled je prázdný.</p>
+				<button class="rezim on" onclick={() => (edit = true)}>Vybrat dlaždice</button>
+			</div>
+		{/if}
 	</div>
 </div>
 
@@ -200,7 +115,7 @@
 	.page {
 		display: flex;
 		flex-direction: column;
-		gap: 14px;
+		gap: 12px;
 		height: 100%;
 		min-height: 0;
 	}
@@ -208,6 +123,7 @@
 		display: flex;
 		align-items: baseline;
 		gap: 12px;
+		flex: none;
 	}
 	.head h1 {
 		font-size: 1.15rem;
@@ -217,102 +133,55 @@
 		color: var(--text-faint);
 		font-size: var(--fs-sm);
 	}
+	.rezim {
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		margin-left: auto;
+		padding: 4px 10px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: none;
+		color: var(--text-dim);
+		font: inherit;
+		font-size: var(--fs-sm);
+		cursor: pointer;
+	}
+	.rezim:hover {
+		background: var(--surface-hover);
+		color: var(--text);
+	}
+	.rezim.on {
+		border-color: var(--border-strong);
+		background: var(--surface-hover);
+		color: var(--text);
+	}
+	.plocha {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		padding-right: 2px;
+	}
 	.grid {
 		display: grid;
-		grid-template-columns: repeat(4, 1fr);
-		grid-auto-rows: minmax(96px, auto);
+		/* Pevná výška řádku, ne auto: bez ní by dlaždice „přes dva
+		   řádky" nebyla vyšší než ta vedle a přepínání velikostí by
+		   nedělalo nic vidět. */
+		grid-auto-rows: 108px;
+		grid-auto-flow: row dense;
 		gap: 10px;
-		overflow-y: auto;
+		align-content: start;
 	}
-	.tile {
+	.prazdno {
 		display: flex;
 		flex-direction: column;
-		align-items: flex-start;
-		gap: 6px;
-		padding: 12px 14px;
-		background: var(--surface);
-		border: 1px dashed var(--border);
-		border-radius: var(--radius);
-		color: var(--text);
-		font: inherit;
-		cursor: pointer;
-		text-align: left;
-	}
-	.tile:hover {
-		background: var(--surface-hover);
-		border-color: var(--border-strong);
-	}
-	.tile.wide {
-		grid-column: span 2;
-	}
-	.tile.tall {
-		grid-row: span 2;
-	}
-	.t-head {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		font-size: var(--fs-xs);
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-dim);
-	}
-	.warn-h {
-		color: var(--warn);
-	}
-	.t-big {
-		font-size: 1.7rem;
-		font-weight: 500;
-	}
-	.t-mid {
-		font-size: 0.95rem;
-	}
-	.t-sub {
-		font-size: var(--fs-xs);
-		color: var(--text-faint);
-	}
-	.t-list {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		width: 100%;
-		display: flex;
-		flex-direction: column;
-		gap: 5px;
-	}
-	.t-list li {
-		display: flex;
 		align-items: center;
 		gap: 8px;
-		font-size: var(--fs-md);
-	}
-	.t-name {
-		flex: 1;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-	.v-bar {
-		flex: 2;
-		height: 5px;
-		border-radius: 3px;
-		background: var(--surface-hover);
-		overflow: hidden;
-	}
-	.v-fill {
-		display: block;
-		height: 100%;
-	}
-	.net-down {
-		color: var(--net-down);
-	}
-	.net-up {
-		color: var(--net-up);
-	}
-	.mono {
-		font-family: var(--font-mono);
-	}
-	.dim {
+		padding: 48px 0;
 		color: var(--text-faint);
+	}
+	.prazdno p {
+		margin: 0;
+		font-size: var(--fs-md);
 	}
 </style>

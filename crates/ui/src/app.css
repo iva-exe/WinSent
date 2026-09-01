@@ -129,3 +129,149 @@ body {
 		animation: none !important;
 	}
 }
+
+/* ── dlaždice na Home ──────────────────────────────────────────────
+   Widgetů je přes čtyřicet a kreslí je šest komponent. Kdyby si každá
+   nesla vlastní kopii těchhle tříd, rozešly by se hned u prvního
+   doplnění — proto jsou tady, ne ve scoped stylu. */
+.w-big {
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+	font-size: 1.65rem;
+	line-height: 1.1;
+	font-weight: 500;
+}
+.w-mid {
+	font-size: var(--fs-xl);
+	line-height: 1.25;
+}
+.w-sub {
+	font-size: var(--fs-xs);
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.w-dim {
+	color: var(--text-faint);
+}
+.w-mono {
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+}
+.w-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	overflow: hidden;
+}
+.w-list.scroll {
+	overflow-y: auto;
+	flex: 1;
+	min-height: 0;
+}
+.w-row {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	font-size: var(--fs-md);
+	min-width: 0;
+}
+.w-name {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.w-bar {
+	position: relative;
+	height: 5px;
+	border-radius: 3px;
+	background: var(--surface-hover);
+	overflow: hidden;
+	flex: 1;
+}
+.w-fill {
+	display: block;
+	height: 100%;
+	border-radius: 3px;
+}
+.w-empty {
+	font-size: var(--fs-sm);
+	color: var(--text-faint);
+}
+.w-segs {
+	display: flex;
+	gap: 3px;
+	margin-bottom: 6px;
+	flex: none;
+}
+.w-seg {
+	padding: 2px 7px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background: none;
+	color: var(--text-dim);
+	font: inherit;
+	font-size: var(--fs-2xs);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	cursor: pointer;
+}
+.w-seg:hover {
+	background: var(--surface-hover);
+	color: var(--text);
+}
+.w-seg.on {
+	border-color: var(--border-strong);
+	background: var(--surface-hover);
+	color: var(--text);
+}
+.w-akce {
+	align-self: flex-start;
+	margin-top: 6px;
+	padding: 3px 9px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background: none;
+	color: var(--text-dim);
+	font: inherit;
+	font-size: var(--fs-xs);
+	cursor: pointer;
+	flex: none;
+}
+.w-akce:hover:not(:disabled) {
+	background: var(--surface-hover);
+	color: var(--text);
+	border-color: var(--border-strong);
+}
+.w-akce:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+.w-klik {
+	border: 0;
+	background: none;
+	color: inherit;
+	font: inherit;
+	padding: 0;
+	text-align: left;
+	cursor: pointer;
+	width: 100%;
+}
+.w-klik:hover .w-name {
+	color: var(--text);
+	text-decoration: underline;
+	text-decoration-style: dotted;
+	text-underline-offset: 3px;
+}
+.w-ico {
+	flex: none;
+	width: 15px;
+	height: 15px;
+	border-radius: 3px;
+}
