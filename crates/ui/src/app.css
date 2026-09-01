@@ -275,3 +275,11 @@ body {
 	height: 15px;
 	border-radius: 3px;
 }
+
+/* Během přetahování dlaždice se nesmí chytat text — jinak se místo
+   karty táhne výběr přes půl přehledu. */
+html.tahne-dlazdici,
+html.tahne-dlazdici * {
+	user-select: none;
+	cursor: grabbing !important;
+}

@@ -10,7 +10,8 @@
 	// vypadala jako vytížený stroj), síťový režim se přizpůsobuje
 	// maximu v okně, protože absolutní strop u linky neexistuje.
 	let {
-		/// Hodnoty zleva doprava; poslední je „teď".
+		/// Hodnoty zleva doprava; poslední je „teď". `null` = metrika,
+		/// kterou stroj v tom vzorku nehlásil.
 		values = [],
 		/// Druhá série (upload) — kreslí se slabší barvou.
 		values2 = null,
@@ -18,12 +19,25 @@
 		skala = 'pct',
 		barva = 'var(--ok)',
 		barva2 = 'var(--net-up)',
+		/// Výška v bodech; `null` = vyplnit, co dá rodič (dlaždice se
+		/// dá natáhnout, takže pevná čísla by se rozešla).
 		vyska = 44,
 		/// Vyplnit plochu pod křivkou?
 		vypln = true
 	} = $props();
 
 	let canvas;
+	// Dlaždice se dá natáhnout za hranu a plátno se samo nepřekreslí —
+	// do dalšího vzorku by zůstala roztažená stará bitmapa. Tohle je ta
+	// jediná závislost, kterou nejde vyčíst z dat.
+	let zmenaVelikosti = $state(0);
+
+	$effect(() => {
+		if (!canvas) return;
+		const ro = new ResizeObserver(() => (zmenaVelikosti += 1));
+		ro.observe(canvas);
+		return () => ro.disconnect();
+	});
 
 	function cssBarva(v) {
 		const s = String(v).trim();
@@ -37,7 +51,7 @@
 		const dx = w / (data.length - 1);
 		ctx.beginPath();
 		data.forEach((v, i) => {
-			const y = h - Math.min(v / max, 1) * (h - 2) - 1;
+			const y = h - Math.min((v ?? 0) / max, 1) * (h - 2) - 1;
 			if (i === 0) ctx.moveTo(0, y);
 			else ctx.lineTo(i * dx, y);
 		});
@@ -64,27 +78,29 @@
 		values2?.length;
 		skala;
 		vyska;
+		zmenaVelikosti;
 		if (!canvas) return;
 		const w = canvas.clientWidth;
-		if (!w) return;
+		const h = vyska ?? canvas.clientHeight;
+		if (!w || !h) return;
 		const dpr = window.devicePixelRatio || 1;
 		canvas.width = w * dpr;
-		canvas.height = vyska * dpr;
+		canvas.height = h * dpr;
 		const ctx = canvas.getContext('2d');
 		ctx.scale(dpr, dpr);
-		ctx.clearRect(0, 0, w, vyska);
+		ctx.clearRect(0, 0, w, h);
 
 		let max = 100;
 		if (skala === 'auto') {
 			const vse = values2 ? [...values, ...values2] : values;
-			max = Math.max(1, ...vse) * 1.15;
+			max = Math.max(1, ...vse.map((v) => v ?? 0)) * 1.15;
 		}
-		if (values2) krivka(ctx, values2, w, vyska, max, cssBarva(barva2), false);
-		krivka(ctx, values, w, vyska, max, cssBarva(barva), vypln);
+		if (values2) krivka(ctx, values2, w, h, max, cssBarva(barva2), false);
+		krivka(ctx, values, w, h, max, cssBarva(barva), vypln);
 	});
 </script>
 
-<canvas bind:this={canvas} style:height="{vyska}px"></canvas>
+<canvas bind:this={canvas} style:height={vyska ? `${vyska}px` : '100%'}></canvas>
 
 <style>
 	canvas {

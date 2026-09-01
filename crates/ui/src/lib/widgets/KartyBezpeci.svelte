@@ -13,10 +13,13 @@
 	import { skryte, jeSkryty, klicIncidentu } from '$lib/hidden.svelte.js';
 	import { pred, doba, pocet } from './pomoc.js';
 
-	let { typ, velikost: rozmer } = $props();
+	// Rozměry přicházejí v jednotkách mřížky: šířka ve sloupcích,
+	// výška v řádcích (řádek je nízký, viz registr.js). Obsah se podle
+	// nich rozhoduje, co se ještě vejde.
+	let { typ, w = 1, h = 2 } = $props();
 
-	let siroka = $derived(rozmer !== 'mala');
-	let velka = $derived(rozmer === 'velka' || rozmer === 'siroka');
+	let siroka = $derived(w >= 2);
+	let velka = $derived(w >= 2 && h >= 4);
 
 	// ── ochrana ──────────────────────────────────────────────────────
 	let radky = $derived(ochranaRadky(data.security));

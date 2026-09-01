@@ -73,7 +73,10 @@ function pridejVzorek(s) {
 	serie.ts.push(ts);
 	serie.cpu.push(s.cpu_pct ?? 0);
 	serie.ramMb.push(s.mem_used_mb ?? 0);
-	serie.gpu.push(s.gpu_pct ?? 0);
+	// GPU se nepodsouvá nula: stroj bez NVML by pak v součtu zátěže
+	// vypadal klidnější, než jaký je. Kdo z toho kreslí, si nulu doplní
+	// sám; kdo počítá, tu hodnotu přeskočí.
+	serie.gpu.push(s.gpu_pct ?? null);
 	serie.rx.push(s.net_rx_bps ?? 0);
 	serie.tx.push(s.net_tx_bps ?? 0);
 	if (serie.ts.length > STROP) {
@@ -96,7 +99,7 @@ async function doplnHistorii() {
 				nove.ts.push(p.ts);
 				nove.cpu.push(p.cpu_pct ?? 0);
 				nove.ramMb.push(p.mem_used_mb ?? 0);
-				nove.gpu.push(p.gpu_pct ?? 0);
+				nove.gpu.push(p.gpu_pct ?? null);
 				nove.rx.push(p.net_rx_bps ?? 0);
 				nove.tx.push(p.net_tx_bps ?? 0);
 			}

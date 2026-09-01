@@ -20,7 +20,11 @@
 		return [...skupiny.entries()];
 	});
 
-	let naplose = $derived(new Set(rozlozeni.dlazdice.map((d) => d.id)));
+	// Widget, kterého smí být na ploše víc (oddělovač), se nikdy
+	// neoznačí za „už umístěný" — jinak by šel přidat jen jednou.
+	let naplose = $derived(
+		new Set(rozlozeni.dlazdice.filter((d) => !REGISTR[d.id]?.vice).map((d) => d.id))
+	);
 </script>
 
 <section class="pridat">

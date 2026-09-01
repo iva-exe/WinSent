@@ -11,17 +11,25 @@
 	import { data, serie } from './data.svelte.js';
 	import { ikony, chciIkonu } from './ikony.svelte.js';
 	import { barvaZateze, bps, velikost, doba } from './pomoc.js';
+	import { zatezSystemu } from '$lib/sysload.js';
 
-	let { typ, velikost: rozmer } = $props();
+	// Rozměry přicházejí v jednotkách mřížky: šířka ve sloupcích,
+	// výška v řádcích (řádek je nízký, viz registr.js). Obsah se podle
+	// nich rozhoduje, co se ještě vejde.
+	let { typ, w = 1, h = 2 } = $props();
 
-	let siroka = $derived(rozmer !== 'mala');
+	let siroka = $derived(w >= 2);
 	let s = $derived(data.system);
 
 	let memPct = $derived(s?.mem_total_mb ? (s.mem_used_mb / s.mem_total_mb) * 100 : null);
 
 	// ── graf ─────────────────────────────────────────────────────────
-	let metrika = $state('cpu');
+	// Systém je první a výchozí — stejně jako v Tasks. Je to ta jediná
+	// křivka, ze které se pozná, jestli je stroj zaneprázdněný; CPU, RAM
+	// a GPU jsou až odpověď na otázku „čím".
+	let metrika = $state('sys');
 	const METRIKY = [
+		{ id: 'sys', label: 'Systém' },
 		{ id: 'cpu', label: 'CPU' },
 		{ id: 'ram', label: 'RAM' },
 		{ id: 'gpu', label: 'GPU' },
@@ -31,13 +39,21 @@
 		const total = s?.mem_total_mb;
 		return total ? serie.ramMb.map((mb) => (mb / total) * 100) : [];
 	});
+	// Zátěž systému se počítá ze stejné funkce jako graf v Tasks, ať
+	// totéž číslo nevyjde na dvou místech jinak.
+	let sysSerie = $derived.by(() =>
+		serie.cpu.map((c, i) => zatezSystemu([c, ramPct[i], serie.gpu[i]]))
+	);
+	let sysTed = $derived(s ? zatezSystemu([s.cpu_pct, memPct, s.gpu_pct]) : null);
 	let grafData = $derived.by(() => {
-		if (metrika === 'cpu') return { v: serie.cpu, v2: null, skala: 'pct', barva: 'var(--ok)' };
+		if (metrika === 'sys') return { v: sysSerie, v2: null, skala: 'pct', barva: 'var(--ok)' };
+		if (metrika === 'cpu') return { v: serie.cpu, v2: null, skala: 'pct', barva: 'var(--net-down)' };
 		if (metrika === 'ram') return { v: ramPct, v2: null, skala: 'pct', barva: 'var(--net-up)' };
 		if (metrika === 'gpu') return { v: serie.gpu, v2: null, skala: 'pct', barva: 'var(--warn)' };
 		return { v: serie.rx, v2: serie.tx, skala: 'auto', barva: 'var(--net-down)' };
 	});
 	let grafTeď = $derived.by(() => {
+		if (metrika === 'sys') return sysTed != null ? `${sysTed.toFixed(0)} %` : '—';
 		if (metrika === 'cpu') return s ? `${s.cpu_pct.toFixed(0)} %` : '—';
 		if (metrika === 'ram') return memPct != null ? `${memPct.toFixed(0)} %` : '—';
 		if (metrika === 'gpu') return s?.gpu_pct != null ? `${s.gpu_pct.toFixed(0)} %` : 'nehlásí';
@@ -45,8 +61,9 @@
 	});
 
 	// ── žrouti ───────────────────────────────────────────────────────
-	let podle = $state('cpu');
+	let podle = $state('sys');
 	const ZROUTI = [
+		{ id: 'sys', label: 'Systém' },
 		{ id: 'cpu', label: 'CPU' },
 		{ id: 'ram', label: 'Paměť' },
 		{ id: 'disk', label: 'Disk' },
@@ -54,6 +71,7 @@
 	];
 	let zrouti = $derived.by(() => {
 		const rows = data.procs ?? [];
+		const celkemB = (s?.mem_total_mb ?? 0) * 1024 * 1024;
 		const m = new Map();
 		for (const p of rows) {
 			const key = p.identity_key || `pid:${p.pid}`;
@@ -63,7 +81,8 @@
 				cpu: 0,
 				ram: 0,
 				disk: 0,
-				gpu: 0
+				gpu: 0,
+				sys: 0
 			};
 			a.cpu += p.cpu_pct;
 			a.ram += p.ws_bytes;
@@ -71,8 +90,17 @@
 			a.gpu += p.gpu_pct;
 			m.set(key, a);
 		}
+		// „Systém" je totéž číslo, jaké má sloupec SYS v Tasks: procesor
+		// a podíl na paměti svázané dohromady. Aplikace, která drží osm
+		// gigabajtů a nepočítá, je pro stroj taky zátěž.
+		for (const a of m.values()) {
+			a.sys = zatezSystemu([a.cpu, celkemB > 0 ? (a.ram / celkemB) * 100 : null]);
+		}
 		const out = [...m.values()].sort((a, b) => b[podle] - a[podle]);
-		return out.slice(0, siroka ? 6 : 3).filter((a) => a[podle] > 0);
+		// Kolik řádků se vejde, tolik se jich ukáže: dlaždice se dá
+		// natáhnout a prázdné místo pod třemi řádky by bylo k ničemu.
+		const radku = Math.max(2, Math.floor((h * 64 - 10 - 88) / 22));
+		return out.slice(0, radku).filter((a) => a[podle] > 0);
 	});
 	// Ikony se dotahují na pozadí; cache je společná všem dlaždicím,
 	// takže tentýž klíč se přes pipe žádá jednou, ne v každé z nich.
@@ -81,6 +109,7 @@
 	});
 
 	function hodnotaZrouta(a) {
+		if (podle === 'sys') return `${a.sys.toFixed(1)} %`;
 		if (podle === 'cpu') return `${a.cpu.toFixed(1)} %`;
 		if (podle === 'ram') return velikost(a.ram);
 		if (podle === 'disk') return bps(a.disk);
@@ -154,13 +183,15 @@
 		{/each}
 		<span class="ted w-mono">{grafTeď}</span>
 	</div>
+	<!-- Graf vyplní, co v dlaždici zbude. Pevná výška podle velikosti by
+	     se s taženou hranou rozešla hned při prvním doladění. -->
 	<div class="rost">
 		<MiniGraf
 			values={grafData.v}
 			values2={grafData.v2}
 			skala={grafData.skala}
 			barva={grafData.barva}
-			vyska={rozmer === 'stredni' ? 44 : rozmer === 'velka' ? 110 : 118}
+			vyska={null}
 		/>
 	</div>
 	<span class="w-sub">

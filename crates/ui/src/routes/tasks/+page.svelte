@@ -1,5 +1,6 @@
 <script>
 	import { invoke } from '@tauri-apps/api/core';
+	import { zatezSystemu } from '$lib/sysload.js';
 	import { openMenu, akceKopirovat, oddelovac } from '$lib/itemmenu.svelte.js';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
@@ -116,15 +117,6 @@
 		}
 		return 'čekám na další vzorek…';
 	});
-
-	function sysLoad(components) {
-		const vals = components.filter((v) => v != null && !Number.isNaN(v));
-		if (!vals.length) return 0;
-		const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
-		const max = Math.max(...vals);
-		const w = Math.min(max / 100, 1);
-		return mean * (1 - w) + max * w;
-	}
 
 	// Hover a zámek času (klik do grafu). Zámek má přednost.
 	let hover = $state(null);
@@ -336,7 +328,7 @@
 			threads: p.threads ?? null,
 			disk_bps,
 			gpu_pct,
-			sys_pct: sysLoad([cpu_pct, total > 0 ? (p.ws_bytes / total) * 100 : null]),
+			sys_pct: zatezSystemu([cpu_pct, total > 0 ? (p.ws_bytes / total) * 100 : null]),
 			// Identita aplikace (v2). Historie ji nemá → fallback na jméno.
 			identity_key: p.identity_key ?? `name:${p.name}`,
 			app_name: p.app_name ?? p.name,
@@ -395,7 +387,7 @@
 		// Sys zátěž skupiny ze součtu CPU + podílu RAM.
 		const total = (system?.mem_total_mb ?? 0) * 1024 * 1024;
 		for (const g of map.values()) {
-			g.sys_pct = sysLoad([g.cpu_pct, total > 0 ? (g.ws_bytes / total) * 100 : null]);
+			g.sys_pct = zatezSystemu([g.cpu_pct, total > 0 ? (g.ws_bytes / total) * 100 : null]);
 		}
 		return [...map.values()];
 	}
@@ -514,7 +506,7 @@
 			system = s;
 			error = '';
 			const memPct = (s.mem_used_mb / Math.max(s.mem_total_mb, 1)) * 100;
-			const sysPct = sysLoad([s.cpu_pct, memPct, s.gpu_pct]);
+			const sysPct = zatezSystemu([s.cpu_pct, memPct, s.gpu_pct]);
 			const now = Math.floor(Date.now() / 1000);
 			ts = push(ts, now);
 			cpu = push(cpu, s.cpu_pct);
@@ -581,7 +573,7 @@
 				push(ts, p.ts);
 				push(cpu, p.cpu_pct);
 				push(mem, memPct);
-				push(sys, sysLoad([p.cpu_pct, memPct, p.gpu_pct]));
+				push(sys, zatezSystemu([p.cpu_pct, memPct, p.gpu_pct]));
 				push(gpu, p.gpu_pct);
 				push(down, p.net_rx_bps ?? 0);
 				push(up, p.net_tx_bps ?? 0);
@@ -603,7 +595,7 @@
 				hTs.push(p.ts);
 				hCpu.push(p.cpu_pct);
 				hMem.push(memPct);
-				hSys.push(sysLoad([p.cpu_pct, memPct, p.gpu_pct]));
+				hSys.push(zatezSystemu([p.cpu_pct, memPct, p.gpu_pct]));
 				hGpu.push(p.gpu_pct);
 				hDown.push(p.net_rx_bps ?? 0);
 				hUp.push(p.net_tx_bps ?? 0);

@@ -9,9 +9,12 @@
 	import { data } from './data.svelte.js';
 	import { doba } from './pomoc.js';
 
-	let { typ, velikost: rozmer } = $props();
+	// Rozměry přicházejí v jednotkách mřížky: šířka ve sloupcích,
+	// výška v řádcích (řádek je nízký, viz registr.js). Obsah se podle
+	// nich rozhoduje, co se ještě vejde.
+	let { typ, w = 1, h = 2 } = $props();
 
-	let siroka = $derived(rozmer !== 'mala');
+	let siroka = $derived(w >= 2);
 	let hw = $derived(data.hardware);
 
 	// ── teploty ──────────────────────────────────────────────────────

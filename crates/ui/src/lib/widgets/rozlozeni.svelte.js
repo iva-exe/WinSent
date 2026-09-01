@@ -8,10 +8,16 @@
 // který v nové verzi zmizel, se tiše vyhodí; ten, který přibyl, se
 // NEPŘIDÁVÁ sám — jinak by uživateli po každé aktualizaci naskakovaly
 // dlaždice, které si nevybral. Nové jsou v nabídce „Přidat".
+//
+// Každá položka má vlastní klíč, ne jen id widgetu: oddělovačů může
+// být na ploše libovolně mnoho a musí jít rozlišit — jak pro Svelte
+// (klíčovaný each), tak pro přesouvání a mazání.
 
-import { REGISTR, VELIKOSTI, vychoziRozlozeni } from './registr.js';
+import { REGISTR, RADEK, MEZERA, MAX_VYSKA, vychoziRozlozeni } from './registr.js';
 
 const KLIC = 'winsent.home.widgets';
+
+export { RADEK, MEZERA, MAX_VYSKA };
 
 /// Kolik sloupců má mřížka naplno. Dlaždice se udávají v těchhle
 /// jednotkách, takže rozložení sedí i po zmenšení okna — jen se přelije.
@@ -22,20 +28,61 @@ export const SLOUPCU = 4;
 /// úzkém okně nevytlačila mřížku do vodorovného rolování.
 export const mrizka = $state({ sloupcu: SLOUPCU });
 
+/// Která dlaždice se zrovna táhne (klíč), ať to vědí i ostatní.
+export const tah = $state({ klic: null });
+
+let citac = 0;
+function novyKlic(id) {
+	citac += 1;
+	return `${id}~${citac}`;
+}
+
+/// Rozměry ze staršího formátu, kde byla velikost pojmenovaná.
+/// Ponechané kvůli tomu, aby uživatel po aktualizaci nepřišel o to,
+/// co si poskládal.
+const STARE = {
+	mala: [1, 2],
+	stredni: [2, 2],
+	vysoka: [1, 4],
+	velka: [2, 4],
+	siroka: [4, 4]
+};
+
+function omez(w, id, jakoW) {
+	const reg = REGISTR[id];
+	const min = reg?.min ?? [1, 2];
+	if (jakoW) return Math.max(min[0], Math.min(SLOUPCU, Math.round(w) || min[0]));
+	return Math.max(min[1], Math.min(MAX_VYSKA, Math.round(w) || min[1]));
+}
+
 function ocisti(seznam) {
 	if (!Array.isArray(seznam)) return null;
 	const videne = new Set();
 	const out = [];
 	for (const it of seznam) {
 		if (!it || typeof it !== 'object') continue;
-		if (typeof it.id !== 'string' || !REGISTR[it.id]) continue;
-		if (videne.has(it.id)) continue;
-		videne.add(it.id);
-		const dovolene = REGISTR[it.id].velikosti ?? Object.keys(VELIKOSTI);
-		const velikost = dovolene.includes(it.velikost)
-			? it.velikost
-			: (REGISTR[it.id].vychozi ?? dovolene[0]);
-		out.push({ id: it.id, velikost });
+		const reg = REGISTR[it.id];
+		if (!reg) continue;
+		// Měřák dává smysl jednou; oddělovač kolikrát chce.
+		if (!reg.vice) {
+			if (videne.has(it.id)) continue;
+			videne.add(it.id);
+		}
+		const stara = typeof it.velikost === 'string' ? STARE[it.velikost] : null;
+		const w = omez(it.w ?? stara?.[0] ?? reg.vychozi[0], it.id, true);
+		const h = omez(it.h ?? stara?.[1] ?? reg.vychozi[1], it.id, false);
+		out.push({
+			klic: typeof it.klic === 'string' && it.klic ? it.klic : novyKlic(it.id),
+			id: it.id,
+			w,
+			h,
+			text: typeof it.text === 'string' ? it.text : ''
+		});
+	}
+	// Ať čítač nikdy nevyrobí klíč, který už na ploše je.
+	for (const it of out) {
+		const n = Number(it.klic.split('~')[1]);
+		if (Number.isFinite(n) && n > citac) citac = n;
 	}
 	return out;
 }
@@ -45,73 +92,114 @@ function nacti() {
 		const ulozene = ocisti(JSON.parse(localStorage.getItem(KLIC) ?? 'null'));
 		// Prázdný seznam je platná volba („nechci nic"), takže se
 		// nesmí splést s „ještě nikdy nenastaveno".
-		return ulozene ?? vychoziRozlozeni();
+		return ulozene ?? ocisti(vychoziRozlozeni());
 	} catch {
-		return vychoziRozlozeni();
+		return ocisti(vychoziRozlozeni());
 	}
 }
 
 /// Dlaždice v pořadí, v jakém se kreslí.
 export const rozlozeni = $state({ dlazdice: nacti() });
 
-function uloz() {
-	try {
-		localStorage.setItem(KLIC, JSON.stringify(rozlozeni.dlazdice));
-	} catch {
-		/* bez úložiště platí volba aspoň do zavření okna */
-	}
+let odlozeny = null;
+function uloz(hned = true) {
+	// Text oddělovače se ukládá při psaní, takže se zápis do úložiště
+	// odkládá — jinak by se serializovalo celé rozložení na každou
+	// stisknutou klávesu.
+	clearTimeout(odlozeny);
+	const zapis = () => {
+		try {
+			localStorage.setItem(KLIC, JSON.stringify(rozlozeni.dlazdice));
+		} catch {
+			/* bez úložiště platí volba aspoň do zavření okna */
+		}
+	};
+	if (hned) zapis();
+	else odlozeny = setTimeout(zapis, 400);
 }
 
-/// Je widget na ploše?
+function index(klic) {
+	return rozlozeni.dlazdice.findIndex((d) => d.klic === klic);
+}
+
+/// Je widget na ploše? (u vícenásobných to nic neomezuje)
 export function jeNa(id) {
 	return rozlozeni.dlazdice.some((d) => d.id === id);
 }
 
 export function pridej(id) {
-	if (!REGISTR[id] || jeNa(id)) return;
-	const w = REGISTR[id];
+	const reg = REGISTR[id];
+	if (!reg || (!reg.vice && jeNa(id))) return;
 	rozlozeni.dlazdice = [
 		...rozlozeni.dlazdice,
-		{ id, velikost: w.vychozi ?? (w.velikosti ?? Object.keys(VELIKOSTI))[0] }
+		{ klic: novyKlic(id), id, w: reg.vychozi[0], h: reg.vychozi[1], text: '' }
 	];
 	uloz();
 }
 
-export function odeber(id) {
-	rozlozeni.dlazdice = rozlozeni.dlazdice.filter((d) => d.id !== id);
+export function odeber(klic) {
+	rozlozeni.dlazdice = rozlozeni.dlazdice.filter((d) => d.klic !== klic);
 	uloz();
 }
 
-/// Přepne velikost na další povolenou. Kolotoč místo nabídky: velikostí
-/// jsou čtyři a klikat se má rychle.
-export function dalsiVelikost(id) {
-	const w = REGISTR[id];
-	if (!w) return;
-	const dovolene = w.velikosti ?? Object.keys(VELIKOSTI);
-	rozlozeni.dlazdice = rozlozeni.dlazdice.map((d) => {
-		if (d.id !== id) return d;
-		const i = dovolene.indexOf(d.velikost);
-		return { ...d, velikost: dovolene[(i + 1) % dovolene.length] };
-	});
+/// Šířka ve sloupcích — nastavuje ji přepínač v hlavičce dlaždice.
+export function nastavSirku(klic, w) {
+	rozlozeni.dlazdice = rozlozeni.dlazdice.map((d) =>
+		d.klic === klic ? { ...d, w: omez(w, d.id, true) } : d
+	);
 	uloz();
 }
 
-/// Přesune dlaždici na jinou pozici (přetažením).
-export function presun(zId, naId) {
-	if (zId === naId) return;
+/// Výška v řádcích — táhne se za spodní hranu dlaždice.
+export function nastavVysku(klic, h) {
+	const i = index(klic);
+	if (i < 0) return;
+	const nova = omez(h, rozlozeni.dlazdice[i].id, false);
+	if (nova === rozlozeni.dlazdice[i].h) return;
+	rozlozeni.dlazdice = rozlozeni.dlazdice.map((d) => (d.klic === klic ? { ...d, h: nova } : d));
+	uloz();
+}
+
+/// Nejmenší povolená výška — dlaždice ví, kam až smí táhnout.
+export function minVyska(id) {
+	return REGISTR[id]?.min?.[1] ?? 2;
+}
+export function minSirka(id) {
+	return REGISTR[id]?.min?.[0] ?? 1;
+}
+
+/// Text oddělovače.
+export function nastavText(klic, text) {
+	rozlozeni.dlazdice = rozlozeni.dlazdice.map((d) => (d.klic === klic ? { ...d, text } : d));
+	uloz(false);
+}
+
+/// Přesune dlaždici na místo jiné (přetažením).
+///
+/// Nepřehazuje je: vytáhne taženou z pořadí a vloží ji tam, kde je
+/// cílová. Prohození by u dlaždic různých velikostí přeskládalo celou
+/// mřížku a uživatel by nepoznal, co vlastně udělal.
+export function presunNa(zKlic, naKlic) {
+	if (zKlic === naKlic) return false;
+	const z = index(zKlic);
+	const na = index(naKlic);
+	if (z < 0 || na < 0) return false;
 	const pole = [...rozlozeni.dlazdice];
-	const z = pole.findIndex((d) => d.id === zId);
-	const na = pole.findIndex((d) => d.id === naId);
-	if (z < 0 || na < 0) return;
 	const [vyjmuta] = pole.splice(z, 1);
 	pole.splice(na, 0, vyjmuta);
 	rozlozeni.dlazdice = pole;
+	return true;
+}
+
+/// Uloží pořadí po dotažení. Během tahu se s úložištěm nepracuje —
+/// mezistavů je při přejetí přes plochu klidně dvacet.
+export function ulozPoradi() {
 	uloz();
 }
 
 /// Vrátí výchozí sadu. Nabízí se v režimu úprav, když si to někdo
 /// rozháže a chce začít znovu.
 export function obnovVychozi() {
-	rozlozeni.dlazdice = vychoziRozlozeni();
+	rozlozeni.dlazdice = ocisti(vychoziRozlozeni());
 	uloz();
 }

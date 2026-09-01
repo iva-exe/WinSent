@@ -14,7 +14,7 @@
 	import { Pencil, Check, LayoutGrid } from 'lucide-svelte';
 	import Dlazdice from '$lib/widgets/Dlazdice.svelte';
 	import Pridat from '$lib/widgets/Pridat.svelte';
-	import { REGISTR } from '$lib/widgets/registr.js';
+	import { REGISTR, RADEK, MEZERA } from '$lib/widgets/registr.js';
 	import { rozlozeni, SLOUPCU, mrizka } from '$lib/widgets/rozlozeni.svelte.js';
 	import { odebirej, dohon } from '$lib/widgets/data.svelte.js';
 	import { sekceViditelna } from '$lib/prefs.svelte.js';
@@ -24,11 +24,11 @@
 
 	/// Dlaždice k vykreslení: platné id a sekce, kterou si uživatel
 	/// nevypnul. Widget do vypnuté sekce by nabízel odkaz, který
-	/// v navigaci není.
+	/// v navigaci není; oddělovač do žádné sekce nepatří, ten zůstává.
 	let dlazdice = $derived(
 		rozlozeni.dlazdice
-			.map((d) => ({ ...d, w: REGISTR[d.id] }))
-			.filter((d) => d.w && sekceViditelna(d.w.href))
+			.map((d) => ({ polozka: d, w: REGISTR[d.id] }))
+			.filter((d) => d.w && (!d.w.href || sekceViditelna(d.w.href)))
 	);
 
 	// Jeden odběr za celý přehled. Kdyby se přihlašovala každá dlaždice
@@ -69,7 +69,9 @@
 	<header class="head">
 		<h1>Home</h1>
 		<span class="sub">
-			{edit ? 'přetažením přesuneš, čtvereček mění velikost' : 'souhrn systému — klik na dlaždici otevře sekci'}
+			{edit
+				? 'přetažením přesuneš, spodní hranou nastavíš výšku, proužky šířku'
+				: 'souhrn systému — klik na dlaždici otevře sekci'}
 		</span>
 		<button class="rezim" class:on={edit} onclick={() => (edit = !edit)}>
 			{#if edit}<Check size={14} /> Hotovo{:else}<Pencil size={14} /> Upravit{/if}
@@ -81,16 +83,21 @@
 	{/if}
 
 	<div class="plocha" bind:this={plocha}>
-		<div class="grid" style:grid-template-columns="repeat({mrizka.sloupcu}, 1fr)">
-			{#each dlazdice as d (d.id)}
+		<div
+			class="grid"
+			style:grid-template-columns="repeat({mrizka.sloupcu}, 1fr)"
+			style:grid-auto-rows="{RADEK}px"
+			style:gap="{MEZERA}px"
+		>
+			{#each dlazdice as d (d.polozka.klic)}
 				{@const Karta = d.w.komp}
-				<Dlazdice widget={d.w} velikost={d.velikost} {edit}>
+				<Dlazdice widget={d.w} polozka={d.polozka} {edit}>
 					<!-- Dlaždic je na ploše deset a čtou data z devíti různých
 					     míst. Kdyby jedna spadla na neočekávaném tvaru
 					     odpovědi, vzala by s sebou celý přehled — takhle
 					     zůstane u své karty a zbytek jede dál. -->
 					<svelte:boundary>
-						<Karta typ={d.w.typ} velikost={d.velikost} />
+						<Karta typ={d.w.typ} w={d.polozka.w} h={d.polozka.h} polozka={d.polozka} {edit} />
 						{#snippet failed(error)}
 							<span class="w-empty" title={String(error)}>
 								Tuhle dlaždici se nepodařilo vykreslit.
@@ -164,12 +171,13 @@
 	}
 	.grid {
 		display: grid;
-		/* Pevná výška řádku, ne auto: bez ní by dlaždice „přes dva
-		   řádky" nebyla vyšší než ta vedle a přepínání velikostí by
-		   nedělalo nic vidět. */
-		grid-auto-rows: 108px;
-		grid-auto-flow: row dense;
-		gap: 10px;
+		/* Nízký řádek, ne výška celé dlaždice: výška se táhne za spodní
+		   hranu a v krocích po celém widgetu by se nedala doladit.
+		   Tok je schválně obyčejný, ne `dense`: dohušťování přeskládává
+		   dlaždice jinam, než kam je člověk pustil, a u ručně skládané
+		   plochy je předvídatelnost důležitější než pár prázdných míst
+		   (a ta se stejně zaplní změnou šířky). */
+		grid-auto-flow: row;
 		align-content: start;
 	}
 	.prazdno {
