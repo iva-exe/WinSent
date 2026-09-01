@@ -220,22 +220,64 @@ pub fn zapnuta() -> bool {
 
 /// Uloží, jestli je lišta zapnutá. Zkratka se zachová.
 pub fn save_zapnuta(zapnuta: bool) -> Result<(), String> {
-    zapis(&load(), zapnuta)
+    zapis(&load(), zapnuta, zvetseni())
 }
 
 /// Zapíše celý soubor. Obě hodnoty vždycky pohromadě — kdyby se psaly
 /// zvlášť, druhý zápis by ten první přemazal.
-fn zapis(accel: &str, zapnuta: bool) -> Result<(), String> {
+fn zapis(accel: &str, zapnuta: bool, zvetseni: f64) -> Result<(), String> {
     let p = prefs_path();
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d).map_err(|e| format!("nelze vytvořit {}: {e}", d.display()))?;
     }
     let text = format!(
-        "{{\n  \"spotlight_hotkey\": \"{}\",\n  \"spotlight_enabled\": {}\n}}\n",
+        "{{\n  \"spotlight_hotkey\": \"{}\",\n  \"spotlight_enabled\": {},\n  \"ui_zoom\": {:.2}\n}}\n",
         accel.replace('"', ""),
-        zapnuta
+        zapnuta,
+        zvetseni
     );
     std::fs::write(&p, text).map_err(|e| format!("nelze zapsat {}: {e}", p.display()))
+}
+
+/// Meze zvětšení UI.
+///
+/// Pod sedmdesáti procenty přestává být text čitelný a nad sto padesáti
+/// se rozbíjí rozvržení, které počítá s tím, že se sekce vejde na
+/// obrazovku. Uvnitř těch mezí ať si každý nastaví, co mu vyhovuje.
+pub const ZVETSENI_MIN: f64 = 0.7;
+pub const ZVETSENI_MAX: f64 = 1.5;
+
+/// Zvětšení uživatelského rozhraní (1.0 = beze změny).
+///
+/// Řeší se přiblížením celého webview, ne přepočtem stylů: rozvržení
+/// aplikace míchá rem a pixely, takže samotná změna velikosti písma by
+/// posunula text a nechala rámečky, kde byly. Přiblížení zvětší
+/// všechno stejně.
+pub fn zvetseni() -> f64 {
+    let Ok(text) = std::fs::read_to_string(prefs_path()) else {
+        return 1.0;
+    };
+    let Some((_, zbytek)) = text.split_once("\"ui_zoom\"") else {
+        return 1.0;
+    };
+    let cislo: String = zbytek
+        .trim_start()
+        .trim_start_matches(':')
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    cislo
+        .parse::<f64>()
+        .ok()
+        .filter(|z| (ZVETSENI_MIN..=ZVETSENI_MAX).contains(z))
+        .unwrap_or(1.0)
+}
+
+/// Uloží zvětšení. Ostatní volby zůstanou.
+pub fn save_zvetseni(z: f64) -> Result<(), String> {
+    let z = z.clamp(ZVETSENI_MIN, ZVETSENI_MAX);
+    zapis(&load(), zapnuta(), z)
 }
 
 /// Přečte uloženou zkratku; když soubor není nebo je vadný, výchozí.
@@ -269,5 +311,5 @@ pub fn save(accel: &str) -> Result<(), String> {
             "zkratce {accel:?} nerozumím — potřebuje modifikátor (Alt, Ctrl, Shift, Win) a klávesu"
         ));
     }
-    zapis(accel, zapnuta())
+    zapis(accel, zapnuta(), zvetseni())
 }

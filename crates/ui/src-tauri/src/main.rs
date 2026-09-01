@@ -879,6 +879,36 @@ fn set_spotlight_hotkey(accel: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Zvětšení uživatelského rozhraní (1.0 = beze změny).
+#[tauri::command(async)]
+fn query_ui_zoom() -> f64 {
+    hotkey::zvetseni()
+}
+
+/// Nastaví zvětšení UI a hned ho použije na všechna okna.
+///
+/// Přibližuje se celé webview, ne jen písmo: rozvržení míchá rem
+/// a pixely, takže samotná změna velikosti textu by ho posunula a
+/// rámečky nechala, kde byly.
+#[tauri::command(async)]
+fn set_ui_zoom(app: tauri::AppHandle, zoom: f64) -> Result<f64, String> {
+    hotkey::save_zvetseni(zoom)?;
+    let z = hotkey::zvetseni();
+    let h = app.clone();
+    let _ = app.run_on_main_thread(move || pouzij_zvetseni(&h, z));
+    Ok(z)
+}
+
+/// Použije zvětšení na hlavní okno i na lištu.
+fn pouzij_zvetseni(app: &tauri::AppHandle, zoom: f64) {
+    use tauri::Manager;
+    for label in ["main", spotlight::LABEL] {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.set_zoom(zoom);
+        }
+    }
+}
+
 /// Je vyhledávací lišta zapnutá?
 #[tauri::command(async)]
 fn get_spotlight_enabled() -> bool {
@@ -1309,6 +1339,8 @@ fn main() {
             focus_spotlight,
             get_spotlight_enabled,
             set_spotlight_enabled,
+            query_ui_zoom,
+            set_ui_zoom,
             spotlight_note,
             show_spotlight,
             set_db_dir,
@@ -1367,6 +1399,9 @@ fn main() {
         ])
         .setup(|app| {
             setup_tray(app)?;
+            // Zvětšení UI z minule. Musí se nastavit i tady, ne jen
+            // při změně — webview startuje vždycky na sto procentech.
+            pouzij_zvetseni(app.handle(), hotkey::zvetseni());
             // Spouštění po přihlášení. Ve výchozím stavu zapnuté a
             // zabere to jen při úplně prvním startu; pak rozhoduje
             // uživatel přepínačem v Nastavení.

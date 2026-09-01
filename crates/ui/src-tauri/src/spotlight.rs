@@ -181,12 +181,17 @@ fn create(app: &AppHandle, route: &str) -> Result<(), String> {
         // Tauri návratovou hodnotu zahazuje.
         //
         // Alpha barvy NIKDY nesmí být 0 — s nulovou průhledností se
-        // Acrylic neaplikuje vůbec. Barva navíc platí jen na Windows 10
-        // v1903+; na jedenáctkách si tón řídí systém sám, proto ho musí
-        // dost nést i CSS v `.spot`.
+        // Acrylic neaplikuje vůbec.
+        //
+        // Zůstává skoro nulová schválně: barva efektu platí JEN na
+        // Windows 10. Na jedenáctkách jde acrylic přes
+        // DwmSetWindowAttribute a tón si řídí systém sám, takže když
+        // se tmavost svěřila jí, vypadala lišta ve světlém motivu
+        // bledě až bíle — přesně jak to hlásil tester. Celý tón proto
+        // nese CSS v `.spot`, které se chová na obou systémech stejně.
         .effects(WindowEffectsConfig {
             effects: vec![Effect::Acrylic],
-            color: Some(Color(20, 21, 27, 0x78)),
+            color: Some(Color(20, 21, 27, 0x01)),
             ..Default::default()
         })
         .build()
@@ -194,6 +199,9 @@ fn create(app: &AppHandle, route: &str) -> Result<(), String> {
             log(&format!("stavba okna selhala: {e}"));
             format!("spotlight okno nejde vytvořit: {e}")
         })?;
+
+    zaobli_rohy(&w);
+    let _ = w.set_zoom(crate::hotkey::zvetseni());
 
     // Zmizet při ztrátě zaměření. Bez tohohle by okno bez křížku
     // zůstalo viset přes celou plochu a nešlo by se ho zbavit.
@@ -212,6 +220,34 @@ fn create(app: &AppHandle, route: &str) -> Result<(), String> {
     });
 
     Ok(())
+}
+
+/// Na Windows 11 nechá systém zaoblit rohy okna.
+///
+/// Rozostření vyplňuje CELÝ obdélník okna a o zaoblení v CSS nic neví,
+/// takže na světlé ploše kolem zaoblené karty vykoukly ostré rohy.
+/// DWM to umí ořezat sám, i s materiálem na pozadí, a navíc
+/// s vyhlazenými hranami — což ruční ořez oknem regionem neumí.
+///
+/// Na desítkách atribut neexistuje a volání se tiše nepovede. Nevadí:
+/// tam je efekt tmavý a rohy proti tmavé ploše nejsou vidět.
+fn zaobli_rohy(w: &tauri::WebviewWindow) {
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    };
+    let Ok(hwnd) = w.hwnd() else {
+        return;
+    };
+    let volba = DWMWCP_ROUND;
+    // SAFETY: platný handle okna a hodnota o velikosti, kterou API čeká.
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &volba as *const _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&volba) as u32,
+        );
+    }
 }
 
 /// Kam okno postavit: střed monitoru, na kterém je kurzor.

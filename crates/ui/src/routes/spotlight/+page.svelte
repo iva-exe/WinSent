@@ -159,7 +159,10 @@
 		overflow: hidden;
 		border: 1px solid var(--border-strong);
 		border-radius: 14px;
-		background: rgba(28, 29, 36, 0.58);
+		/* Tón nese CSS, ne barva efektu: ta platí jen na Windows 10
+		   a na jedenáctkách se ignoruje, takže lišta tam vycházela bledá
+		   až bílá. Takhle vypadá na obou systémech stejně. */
+		background: rgba(24, 25, 31, 0.74);
 		box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
 	}
 </style>

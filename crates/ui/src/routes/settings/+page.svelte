@@ -14,6 +14,29 @@
 	let autostart = $state(false);
 	let autostartChyba = $state('');
 
+	// Zvětšení rozhraní. Přibližuje se celé webview, ne jen písmo:
+	// rozvržení míchá rem a pixely, takže samotná změna velikosti textu
+	// by ho posunula a rámečky nechala, kde byly. Na malém notebooku
+	// s poměrem 16:10 je i devadesát procent znát.
+	const ZVETSENI = [
+		{ v: 0.8, popis: '80 %' },
+		{ v: 0.9, popis: '90 %' },
+		{ v: 1.0, popis: '100 %' },
+		{ v: 1.1, popis: '110 %' },
+		{ v: 1.25, popis: '125 %' }
+	];
+	let zoom = $state(1);
+	let zoomChyba = $state('');
+
+	async function nastavZoom(z) {
+		try {
+			zoom = await invoke('set_ui_zoom', { zoom: z });
+			zoomChyba = '';
+		} catch (e) {
+			zoomChyba = String(e);
+		}
+	}
+
 	// Vyhledávací lišta jako celek. Stav drží hostitel v ui.json, protože
 	// s ním souvisí i registrace klávesové zkratky — dvě pravdy na dvou
 	// místech by se rozešly.
@@ -40,6 +63,11 @@
 			spotlight = await invoke('get_spotlight_enabled');
 		} catch {
 			/* starší hostitel to neumí — bere se jako zapnutá */
+		}
+		try {
+			zoom = await invoke('query_ui_zoom');
+		} catch {
+			/* starší hostitel to neumí — zůstane sto procent */
 		}
 	});
 
@@ -303,6 +331,26 @@
 
 	<section class="card">
 		<header class="card-head"><span class="label-tech">// zobrazení</span></header>
+
+		<div class="row">
+			<span class="row-main">
+				<span class="row-name">Velikost rozhraní</span>
+				<span class="row-why">
+					Zmenší nebo zvětší všechno naráz — text i ovládací prvky. Na menších obrazovkách
+					se pak vejde víc.
+				</span>
+				{#if zoomChyba}
+					<span class="row-err">{zoomChyba}</span>
+				{/if}
+			</span>
+			<span class="row-act zoomy">
+				{#each ZVETSENI as z (z.v)}
+					<button class="zoom" class:on={Math.abs(zoom - z.v) < 0.01} onclick={() => nastavZoom(z.v)}>
+						{z.popis}
+					</button>
+				{/each}
+			</span>
+		</div>
 
 		<button
 			class="row opt"
@@ -688,6 +736,33 @@
 	   je zbytečná práce navíc. */
 	.opt {
 		cursor: pointer;
+	}
+	/* Tvar stejný jako ostatní přepínače v aplikaci — jeden jazyk. */
+	.zoomy {
+		gap: 4px;
+	}
+	.zoom {
+		padding: 3px 8px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--surface);
+		color: var(--text-dim);
+		font: inherit;
+		font-size: var(--fs-sm);
+		font-variant-numeric: tabular-nums;
+		cursor: pointer;
+		transition:
+			color 0.12s ease,
+			background 0.12s ease,
+			box-shadow 0.12s ease;
+	}
+	.zoom:hover {
+		color: var(--text);
+	}
+	.zoom.on {
+		color: var(--text);
+		background: var(--surface-hover);
+		box-shadow: inset 0 0 0 1px var(--border-strong);
 	}
 	/* Zkratka se dá pořád nastavit, ale když je lišta vypnutá, nemá co
 	   dělat — ztlumí se, aby bylo vidět, že na ní teď nezáleží. */
