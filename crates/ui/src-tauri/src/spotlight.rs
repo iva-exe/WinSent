@@ -89,6 +89,9 @@ pub fn toggle(app: &AppHandle, route: &str) -> Result<(), String> {
         // zobrazení okna by znamenalo první snímek do vypnuté kompozice.
         let webview: &tauri::Webview<tauri::Wry> = w.as_ref();
         let _ = webview.show();
+        // Ořez rohů znovu: okno se právě přesunulo na monitor, kde je
+        // myš, a ten může mít jiné DPI než ten předchozí.
+        zaobli_rohy(&w);
         let _ = w.show();
         let _ = w.set_focus();
         // Přeposlat, kterou sekci ukázat — okno může být z minula jiné.
@@ -229,8 +232,13 @@ fn create(app: &AppHandle, route: &str) -> Result<(), String> {
 /// DWM to umí ořezat sám, i s materiálem na pozadí, a navíc
 /// s vyhlazenými hranami — což ruční ořez oknem regionem neumí.
 ///
-/// Na desítkách atribut neexistuje a volání se tiše nepovede. Nevadí:
-/// tam je efekt tmavý a rohy proti tmavé ploše nejsou vidět.
+/// Na desítkách ten atribut neexistuje a volání selže — tam se okno
+/// ořízne regionem, což zaoblení taky zařídí, jen bez vyhlazených hran.
+/// Proto se to zkouší v tomhle pořadí a region je až náhradní řešení.
+///
+/// Volá se při KAŽDÉM zobrazení, ne jen při stavbě: lišta se otevírá na
+/// monitoru, kde je zrovna myš, a ten může mít jiné DPI. Region je
+/// v obrazových bodech, takže by po přesunu seděl špatně.
 fn zaobli_rohy(w: &tauri::WebviewWindow) {
     use windows::Win32::Graphics::Dwm::{
         DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
@@ -240,13 +248,19 @@ fn zaobli_rohy(w: &tauri::WebviewWindow) {
     };
     let volba = DWMWCP_ROUND;
     // SAFETY: platný handle okna a hodnoty o velikosti, kterou API čeká.
-    unsafe {
-        let _ = DwmSetWindowAttribute(
+    let dwm_umi = unsafe {
+        DwmSetWindowAttribute(
             hwnd,
             DWMWA_WINDOW_CORNER_PREFERENCE,
             &volba as *const _ as *const core::ffi::c_void,
             std::mem::size_of_val(&volba) as u32,
-        );
+        )
+        .is_ok()
+    };
+    if !dwm_umi {
+        orizni_region(w, hwnd);
+    }
+    unsafe {
         // A rovnou i „tohle okno je tmavé".
         //
         // Na Windows 11 si materiál pozadí řídí systém sám a ve světlém
@@ -262,6 +276,42 @@ fn zaobli_rohy(w: &tauri::WebviewWindow) {
             &tmave as *const _ as *const core::ffi::c_void,
             std::mem::size_of_val(&tmave) as u32,
         );
+    }
+}
+
+/// Ořízne okno zaobleným obdélníkem — náhrada za DWM na Windows 10.
+///
+/// Region platí pro okno jako celek, takže ořízne i materiál na pozadí;
+/// přesně ten z rohů koukal. Je to jednobitová maska bez vyhlazení,
+/// takže hrana je tvrdší než v CSS — pořád ale lepší než ostrý roh,
+/// který na světlé ploše vyloženě svítí.
+///
+/// Poloměr musí sedět s `border-radius` prvku `.spot`;
+/// `CreateRoundRectRgn` bere průměr elipsy, tedy dvojnásobek. Rozměry
+/// se berou FYZICKÉ — region žádné DPI nezná.
+fn orizni_region(w: &tauri::WebviewWindow, hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
+    /// Musí odpovídat `border-radius` prvku `.spot`.
+    const POLOMER: f64 = 14.0;
+    let Ok(velikost) = w.outer_size() else {
+        return;
+    };
+    let meritko = w.scale_factor().unwrap_or(1.0);
+    let r = (POLOMER * meritko).round() as i32;
+    // SAFETY: region přebírá do vlastnictví systém (proto se neuvolňuje),
+    // rozměry jsou kladné a handle okna platný.
+    unsafe {
+        let rgn = CreateRoundRectRgn(
+            0,
+            0,
+            velikost.width as i32 + 1,
+            velikost.height as i32 + 1,
+            r * 2,
+            r * 2,
+        );
+        if !rgn.is_invalid() {
+            SetWindowRgn(hwnd, Some(rgn), true);
+        }
     }
 }
 
