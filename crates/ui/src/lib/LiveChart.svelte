@@ -158,6 +158,24 @@
 			: colorForLoad(v);
 	}
 
+	// Tečky = jednotlivé naměřené vzorky. Ukazují se jen při skutečném
+	// přiblížení.
+	//
+	// uPlot je ve výchozím stavu rozsvěcí podle hustoty dat: když je
+	// v okně málo bodů na jeho šířku, nakreslí je. Jenže historie starší
+	// než hodina je v desetisekundových kbelících a po výpadku měření
+	// v okně nemusí být skoro nic — „málo bodů" tedy nastane i na
+	// širokém okně a tečky naskakovaly odzoomované, kde nedávají smysl
+	// a jen se hádají s křivkou. Rozhoduje proto přiblížení; hustota je
+	// až druhá podmínka, aby z natěsnaných teček nebyla čára z puntíků.
+	const TECKY_DO = 120;
+
+	function ukazTecky(uu, _si, i0, i1) {
+		if (span > TECKY_DO) return false;
+		const sirka = uu.bbox.width / (window.devicePixelRatio || 1);
+		return (i1 - i0) * 9 <= sirka;
+	}
+
 	// Šrafování úseků bez měření: mezera > 30 s mezi vzorky (kaskáda
 	// dává max 10s buckety uvnitř dne) = služba neběžela.
 	let hatchPat = null;
@@ -375,7 +393,9 @@
 
 	// Tažení spodní čáry (pan indikátoru) — grab & scroll historií.
 	let trackEl;
-	let trackDrag = false;
+	// $state, protože se podle něj v šabloně schovává pan indikátor —
+	// jako obyčejná proměnná se změna při tažení nikam nepromítla.
+	let trackDrag = $state(false);
 
 	function trackSeek(clientX) {
 		const last = lastTs();
@@ -407,18 +427,27 @@
 		const netUp = cssVar('--net-up') || '#c4a7ff';
 
 		u?.destroy();
+		// Tečky dědí barvu své křivky (u procent tedy gradient podle
+		// zátěže) a zůstávají duté — stejně jako tečka pod kurzorem.
+		const tecky = { show: ukazTecky, size: 5 };
 		const series = isNet
 			? [
 					{},
-					{ width: 1.6, stroke: netDown, fill: rgba(hexToRgb(netDown), 0.06) },
-					{ width: 1.6, stroke: netUp, fill: rgba(hexToRgb(netUp), 0.06) }
+					{
+						width: 1.6,
+						stroke: netDown,
+						fill: rgba(hexToRgb(netDown), 0.06),
+						points: tecky
+					},
+					{ width: 1.6, stroke: netUp, fill: rgba(hexToRgb(netUp), 0.06), points: tecky }
 				]
 			: [
 					{},
 					{
 						width: 1.8,
 						stroke: (uu) => loadGradient(uu, 1),
-						fill: (uu) => loadGradient(uu, 0.07)
+						fill: (uu) => loadGradient(uu, 0.07),
+						points: tecky
 					}
 				];
 

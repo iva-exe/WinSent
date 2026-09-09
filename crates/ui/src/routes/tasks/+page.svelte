@@ -549,39 +549,124 @@
 		}
 	}
 
-	/// Dožene body, které se nenavzorkovaly, protože bylo okno zavřené.
+	/// Kdy se okno schovalo do oznamovací oblasti (unix), nebo null.
 	///
-	/// Zavřením do oznamovací oblasti se webview uspí (jinak by na
-	/// pozadí kreslilo a ptalo se služby naprázdno), takže se po tu dobu
-	/// nesbírá. Služba měří dál, jen si to UI musí po probuzení dojít —
-	/// bez toho zůstane v grafu díra, která vypadá, jako by služba
-	/// neběžela.
+	/// Uspané webview časovače nezastaví úplně, jen je Chromium utlumí —
+	/// za dobu schování jich pár přesto proběhne. V řadě proto nezůstane
+	/// jedna čistá díra, ale řídká změť bodů po minutách. Graf ji podle
+	/// pravidla „mezera přes 30 s = neměřeno" vyšrafuje, přestože služba
+	/// měřila celou dobu, a poslední vzorek je přitom čerstvý, takže se
+	/// dohánění nechytlo („mezi posledním vzorkem a teď není mezera").
+	/// Okamžik schování je jediné, z čeho se ten úsek pozná.
+	let skrytoOd = null;
+
+	/// Přeskládá úsek řady z toho, co má v databázi služba.
+	///
+	/// Dožene body, které se nenavzorkovaly (nebo navzorkovaly řídce),
+	/// protože bylo okno schované. Služba měří dál, jen si to UI musí po
+	/// probuzení dojít — bez toho zůstane v grafu vyšrafovaný pruh, který
+	/// vypadá, jako by služba neběžela.
 	let dohaniSe = false;
 	async function dohonHistorii() {
 		if (dohaniSe || !ts.length) return;
-		const posledni = ts[ts.length - 1];
 		const ted = Math.floor(Date.now() / 1000);
+		// Od schování okna; když se okamžik nezachytil, aspoň od
+		// posledního vzorku (starší chování).
+		const od = Math.min(skrytoOd ?? Infinity, ts[ts.length - 1]);
+		skrytoOd = null;
 		// Pár sekund mezery je běžné škubnutí, ne díra.
-		if (ted - posledni < 5) return;
+		if (ted - od < 5) return;
 		dohaniSe = true;
 		try {
-			const points = await invoke('query_system_history', { from: posledni + 1, to: ted });
-			const total = Math.max(system?.mem_total_mb ?? 1, 1);
-			for (const p of points) {
-				if (p.ts <= ts[ts.length - 1]) continue;
-				const memPct = (p.mem_used_mb / total) * 100;
-				push(ts, p.ts);
-				push(cpu, p.cpu_pct);
-				push(mem, memPct);
-				push(sys, zatezSystemu([p.cpu_pct, memPct, p.gpu_pct]));
-				push(gpu, p.gpu_pct);
-				push(down, p.net_rx_bps ?? 0);
-				push(up, p.net_tx_bps ?? 0);
-			}
+			const [body, dbody] = await Promise.all([
+				invoke('query_system_history', { from: od + 1, to: ted }),
+				invoke('query_disk_history', { from: od + 1, to: ted }).catch(() => [])
+			]);
+			prekresliUsek(od, ted, body, dbody);
 		} catch {
 			/* služba mimo — díra zůstane, ale to je pravda o stavu */
 		}
 		dohaniSe = false;
+	}
+
+	/// Nahradí úsek ⟨od, ted⟩ ve všech řadách daty ze služby.
+	///
+	/// Řada se skládá ze tří dílů: co je před úsekem, dotažená historie
+	/// a živé vzorky, které dorazily, než odpověď doletěla. Ten poslední
+	/// díl musí zůstat na konci — dotaz trvá desítky milisekund a
+	/// vteřinový časovač mezitím klidně přidá vzorek s časem novějším,
+	/// než má poslední bod historie.
+	///
+	/// Dřív se místo toho jen přidávalo za poslední vzorek a body starší
+	/// než on se zahazovaly. Když se během čekání stihl přidat živý
+	/// vzorek, zahodila se tím CELÁ dotažená historie a pruh zůstal
+	/// vyšrafovaný napořád. Odsud to „občas" — záleželo na tom, co
+	/// z těch dvou dorazilo dřív.
+	function prekresliUsek(od, ted, body, dbody) {
+		const total = Math.max(system?.mem_total_mb ?? 1, 1);
+		const totByTs = new Map();
+		const perDisk = {};
+		for (const [t, idx, r, w] of dbody) {
+			totByTs.set(t, (totByTs.get(t) ?? 0) + r + w);
+			const cur = perDisk[idx] ?? { ts: [], r: [], w: [] };
+			cur.ts.push(t);
+			cur.r.push(r);
+			cur.w.push(w);
+			perDisk[idx] = cur;
+		}
+
+		const hTs = [], hCpu = [], hMem = [], hSys = [], hGpu = [], hDown = [], hUp = [], hTot = [];
+		for (const p of body) {
+			if (p.ts <= od || p.ts > ted) continue;
+			const memPct = (p.mem_used_mb / total) * 100;
+			hTs.push(p.ts);
+			hCpu.push(p.cpu_pct);
+			hMem.push(memPct);
+			hSys.push(zatezSystemu([p.cpu_pct, memPct, p.gpu_pct]));
+			hGpu.push(p.gpu_pct);
+			hDown.push(p.net_rx_bps ?? 0);
+			hUp.push(p.net_tx_bps ?? 0);
+			hTot.push(totByTs.get(p.ts) ?? 0);
+		}
+		if (!hTs.length) return;
+
+		const najdi = (pole, mez) => {
+			const i = pole.findIndex((t) => t > mez);
+			return i === -1 ? pole.length : i;
+		};
+		const i0 = najdi(ts, od);
+		const i1 = najdi(ts, ted);
+		// Ořez na strop se počítá jednou a platí pro všechny řady —
+		// jinak by se rozešly indexy a tabulka pod grafem by u zámku
+		// ukazovala hodnoty z jiného času.
+		const rez = Math.max(0, i0 + hTs.length + (ts.length - i1) - CAP);
+		const sloz = (pole, nove) => [...pole.slice(0, i0), ...nove, ...pole.slice(i1)].slice(rez);
+
+		ts = sloz(ts, hTs);
+		cpu = sloz(cpu, hCpu);
+		mem = sloz(mem, hMem);
+		sys = sloz(sys, hSys);
+		gpu = sloz(gpu, hGpu);
+		down = sloz(down, hDown);
+		up = sloz(up, hUp);
+		diskTot = sloz(diskTot, hTot);
+
+		// Jednotlivé disky mají vlastní osu času, takže se stříhají
+		// samostatně.
+		if (dbody.length) {
+			const merged = { ...diskSeries };
+			for (const [idx, h] of Object.entries(perDisk)) {
+				const cur = merged[idx] ?? { ts: [], r: [], w: [] };
+				const j0 = najdi(cur.ts, od);
+				const j1 = najdi(cur.ts, ted);
+				merged[idx] = {
+					ts: [...cur.ts.slice(0, j0), ...h.ts, ...cur.ts.slice(j1)],
+					r: [...cur.r.slice(0, j0), ...h.r, ...cur.r.slice(j1)],
+					w: [...cur.w.slice(0, j0), ...h.w, ...cur.w.slice(j1)]
+				};
+			}
+			diskSeries = merged;
+		}
 	}
 
 	async function loadHistory(s, now) {
@@ -779,9 +864,14 @@
 			pollProcs();
 		}, 1000);
 		const t2 = setInterval(pollIncidents, 30000);
-		// Probuzení okna: dohnat, co se mezitím nenavzorkovalo.
+		// Probuzení okna: dohnat, co se mezitím nenavzorkovalo. Při
+		// schování se zapamatuje čas — od něj se po probuzení celý úsek
+		// přeskládá z databáze služby.
 		const probuzeni = () => {
-			if (document.visibilityState !== 'visible') return;
+			if (document.visibilityState !== 'visible') {
+				if (skrytoOd == null) skrytoOd = Math.floor(Date.now() / 1000);
+				return;
+			}
 			dohonHistorii();
 			pollSystem();
 			pollProcs();
