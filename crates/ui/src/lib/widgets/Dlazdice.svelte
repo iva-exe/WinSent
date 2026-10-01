@@ -25,6 +25,7 @@
 		MEZERA,
 		MAX_VYSKA
 	} from './rozlozeni.svelte.js';
+	import { data, chyby } from './data.svelte.js';
 
 	let {
 		/// Popis widgetu z registru.
@@ -44,6 +45,20 @@
 	let sirka = $derived(Math.min(polozka.w, mrizka.sloupcu));
 	let tahne = $derived(tah.klic === polozka.klic);
 	let meniVysku = $state(false);
+
+	// ── selhané dotazy ───────────────────────────────────────────────
+	// Když dotaz některé sady selže, zůstane v datech poslední úspěšná
+	// hodnota (nebo null, pokud se ještě nikdy nenačetla). Dlaždice pak
+	// dřív kreslila stará čísla jako živá, a u null dokonce prázdný
+	// stav, který zní jako fakt („mikrofon nikdo nedržel"). Titulek
+	// přitom hlásil „služba běží", protože ping prošel. Proto se to
+	// pozná tady, v rámu, jednou pro všechny widgety.
+	let chyba = $derived((widget.sady ?? []).map((k) => chyby[k]).find(Boolean) ?? null);
+	// Tělo se nahrazuje jen kvůli hlavním sadám. Dřív stačila kterákoli:
+	// selhané jméno disků (sysInfo) schovalo i živou rychlost disků.
+	let nenacteno = $derived(
+		(widget.hlavni ?? widget.sady ?? []).some((k) => chyby[k] && data[k] == null)
+	);
 
 	// ── přesouvání ───────────────────────────────────────────────────
 	let zacatek = null;
@@ -151,6 +166,9 @@
 				<widget.ikona size={14} />
 			{/if}
 			<span class="nazev">{widget.nazev}</span>
+			{#if chyba && !nenacteno}
+				<span class="neaktualni" title={chyba}>neaktuální</span>
+			{/if}
 			{#if edit}
 				<span class="rozmer w-mono" class:vidno={meniVysku}>{polozka.w}×{polozka.h}</span>
 				<span class="sirky bez-tahu" title="Šířka dlaždice">
@@ -178,8 +196,12 @@
 		</header>
 	{/if}
 
-	<div class="telo">
-		{@render children()}
+	<div class="telo" class:zastarale={chyba && !nenacteno}>
+		{#if nenacteno}
+			<span class="w-empty" title={chyba}>Data se nepodařilo načíst.</span>
+		{:else}
+			{@render children()}
+		{/if}
 	</div>
 
 	{#if edit}
@@ -349,6 +371,18 @@
 		display: flex;
 		flex-direction: column;
 		justify-content: center;
+	}
+	/* Stará data se neschovávají — pořád jsou lepší než nic — jen
+	   ztlumí, ať nevypadají jako živá. */
+	.telo.zastarale {
+		opacity: 0.5;
+	}
+	.neaktualni {
+		flex: none;
+		color: var(--warn);
+		font-size: var(--fs-3xs);
+		text-transform: none;
+		letter-spacing: 0;
 	}
 	.hrana {
 		position: absolute;

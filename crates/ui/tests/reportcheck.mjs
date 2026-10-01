@@ -85,11 +85,12 @@ function zaznam(zmeny = {}) {
 const zakladni = zaznam();
 
 /// Záznam s hardwarovou sekcí — kvůli tepelné kaskádě.
-function zaznamHw(thermal) {
+function zaznamHw(thermal, system) {
 	return reportText({
 		now,
 		from: now - 86400,
 		users: { current_user: 'IVA', users: [{ name: 'IVA' }] },
+		system,
 		hw: {
 			cpu_thermal: { clock_mhz: 3800, max_mhz: 4200, throttling: false, ...thermal },
 			disks: [],
@@ -201,8 +202,87 @@ const KONTROLY = [
 			/teplota 54 °C \(zdroj HWiNFO\)/.test(
 				zaznamHw({ celsius: 53.6, temp_source: 'HWiNFO' })
 			)
+	],
+	// „Takt pod maximem" bez zátěže je úsporné řízení, ne brzdění.
+	// Záznam dřív psal „omezení: ANO" a čtenář radil čistit chlazení.
+	[
+		'CPU: takt pod maximem v klidu není brzdění',
+		() => {
+			const t = zaznamHw({ throttling: true }, { cpu_pct: 3, thermal_throttle: false });
+			return /brzdění: ne \(takt teď pod maximem při zátěži CPU 3 %\)/.test(t) && !/ANO/.test(t);
+		}
+	],
+	[
+		'CPU: skutečné brzdění pod zátěží se ohlásí',
+		() =>
+			/brzdění: ANO/.test(zaznamHw({ throttling: true }, { cpu_pct: 90, thermal_throttle: true }))
+	],
+	[
+		'CPU: bez údaje o zátěži se ANO netvrdí',
+		() => /brzdění: nezjištěno/.test(zaznamHw({ throttling: true }))
+	],
+	// Okno dat: vysvětlení jen tehdy, když opravdu chybí kus 24 hodin.
+	// Dřív se „omezeno startem systému" psalo právě u plného okna.
+	[
+		'okno dat: plných 24 h bez vysvětlování',
+		() => {
+			const t = zaznamOkno(now - 86400 + 30, 3 * 86400);
+			const r = t.split('\n').find((l) => l.startsWith('Skutečně:')) ?? '';
+			return r !== '' && !r.includes('—');
+		}
+	],
+	[
+		'okno dat: data od startu systému se tak popíšou',
+		() => /— začíná startem systému/.test(zaznamOkno(now - 7200 + 40, 7200))
+	],
+	// Data začínají dávno po bootu (rychlé spuštění, uspání, počítač
+	// vypnutý přes noc) — výpadek služby se tvrdit nesmí, když služba
+	// běží déle, než data sahají.
+	[
+		'okno dat: díra před daty bez startu služby není výpadek',
+		() => {
+			const t = zaznamOkno(now - 18 * 3600, 3 * 86400, 3 * 86400);
+			return /— starší data nejsou \(počítač byl vypnutý/.test(t) && !/výpadek/.test(t);
+		}
+	],
+	[
+		'okno dat: bez pingu se výpadek služby netvrdí',
+		() => !/výpadek/.test(zaznamOkno(now - 3600, 3 * 86400))
+	],
+	[
+		'okno dat: data od startu služby jsou instalace nebo výpadek',
+		() => /— začíná startem služby \(čerstvá instalace nebo výpadek/.test(zaznamOkno(now - 3600, 3 * 86400, 3600 + 20))
+	],
+	// SID z Entra je GUID objektu v tenantu; nepřeložený stojí i ve
+	// sloupci jména.
+	[
+		'správci z Entra: SID maskovaný i ve jménu',
+		() => {
+			const sid = 'S-1-12-1-1234567890-123456789-987654321-1122334455';
+			const t = reportText({
+				now,
+				from: now - 86400,
+				users: {
+					current_user: 'IVA',
+					users: [{ name: 'IVA' }],
+					foreign_admins: [{ name: sid, kind: 'neznámý', sid }]
+				}
+			});
+			return !t.includes('1234567890') && /S-1-12-1-<tenant>/.test(t);
+		}
 	]
 ];
+
+function zaznamOkno(nejstarsi, uptime, sluzbaUptime) {
+	return reportText({
+		now,
+		from: now - 86400,
+		users: { current_user: 'IVA', users: [{ name: 'IVA' }] },
+		system: { uptime_s: uptime, cpu_pct: 1 },
+		ping: sluzbaUptime != null ? { protocol_version: 49, uptime_s: sluzbaUptime } : undefined,
+		sysHist: [{ ts: nejstarsi }, { ts: now - 1 }]
+	});
+}
 
 let chyb = 0;
 for (const [popis, test] of KONTROLY) {

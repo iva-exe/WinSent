@@ -79,7 +79,11 @@ pub fn toggle(app: &AppHandle, route: &str) -> Result<(), String> {
     if let Some(w) = app.get_webview_window(LABEL) {
         let vidno = w.is_visible().unwrap_or(false);
         if vidno {
-            let _ = w.hide();
+            // Přes `hide`, ne jen `w.hide()`: samotné okno webview neuspí.
+            // Ztráta zaměření ho sice obvykle uspí taky, jenže ne při
+            // rychlém druhém stisku (ochranná lhůta) ani u lišty, která
+            // zaměření nikdy nedostala — pak dál tikala na pozadí.
+            hide(app);
             return Ok(());
         }
         let (x, y) = pozice(app);

@@ -86,6 +86,9 @@
 	const sources = {
 		run_user: { label: 'Registr (uživatel)', icon: KeyRound },
 		run_machine: { label: 'Registr (systém)', icon: KeyRound },
+		run_machine32: { label: 'Registr (systém, 32bit)', icon: KeyRound },
+		run_once_user: { label: 'Registr (uživatel, jednou)', icon: KeyRound },
+		run_once_machine: { label: 'Registr (systém, jednou)', icon: KeyRound },
 		folder_user: { label: 'Složka po spuštění', icon: FolderOpen },
 		folder_common: { label: 'Složka (všichni)', icon: FolderOpen },
 		task: { label: 'Naplánovaná úloha', icon: CalendarClock },
@@ -141,14 +144,35 @@
 	}));
 
 	// Podpis seznamu — poll nesmí překreslit 360 řádků, když se nic
-	// nezměnilo (to bylo vidět jako záseky při scrollování).
+	// nezměnilo (to bylo vidět jako záseky při scrollování). Dřív v něm
+	// bylo jen id:enabled, takže štítek „běží/stojí" zůstal navždy
+	// u stavu z prvního načtení a později doinstalovaná aplikace se
+	// k položce nepřiřadila. Jedna funkce pro load i toggle, ať se oba
+	// podpisy nemůžou rozejít.
+	const podpis = (arr) =>
+		arr
+			.map(
+				(i) =>
+					`${i.id}:${i.enabled}:${i.running}:${i.toggleable}:${i.system}:${i.identity_key ?? ''}:${i.command}`
+			)
+			.join('|');
 	let lastSig = '';
+
+	// Stejné id dvakrát (hodnota stejného jména v Run i RunOnce nebo
+	// i ve WOW6432Node\Run) shodilo keyed each v produkčním buildu
+	// (each_key_duplicate) a s ním celou stránku. Zdroj id opravuje
+	// služba; tohle je pojistka pro starší službu — nechá se první
+	// výskyt, protože přepínač i busy stejně pracují podle id.
+	function bezDuplicit(arr) {
+		const seen = new Set();
+		return arr.filter((i) => !seen.has(i.id) && seen.add(i.id));
+	}
 
 	async function load() {
 		try {
-			const fresh = await invoke('query_startup');
+			const fresh = bezDuplicit(await invoke('query_startup'));
 			loadError = '';
-			const sig = fresh.map((i) => `${i.id}:${i.enabled}`).join('|');
+			const sig = podpis(fresh);
 			if (sig !== lastSig) {
 				lastSig = sig;
 				items = fresh;
@@ -164,8 +188,33 @@
 	// Vyhledává se jméno položky; když je obecné („Update", „Launcher"),
 	// vezme `openMenu` jméno aplikace nebo binárku z příkazu. Celý
 	// příkaz se neposílá — bývá v něm cesta se jménem uživatele.
+	//
+	// StartupRow pole exe_path nemá (je jen ve služebním BootItem), takže
+	// „Otevřít umístění" se dřív neukázalo nikdy a do hledání šel poslední
+	// díl celého příkazu i s argumenty a uvozovkou (`x.exe" --tray`).
+	// Cesta se proto vytáhne z příkazu stejně jako collector-boot
+	// exe_from_command: v uvozovkách do další uvozovky, jinak po první
+	// `.exe`. %VAR% se tu rozvinout nedá — taková cesta se do Průzkumníku
+	// neposílá (neexistuje), jen se z ní vezme jméno pro hledání.
+	function exeZPrikazu(cmd) {
+		const c = (cmd ?? '').trim();
+		let p;
+		if (c.startsWith('"')) {
+			const end = c.indexOf('"', 1);
+			p = end < 0 ? c.slice(1) : c.slice(1, end);
+		} else {
+			const at = c.toLowerCase().indexOf('.exe');
+			if (at < 0) return null;
+			p = c.slice(0, at + 4);
+		}
+		return p.toLowerCase().endsWith('.exe') ? p : null;
+	}
 	function menuPolozka(e, i) {
-		const exe = (i.exe_path ?? i.command ?? '').split(/[\\/]/).pop() ?? '';
+		const cesta = i.exe_path ?? exeZPrikazu(i.command);
+		const exe = (cesta ?? '').split(/[\\/]/).pop() ?? '';
+		// Jen absolutní cesta bez %VAR% — relativní `rundll32.exe` nebo
+		// `%ProgramFiles%\…` by open_path stejně nenašel.
+		const umisteni = cesta && /^([a-z]:\\|\\\\)/i.test(cesta) && !cesta.includes('%') ? cesta : null;
 		openMenu(e, {
 			title: i.name,
 			subtitle: i.app_name ?? srcOf(i.source).label,
@@ -184,7 +233,7 @@
 					icon: 'shield',
 					run: () => invoke('open_settings_page', { page: 'startupapps' })
 				},
-				i.exe_path ? akceOtevritUmisteni(i.exe_path) : null,
+				umisteni ? akceOtevritUmisteni(umisteni) : null,
 				oddelovac,
 				akceKopirovat(i.name),
 				akceKopirovat(i.command, 'Kopírovat příkaz')
@@ -201,7 +250,7 @@
 			const r = await invoke('toggle_startup', { id: item.id, on: want });
 			if (r.verdict === 'allow' && r.outcome === 'ok') {
 				items = items.map((i) => (i.id === item.id ? { ...i, enabled: want } : i));
-				lastSig = items.map((i) => `${i.id}:${i.enabled}`).join("|");
+				lastSig = podpis(items);
 				toast = {
 					kind: 'ok',
 					text: `${item.name}: ${want ? 'zapnuto' : 'vypnuto'} (${r.duration_ms} ms)`
@@ -268,7 +317,7 @@
 					<header class="g-head">
 						<AppIcon src={g.identity_key ? iconUrls[g.identity_key] : null} name={g.label} size={21} />
 						<span class="g-name">{g.label}</span>
-						{#if isSystemApp({ identity_key: g.identity_key ?? '', display_name: g.label, publisher: g.publisher ?? '' }) || g.items.every((i) => !i.toggleable || isSystemPath(i.command))}
+						{#if isSystemApp({ identity_key: g.identity_key ?? '', display_name: g.label, publisher: g.publisher ?? '' }) || g.items.every((i) => (!i.toggleable && !i.source.startsWith('run_once')) || isSystemPath(i.command))}
 							<SystemBadge compact />
 						{/if}
 						<span class="g-count label-tech">{g.items.length}</span>

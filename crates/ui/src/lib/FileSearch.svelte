@@ -299,15 +299,43 @@
 	/// Text bez diakritiky, malými písmeny.
 	///
 	/// Na české klávesnici se hledá „kalkulacka", ne „Kalkulačka" —
-	/// hlavně v liště, kde jde o rychlost. Rozklad na NFD a zahození
-	/// spojovacích znamének zachovává DÉLKU řetězce (jeden znak
-	/// s háčkem → jeden bez), takže se podle indexů z porovnání dá
-	/// bez přepočtu krájet původní text pro zvýraznění.
+	/// hlavně v liště, kde jde o rychlost. Délku řetězce to NEZACHOVÁVÁ:
+	/// název uložený už rozloženě (NFD z Macu) se zahozením znamének
+	/// zkrátí, hangul se naopak rozloží na víc jamo. Pro krájení
+	/// původního textu je proto slozeniSMapou.
 	function bezDiakritiky(t) {
 		return (t ?? '')
 			.toLowerCase()
 			.normalize('NFD')
 			.replace(/\p{M}/gu, '');
+	}
+
+	/// Totéž co bezDiakritiky, ale po kódových bodech a s mapou: pro
+	/// každý znak výsledku začátek a konec jeho zdroje v originálu.
+	/// Dřív se indexy z porovnání použily přímo na originál, takže
+	/// u NFD „Příloha smlouva.pdf" se zvýraznilo „a smlou" místo
+	/// „smlouva" a u hangulu přípona.
+	function slozeniSMapou(t) {
+		let s = '';
+		const zac = [];
+		const kon = [];
+		let o = 0;
+		for (const ch of t ?? '') {
+			const f = ch.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
+			if (f === '') {
+				// Samostatné spojovací znaménko (NFD): přilepit k předchozímu
+				// znaku, ať háček za posledním zvýrazněným písmenem nezůstane
+				// odtržený mimo <mark>.
+				for (let j = kon.length - 1; j >= 0 && kon[j] === o; j--) kon[j] = o + ch.length;
+			}
+			for (let k = 0; k < f.length; k++) {
+				zac.push(o);
+				kon.push(o + ch.length);
+			}
+			s += f;
+			o += ch.length;
+		}
+		return { s, zac, kon };
 	}
 
 	/// Skóre shody jména aplikace s dotazem: 0 = začíná jím,
@@ -626,13 +654,18 @@
 	function casti(text) {
 		if (!dotaz) return [{ t: text, m: false }];
 		// Porovnává se bez diakritiky, ale krájí se PŮVODNÍ text —
-		// jinak by se v „Kalkulačka" zvýraznilo „Kalkulacka".
-		const i = bezDiakritiky(text).indexOf(bezDiakritiky(dotaz));
+		// jinak by se v „Kalkulačka" zvýraznilo „Kalkulacka". Hranice
+		// shody se do originálu přepočítají přes mapu (viz slozeniSMapou).
+		const { s, zac, kon } = slozeniSMapou(text);
+		const qn = bezDiakritiky(dotaz);
+		const i = qn ? s.indexOf(qn) : -1;
 		if (i < 0) return [{ t: text, m: false }];
+		const a = zac[i];
+		const b = kon[i + qn.length - 1];
 		return [
-			{ t: text.slice(0, i), m: false },
-			{ t: text.slice(i, i + dotaz.length), m: true },
-			{ t: text.slice(i + dotaz.length), m: false }
+			{ t: text.slice(0, a), m: false },
+			{ t: text.slice(a, b), m: true },
+			{ t: text.slice(b), m: false }
 		].filter((c) => c.t);
 	}
 

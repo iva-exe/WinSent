@@ -74,11 +74,20 @@
 
 	// Statické info komponent (názvy, RAM moduly…) — jednou ze služby.
 	let statics = $state(null);
+	// Opakování při nedostupné službě se musí s odchodem ze stránky
+	// zastavit. Dřív časovač nikdo nerušil: každá návštěva Tasks při
+	// spadlé službě přidala další nekonečnou smyčku dotazů, která běžela
+	// i v ostatních sekcích. Příznak je potřeba vedle clearTimeout —
+	// invoke může zrovna běžet a jeho catch by jinak naplánoval nový
+	// časovač až po úklidu.
+	let staticsTimer = null;
+	let zniceno = false;
 	async function loadStatics() {
+		if (zniceno) return;
 		try {
 			statics = await invoke('query_sys_info');
 		} catch {
-			setTimeout(loadStatics, 3000);
+			if (!zniceno) staticsTimer = setTimeout(loadStatics, 3000);
 		}
 	}
 
@@ -144,6 +153,17 @@
 	// Okno historie jader kolem zámku (±30 s) pro mini grafy s linkou.
 	let pinnedCores = $state(null); // { byCore: number[][], marker: number }
 	let histTimer = null;
+	// Generace zámku. Řetězec dotazů po návratu porovná svou generaci
+	// s aktuální a zastaralý výsledek zahodí. Dřív se nekontrolovalo
+	// nic: odemčení mezi spuštěním časovače a návratem query_procs_at
+	// našlo histProcs ještě null, nic nevyčistilo, a řetězec pak tabulku
+	// natrvalo přepnul do minulosti (pollProcs ji při histProcs
+	// neobnovuje a klik mimo graf bez zámku nic nedělá). Stejně tak
+	// pomalejší řetězec starého zámku přepsal tabulku nového. Porovnává
+	// se generace, ne hodnota `pinned` — klik na tentýž bod dá stejnou
+	// hodnotu a starý a nový řetězec by se nerozlišily.
+	// Obyčejná proměnná, ne $state: nemá spouštět reaktivitu.
+	let histGen = 0;
 
 	// Závislost POUZE na `pinned` (untrack) — jinak by efekt reagoval
 	// i na každý tick dat a stahoval historii pořád dokola.
@@ -151,6 +171,7 @@
 		const t = pinned;
 		untrack(() => {
 			clearTimeout(histTimer);
+			const gen = ++histGen;
 			if (t == null) {
 				if (histProcs || histDetail || pinnedCores) {
 					histProcs = null;
@@ -162,32 +183,36 @@
 			}
 			histTimer = setTimeout(async () => {
 				const ts0 = Math.round(t);
-				try {
-					histProcs = await invoke('query_procs_at', { ts: ts0 });
-				} catch {
-					histProcs = null;
-				}
-				try {
-					histDetail = await invoke('query_detail_at', { ts: ts0 });
-				} catch {
-					histDetail = null;
-				}
+				// Všechny tři dotazy naráz a výsledky až po kontrole
+				// generace — tím zmizí i mezistav, kdy byl histProcs už
+				// nový a histDetail ještě starý.
+				const [procs, detail, pts] = await Promise.all([
+					invoke('query_procs_at', { ts: ts0 }).catch(() => null),
+					invoke('query_detail_at', { ts: ts0 }).catch(() => null),
+					invoke('query_core_history', { from: ts0 - 30, to: ts0 + 30 }).catch(() => null)
+				]);
+				if (gen !== histGen) return;
 				// Okno jader ±30 s — zamčený bod vyjde doprostřed mini grafů.
+				let cores = null;
 				try {
-					const pts = await invoke('query_core_history', { from: ts0 - 30, to: ts0 + 30 });
-					const tsSet = [...new Set(pts.map((p) => p[0]))].sort((a, b) => a - b);
-					const tsIdx = new Map(tsSet.map((v, i) => [v, i]));
-					const byCore = [];
-					for (const [pt, core, pct] of pts) {
-						(byCore[core] ??= new Array(tsSet.length).fill(null))[tsIdx.get(pt)] = pct;
+					if (pts) {
+						const tsSet = [...new Set(pts.map((p) => p[0]))].sort((a, b) => a - b);
+						const tsIdx = new Map(tsSet.map((v, i) => [v, i]));
+						const byCore = [];
+						for (const [pt, core, pct] of pts) {
+							(byCore[core] ??= new Array(tsSet.length).fill(null))[tsIdx.get(pt)] = pct;
+						}
+						const target = detail?.ts ?? ts0;
+						let marker = tsSet.findIndex((v) => v >= target);
+						if (marker === -1) marker = tsSet.length - 1;
+						cores = { byCore, marker };
 					}
-					const target = histDetail?.ts ?? ts0;
-					let marker = tsSet.findIndex((v) => v >= target);
-					if (marker === -1) marker = tsSet.length - 1;
-					pinnedCores = { byCore, marker };
 				} catch {
-					pinnedCores = null;
+					cores = null;
 				}
+				histProcs = procs;
+				histDetail = detail;
+				pinnedCores = cores;
 				refreshTable();
 				// Ikony i pro identity_key z náhledu historie.
 				refreshIcons();
@@ -196,11 +221,16 @@
 	});
 
 	// Zdroje detail sekce: při zámku data z historie, jinak živá.
-	const dCores = $derived(pinned != null && histDetail ? histDetail.cores : (system?.cores ?? []));
-	const dDisks = $derived(pinned != null && histDetail ? histDetail.disks : (system?.disks ?? []));
+	//
+	// Při zámku se na živá data NEPADÁ, ani když historie pro ten čas
+	// není (ještě se nenačetla, nebo je starší než retence detailu):
+	// jádra a disky z teď vedle grafu zamčeného do minulosti vypadala
+	// jako tehdejší stav a nikde nebylo poznat, že nejsou.
+	const dCores = $derived(pinned != null ? (histDetail?.cores ?? []) : (system?.cores ?? []));
+	const dDisks = $derived(pinned != null ? (histDetail?.disks ?? []) : (system?.disks ?? []));
 	const dGpu = $derived(
-		pinned != null && histDetail
-			? histDetail.gpu && {
+		pinned != null
+			? histDetail?.gpu && {
 					...histDetail.gpu,
 					vram_total_mb: system?.gpu?.vram_total_mb ?? null
 				}
@@ -220,10 +250,18 @@
 	const ramSummary = $derived.by(() => {
 		const mods = statics?.ram_modules ?? [];
 		if (!mods.length) return '';
-		const totalGb = mods.reduce((a, m) => a + m.size_mb, 0) / 1024;
-		const speed = mods[0]?.configured_mts || mods[0]?.speed_mts || 0;
+		// Modul s velikostí 0 = deska ji nehlásí; do součtu nepatří a
+		// souhrn pak nesmí tvrdit přesné číslo.
+		const znamé = mods.filter((m) => m.size_mb > 0);
+		const totalGb = znamé.reduce((a, m) => a + m.size_mb, 0) / 1024;
+		const vel = !znamé.length
+			? '? GB'
+			: znamé.length < mods.length
+				? `nejméně ${totalGb.toFixed(0)} GB`
+				: `${totalGb.toFixed(0)} GB`;
+		const speed = mods[0]?.configured_mts || mods[0]?.speed_mts || '?';
 		const typ = mods[0]?.mem_type ? ` ${mods[0].mem_type}` : '';
-		return `${totalGb.toFixed(0)} GB${typ} (${mods.length}×) @ ${speed} MT/s`;
+		return `${vel}${typ} (${mods.length}×) @ ${speed} MT/s`;
 	});
 	const detailName = $derived(
 		mode === 'cpu'
@@ -318,6 +356,10 @@
 			const disk_bps = ease((p.disk_r_bps ?? 0) + (p.disk_w_bps ?? 0), 'disk_bps');
 			return {
 			pid: p.pid,
+			// Rodič je potřeba pro „Ukončit skupinu": strom se dá ukončit
+			// jen od jednoho procesu a ten se hledá jako kořen skupiny.
+			// Historie ho nemusí mít → null.
+			parent_pid: p.parent_pid ?? null,
 			// Bez času vzniku se proces nedá ukončit: validační vrstva
 			// jím ověřuje, že je to pořád tentýž proces a ne cizí, který
 			// mezitím dostal recyklované PID. Dokud tu chyběl, pravý klik
@@ -881,6 +923,8 @@
 		return () => {
 			clearInterval(t);
 			clearInterval(t2);
+			zniceno = true;
+			clearTimeout(staticsTimer);
 			document.removeEventListener('visibilitychange', probuzeni);
 		};
 	});
@@ -902,11 +946,42 @@
 	// Co vyhledat: jméno image je konkrétnější než jméno aplikace
 	// (`svchost.exe` řekne víc než `Windows`), ale samotné by u méně
 	// známých procesů nestačilo — proto se přidává slovo „proces".
+	// Kořen skupiny: proces, jehož rodič do skupiny nepatří.
+	//
+	// Služba umí ukončit jen strom JEDNOHO procesu (cíl a potomci podle
+	// parent_pid), ne „všechny procesy téže aplikace". Dřív se posílal
+	// children[0] — první podle zrovna zvoleného řazení, typicky renderer
+	// bez potomků — a nabídka „Ukončit skupinu (8 procesů)" ukončila
+	// jeden. Strom od jediného kořene pokryje celou skupinu; když kořenů
+	// je víc (nezávislé instance) nebo rodič není známý, skupinu jedním
+	// stromem ukončit nejde a nabídka to nesmí slibovat.
+	function korenSkupiny(g) {
+		const deti = g?.children ?? [];
+		if (!deti.length || deti.some((c) => c.parent_pid == null)) return null;
+		const pidy = new Set(deti.map((c) => c.pid));
+		const koreny = deti.filter((c) => c.parent_pid === c.pid || !pidy.has(c.parent_pid));
+		return koreny.length === 1 ? koreny[0] : null;
+	}
+
 	function menuProc(e, p, tree, g = null) {
 		if (!p) return;
 		const jmeno = p.name ?? '';
 		const app = p.app_name ?? '';
-		const kolik = g && tree ? g.children.length : 1;
+		const skupina = g && tree && g.children.length > 1;
+		const koren = skupina ? korenSkupiny(g) : null;
+		// Cíl ukončení: u skupiny s jedním kořenem kořen, jinak řádek sám.
+		const cil = koren ?? p;
+		const kritickeVeSkupine = !!koren && g.protection === 'critical';
+		// Počet procesů do popisku nepatří: služba ukončí strom kořene podle
+		// parent_pid, takže i potomky z jiných aplikací (hra spuštěná ze
+		// Steamu je dítě steam.exe, terminály dětmi VS Code). „Ukončit
+		// skupinu (12 procesů)" pak slibovalo dvanáct a plán jich měl víc.
+		// Kolik a čeho přesně, ukáže až potvrzovací dialog z kroků plánu.
+		const popisek = koren
+			? `Ukončit ${app || 'skupinu'} se stromem`
+			: tree
+				? 'Ukončit proces se stromem'
+				: 'Ukončit proces';
 		openMenu(e, {
 			title: app && app !== jmeno ? `${app} — ${jmeno}` : jmeno,
 			subtitle: p.publisher ?? '',
@@ -914,12 +989,17 @@
 			kontext: 'proces',
 			items: [
 				{
-					label: kolik > 1 ? `Ukončit skupinu (${kolik} procesů)` : 'Ukončit proces',
+					label: popisek,
 					icon: 'kill',
 					danger: true,
-					disabled: !p.create_time || p.protection === 'critical',
-					hint: p.protection === 'critical' ? 'kritický pro systém' : '',
-					run: () => askKill(p, tree)
+					disabled: !cil.create_time || cil.protection === 'critical' || kritickeVeSkupine,
+					hint:
+						cil.protection === 'critical' || kritickeVeSkupine
+							? 'kritický pro systém'
+							: skupina && !koren
+								? `jen strom PID ${cil.pid} — skupina nemá jeden kořen`
+								: '',
+					run: () => askKill(cil, tree, koren ? g : null)
 				},
 				oddelovac,
 				akceKopirovat(jmeno, 'Kopírovat název procesu'),
@@ -940,7 +1020,31 @@
 		});
 	}
 
-	async function askKill(p, tree) {
+	// PID kroku plánu. PlanStep nese jen text (tvar IPC se kvůli tomu
+	// nemění), actor-proc ho ale vždy končí „(pid N)".
+	function pidKroku(s) {
+		const m = /\(pid (\d+)\)\s*$/.exec(s?.description ?? '');
+		return m ? Number(m[1]) : null;
+	}
+
+	function jmenoKroku(s) {
+		return (s?.description ?? '')
+			.replace(/^ukončit (potomka )?/, '')
+			.replace(/\s*\(pid \d+\)\s*$/, '');
+	}
+
+	// Kroky plánu, které ukončí proces mimo skupinu, ze které se ukončení
+	// spouštělo. Bez skupiny (ukončení jednoho stromu) není s čím porovnat.
+	function ciziKroky(plan, g) {
+		if (!g || !plan?.steps) return [];
+		const pidy = new Set((g.children ?? []).map((c) => c.pid));
+		return plan.steps.filter((s) => {
+			const pid = pidKroku(s);
+			return pid != null && !pidy.has(pid);
+		});
+	}
+
+	async function askKill(p, tree, g = null) {
 		if (!p?.create_time) return;
 		killBusy = true;
 		try {
@@ -952,8 +1056,19 @@
 				createTime: String(p.create_time),
 				tree
 			});
-			if (r.plan_id != null) killPlan = { plan: r, target: p, tree };
-			else killPlan = { deny: r, target: p, tree };
+			if (r.plan_id != null) {
+				const cizi = ciziKroky(r, g);
+				killPlan = {
+					plan: r,
+					target: p,
+					tree,
+					skupina: g ? g.app_name || p.name : null,
+					// Indexy, ne objekty kroků: $state kroky obalí proxy a
+					// Set s původními objekty by je pak nepoznal.
+					cizi: new Set(cizi.map((s) => r.steps.indexOf(s))),
+					ciziJmena: [...new Set(cizi.map(jmenoKroku))]
+				};
+			} else killPlan = { deny: r, target: p, tree };
 		} catch (e) {
 			killToast = { kind: 'deny', text: String(e) };
 		}
@@ -997,11 +1112,26 @@
 					<button class="k-btn" onclick={() => (killPlan = null)}>Zavřít</button>
 				</div>
 			{:else}
-				<h2>Ukončit {killPlan.tree ? 'proces se stromem' : 'proces'}?</h2>
+				<h2>
+					Ukončit {killPlan.skupina
+						? `${killPlan.skupina} se stromem`
+						: killPlan.tree
+							? 'proces se stromem'
+							: 'proces'}?
+				</h2>
 				<p class="k-target">{killPlan.target.name} (pid {killPlan.target.pid})</p>
+				{#if killPlan.cizi?.size}
+					<!-- Strom kořene sahá i mimo skupinu (hra pod Steamem, terminál
+					     pod editorem) — to musí být vidět dřív než seznam kroků. -->
+					<p class="k-cizi">
+						+ {killPlan.cizi.size}
+						{killPlan.cizi.size === 1 ? 'proces' : killPlan.cizi.size < 5 ? 'procesy' : 'procesů'}
+						z jiných aplikací: {killPlan.ciziJmena.join(', ')}
+					</p>
+				{/if}
 				<ul class="k-steps">
 					{#each killPlan.plan.steps as s, i (i)}
-						<li>{s.description}</li>
+						<li class:cizi={killPlan.cizi?.has(i)}>{s.description}</li>
 					{/each}
 				</ul>
 				<p class="k-warn">Neuložená data se ztratí. Ukončení nejde vzít zpět.</p>
@@ -1160,7 +1290,11 @@
 						</div>
 					</div>
 				{:else}
-					<p class="empty-note label-tech">čekám na data jader…</p>
+					<!-- Při zámku se na živá data nepadá (viz dCores), takže
+					     prázdno tu znamená „pro ten čas nic není", ne čekání. -->
+					<p class="empty-note label-tech">
+						{pinned == null ? 'čekám na data jader…' : 'pro zamčený čas nejsou jádra v historii'}
+					</p>
 				{/each}
 			</div>
 			<!-- Doplňkové údaje (parita se Správcem úloh) -->
@@ -1240,7 +1374,8 @@
 						{#each statics?.ram_modules ?? [] as m, mi (mi)}
 							<div class="tile">
 								<span class="label-tech">{m.slot || `slot ${mi + 1}`}</span>
-								<span class="tile-val value-mono">{(m.size_mb / 1024).toFixed(0)} GB</span>
+								<!-- 0 = deska velikost nehlásí, ne „0 GB". -->
+								<span class="tile-val value-mono">{m.size_mb ? `${(m.size_mb / 1024).toFixed(0)} GB` : '?'}</span>
 								<span class="mod-sub label-tech">
 									{m.configured_mts || m.speed_mts || '?'} MT/s
 									{m.clock_mhz ? ` · ${m.clock_mhz} MHz` : ''}
@@ -1281,6 +1416,8 @@
 						<span class="tile-val value-mono" style:color={colorForLoad(dGpuPct)}><Num value={dGpuPct} suffix=" %" /></span>
 					</div>
 				</div>
+			{:else if pinned != null}
+				<p class="empty-note label-tech">pro zamčený čas nejsou gpu senzory v historii</p>
 			{:else}
 				<p class="empty-note label-tech">gpu detail nedostupný — vyžaduje NVIDIA (NVML); AMD/Intel přijde ve v3</p>
 			{/if}
@@ -2070,6 +2207,15 @@
 		font-size: var(--fs-md);
 		color: var(--warn);
 		margin-bottom: 14px;
+	}
+	.k-cizi {
+		font-size: var(--fs-lg);
+		color: var(--danger);
+		font-weight: 600;
+		margin-bottom: 10px;
+	}
+	.k-steps li.cizi {
+		color: var(--danger);
 	}
 	.k-deny {
 		font-size: var(--fs-xl);

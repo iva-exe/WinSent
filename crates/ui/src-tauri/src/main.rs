@@ -8,6 +8,7 @@ mod display;
 mod hotkey;
 mod launch;
 mod repair;
+mod roura;
 mod spotlight;
 mod uninstall;
 use serde::Serialize;
@@ -25,9 +26,34 @@ struct PingResult {
 
 /// Zeptá se démona přes pipe. Chyba (služba neběží, vadný rámec…) se
 /// vrací frontendu jako string — indikátor zčervená a detail se ukáže.
-#[tauri::command]
+///
+/// Všechny příkazy, které jdou na pipe nebo na disk, jsou `async`.
+/// Synchronní příkaz Tauri vykoná přímo v obsluze zprávy z WebView2,
+/// tedy na hlavním vlákně okna: `query_apps` ho drželo 55–97 ms
+/// (naměřeno), okno se trhaně táhlo a uvázlá služba by zamrazila okno
+/// i tray. Pipe nemá timeout čtení, takže čekat se smí jen mimo hlavní
+/// vlákno. Synchronní zůstává jen to, co sahá na okna a nic nečeká
+/// (`hide_spotlight`). Dotazy pak jdou na pipe souběžně a server má
+/// volnou vždy jen jednu instanci — proto každé volání služby jde přes
+/// `roura::volej`, které obsazenou pipe zkusí znovu.
+/// Spustí blokující práci v blocking poolu tokio.
+///
+/// `#[tauri::command(async)]` u obyčejné (ne-async) funkce ji Tauri
+/// spouští uvnitř `async` bloku na pracovním vlákně tokio — těch je jen
+/// tolik, kolik má stroj jader. Stavba indexu, hledání duplicit, výpočet
+/// velikostí nebo kontrola aktualizace na pomalé síti trvají desítky
+/// sekund; čtyři naráz na čtyřjádru obsadily všechna vlákna a graf,
+/// tabulka procesů i lišta zamrzly, dokud jedno nedoběhlo. Dlouhé
+/// příkazy proto jdou sem; krátké dotazy (milisekundy) zůstávají.
+async fn v_poolu<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("úloha spadla: {e}"))
+}
+
+#[tauri::command(async)]
 fn ping_daemon() -> Result<PingResult, String> {
-    match ipc::client::ping() {
+    match roura::volej(|| ipc::client::ping()) {
         Ok(pong) => Ok(PingResult {
             protocol_version: pong.protocol_version,
             uptime_s: pong.uptime_s,
@@ -39,21 +65,21 @@ fn ping_daemon() -> Result<PingResult, String> {
 
 /// Snapshot procesů pro frontend. Serializace typů z core-types
 /// projde přímo (derive Serialize).
-#[tauri::command]
+#[tauri::command(async)]
 fn query_procs() -> Result<Vec<core_types::proc::ProcRow>, String> {
-    ipc::client::query_procs().map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_procs()).map_err(|e| e.to_string())
 }
 
 /// Systémové metriky pro hlavní graf v Tasks.
-#[tauri::command]
+#[tauri::command(async)]
 fn query_system() -> Result<core_types::proc::SystemSnapshot, String> {
-    ipc::client::query_system().map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_system()).map_err(|e| e.to_string())
 }
 
 /// Historie systémových metrik pro pan/zoom grafu do minulosti.
-#[tauri::command]
+#[tauri::command(async)]
 fn query_system_history(from: i64, to: i64) -> Result<Vec<core_types::proc::SystemPoint>, String> {
-    ipc::client::query_system_history(from, to).map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_system_history(from, to)).map_err(|e| e.to_string())
 }
 
 /// Stav procesů v čase pod kurzorem/zámkem grafu.
@@ -63,17 +89,17 @@ struct ProcsAtDto {
     rows: Vec<core_types::proc::HistProcRow>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn query_procs_at(ts: i64) -> Result<ProcsAtDto, String> {
-    ipc::client::query_procs_at(ts)
+    roura::volej(|| ipc::client::query_procs_at(ts))
         .map(|(ts, rows)| ProcsAtDto { ts, rows })
         .map_err(|e| e.to_string())
 }
 
 /// Statické informace o komponentách (CPU/RAM/GPU/disky).
-#[tauri::command]
+#[tauri::command(async)]
 fn query_sys_info() -> Result<core_types::proc::StaticInfo, String> {
-    ipc::client::query_sys_info().map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_sys_info()).map_err(|e| e.to_string())
 }
 
 /// Detaily proměnných v čase pro zámek grafu.
@@ -85,9 +111,9 @@ struct DetailAtDto {
     gpu: Option<core_types::proc::GpuInfo>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn query_detail_at(ts: i64) -> Result<DetailAtDto, String> {
-    ipc::client::query_detail_at(ts)
+    roura::volej(|| ipc::client::query_detail_at(ts))
         .map(|(ts, cores, disks, gpu)| DetailAtDto {
             ts,
             cores,
@@ -98,57 +124,65 @@ fn query_detail_at(ts: i64) -> Result<DetailAtDto, String> {
 }
 
 /// Historie disků pro per-disk grafy.
-#[tauri::command]
+#[tauri::command(async)]
 fn query_disk_history(from: i64, to: i64) -> Result<Vec<(i64, u32, u64, u64)>, String> {
-    ipc::client::query_disk_history(from, to).map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_disk_history(from, to)).map_err(|e| e.to_string())
 }
 
 /// Historie jader CPU pro mini grafy při zámku času.
-#[tauri::command]
+#[tauri::command(async)]
 fn query_core_history(from: i64, to: i64) -> Result<Vec<(i64, u32, f32)>, String> {
-    ipc::client::query_core_history(from, to).map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_core_history(from, to)).map_err(|e| e.to_string())
 }
 
 /// Ikona aplikace podle identity_key (RGBA pixely; UI je vykreslí na canvas).
-#[tauri::command]
+#[tauri::command(async)]
 fn query_icon(identity_key: String) -> Result<Option<core_types::proc::IconData>, String> {
-    ipc::client::query_icon(identity_key).map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_icon(identity_key.clone())).map_err(|e| e.to_string())
 }
 
 /// Události (záseky, pády) v rozsahu — markery na časové ose (v3).
-#[tauri::command]
+#[tauri::command(async)]
 fn query_events(from: i64, to: i64) -> Result<Vec<core_types::proc::EventRow>, String> {
-    ipc::client::query_events(from, to).map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_events(from, to)).map_err(|e| e.to_string())
 }
 
 /// Poslední incidenty (v3, SPEC kap. 16).
-#[tauri::command]
+#[tauri::command(async)]
 fn query_incidents(limit: u32) -> Result<Vec<core_types::proc::IncidentRow>, String> {
-    ipc::client::query_incidents(limit).map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_incidents(limit)).map_err(|e| e.to_string())
 }
 
 /// Inventář aplikací (v4, SPEC kap. 5).
 #[tauri::command]
-fn query_apps() -> Result<Vec<core_types::proc::AppRow>, String> {
-    ipc::client::query_apps().map_err(|e| e.to_string())
+async fn query_apps() -> Result<Vec<core_types::proc::AppRow>, String> {
+    v_poolu(move || query_apps_blok()).await?
+}
+
+fn query_apps_blok() -> Result<Vec<core_types::proc::AppRow>, String> {
+    roura::volej(|| ipc::client::query_apps()).map_err(|e| e.to_string())
 }
 
 /// Mapa souborů aplikace.
-#[tauri::command]
+#[tauri::command(async)]
 fn query_app_map(identity_key: String) -> Result<Vec<core_types::proc::AppPathRow>, String> {
-    ipc::client::query_app_map(identity_key).map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_app_map(identity_key.clone())).map_err(|e| e.to_string())
 }
 
 /// Spočítá velikosti cest (pomalé — async přes spawn_blocking Tauri).
-#[tauri::command(async)]
-fn compute_app_sizes(identity_key: String) -> Result<Vec<core_types::proc::AppPathRow>, String> {
-    ipc::client::compute_app_sizes(identity_key).map_err(|e| e.to_string())
+#[tauri::command]
+async fn compute_app_sizes(identity_key: String) -> Result<Vec<core_types::proc::AppPathRow>, String> {
+    v_poolu(move || compute_app_sizes_blok(identity_key)).await?
+}
+
+fn compute_app_sizes_blok(identity_key: String) -> Result<Vec<core_types::proc::AppPathRow>, String> {
+    roura::volej(|| ipc::client::compute_app_sizes(identity_key.clone())).map_err(|e| e.to_string())
 }
 
 /// Vyžádá nový sken inventáře.
-#[tauri::command]
+#[tauri::command(async)]
 fn rescan_apps() -> Result<(), String> {
-    ipc::client::rescan_apps().map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::rescan_apps()).map_err(|e| e.to_string())
 }
 
 /// Připojené obrazovky (v9). Čte je UI, ne služba — EnumDisplayDevices
@@ -167,7 +201,7 @@ struct InvStatusDto {
 
 #[tauri::command(async)]
 fn query_inv_status() -> Result<InvStatusDto, String> {
-    ipc::client::query_inv_status()
+    roura::volej(|| ipc::client::query_inv_status())
         .map(|(scanning, last_scan_ts)| InvStatusDto {
             scanning,
             last_scan_ts,
@@ -177,15 +211,19 @@ fn query_inv_status() -> Result<InvStatusDto, String> {
 
 /// Hardwarový přehled (v9, SPEC kap. 15) — deska, BIOS, baterie,
 /// teploty CPU se zdrojem, zdraví disků.
-#[tauri::command(async)]
-fn query_hardware() -> Result<core_types::proc::HardwareReport, String> {
-    ipc::client::query_hardware().map_err(|e| e.to_string())
+#[tauri::command]
+async fn query_hardware() -> Result<core_types::proc::HardwareReport, String> {
+    v_poolu(move || query_hardware_blok()).await?
+}
+
+fn query_hardware_blok() -> Result<core_types::proc::HardwareReport, String> {
+    roura::volej(|| ipc::client::query_hardware()).map_err(|e| e.to_string())
 }
 
 /// Security (v9) — stav ochrany + oprávnění aplikací.
 #[tauri::command(async)]
 fn query_security() -> Result<core_types::proc::SecurityReport, String> {
-    ipc::client::query_security().map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_security()).map_err(|e| e.to_string())
 }
 
 
@@ -193,7 +231,7 @@ fn query_security() -> Result<core_types::proc::SecurityReport, String> {
 /// Součty použití všech oprávnění za období (v9D) — jeden dotaz.
 #[tauri::command(async)]
 fn query_perm_use_totals(days: u32) -> Result<Vec<(String, String, i64)>, String> {
-    ipc::client::query_perm_use_totals(days).map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_perm_use_totals(days)).map_err(|e| e.to_string())
 }
 
 /// Historie použití oprávnění (v9D) — sezení a součet za období.
@@ -205,7 +243,7 @@ struct PermUseDto {
 
 #[tauri::command(async)]
 fn query_perm_use(app: String, capability: String, days: u32) -> Result<PermUseDto, String> {
-    ipc::client::query_perm_use(app, capability, days)
+    roura::volej(|| ipc::client::query_perm_use(app.clone(), capability.clone(), days))
         .map(|(sessions, total_s)| PermUseDto { sessions, total_s })
         .map_err(|e| e.to_string())
 }
@@ -219,8 +257,12 @@ fn query_perm_use(app: String, capability: String, days: u32) -> Result<PermUseD
 /// spadlo, a můžeme pak otevřít složku. Blob download v Tauri cestu
 /// nevrací, takže by se uživateli řeklo „uloženo" a on by pak soubor
 /// hledal.
-#[tauri::command(async)]
-fn save_report(name: String, text: String) -> Result<String, String> {
+#[tauri::command]
+async fn save_report(name: String, text: String) -> Result<String, String> {
+    v_poolu(move || save_report_blok(name, text)).await?
+}
+
+fn save_report_blok(name: String, text: String) -> Result<String, String> {
     // Jméno souboru skládá UI, ale ověřuje se tady: cesta v něm nemá
     // co dělat a přepsat něco mimo Stažené soubory už vůbec ne.
     if name.contains([char::from(92u8), '/', ':']) || name.contains("..") {
@@ -240,27 +282,36 @@ fn save_report(name: String, text: String) -> Result<String, String> {
 /// Hlášení o pádech z Windows, přeložená do lidské řeči.
 #[tauri::command(async)]
 fn query_crash_reports(limit: u32) -> Result<Vec<core_types::proc::CrashReportRow>, String> {
-    ipc::client::query_crash_reports(limit).map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_crash_reports(limit)).map_err(|e| e.to_string())
 }
 
 
 /// Výpisy paměti k incidentu — čte je služba, protože do
 /// C:\Windows\Minidump a do cizích profilů uživatel nevidí.
-#[tauri::command(async)]
-fn query_incident_dumps(app: String, ts: i64, dumpPath: String) -> Result<String, String> {
-    ipc::client::query_incident_dumps(app, ts, dumpPath).map_err(|e| e.to_string())
+#[tauri::command]
+async fn query_incident_dumps(app: String, ts: i64, dump_path: String) -> Result<String, String> {
+    v_poolu(move || query_incident_dumps_blok(app, ts, dump_path)).await?
+}
+
+fn query_incident_dumps_blok(app: String, ts: i64, dump_path: String) -> Result<String, String> {
+    roura::volej(|| ipc::client::query_incident_dumps(app.clone(), ts, dump_path.clone()))
+        .map_err(|e| e.to_string())
 }
 
 /// Stav sběru — proč je tabulka prázdná.
 #[tauri::command(async)]
 fn query_collector_health() -> Result<core_types::proc::CollectorHealth, String> {
-    ipc::client::query_collector_health().map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_collector_health()).map_err(|e| e.to_string())
 }
 
 /// Ovladače (v10) — co v počítači běží, od koho a jak staré.
-#[tauri::command(async)]
-fn query_drivers() -> Result<core_types::proc::DriversReport, String> {
-    ipc::client::query_drivers().map_err(|e| e.to_string())
+#[tauri::command]
+async fn query_drivers() -> Result<core_types::proc::DriversReport, String> {
+    v_poolu(move || query_drivers_blok()).await?
+}
+
+fn query_drivers_blok() -> Result<core_types::proc::DriversReport, String> {
+    roura::volej(|| ipc::client::query_drivers()).map_err(|e| e.to_string())
 }
 
 /// Users (v9E) — účty a kdo z nich je správce.
@@ -270,7 +321,7 @@ fn query_drivers() -> Result<core_types::proc::DriversReport, String> {
 /// to odsud je jediné místo, kde odpověď platí.
 #[tauri::command(async)]
 fn query_users() -> Result<core_types::proc::UsersReport, String> {
-    let mut r = ipc::client::query_users().map_err(|e| e.to_string())?;
+    let mut r = roura::volej(|| ipc::client::query_users()).map_err(|e| e.to_string())?;
     r.current_user = current_user_name();
     Ok(r)
 }
@@ -293,13 +344,13 @@ fn current_user_name() -> String {
 /// Stav připojení (v9) — adaptéry, IP konfigurace, WiFi.
 #[tauri::command(async)]
 fn query_connection() -> Result<core_types::proc::ConnectionReport, String> {
-    ipc::client::query_connection().map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_connection()).map_err(|e| e.to_string())
 }
 
 /// Spojení per aplikace (v9, SPEC kap. 12) — kdo je připojený kam.
 #[tauri::command(async)]
 fn query_network() -> Result<Vec<core_types::proc::AppNetRow>, String> {
-    ipc::client::query_network().map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_network()).map_err(|e| e.to_string())
 }
 
 /// Svazky + zdraví disků (v4C).
@@ -309,27 +360,36 @@ struct VolumesDto {
     health: Vec<core_types::proc::DiskHealthRow>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn query_volumes() -> Result<VolumesDto, String> {
-    ipc::client::query_volumes()
+    roura::volej(|| ipc::client::query_volumes())
         .map(|(volumes, health)| VolumesDto { volumes, health })
         .map_err(|e| e.to_string())
 }
 
 /// Postaví MFT index svazku (sekundy — async, ať UI nezamrzne).
-#[tauri::command(async)]
-fn build_file_index(letter: char) -> Result<u64, String> {
-    ipc::client::build_file_index(letter).map_err(|e| e.to_string())
+#[tauri::command]
+async fn build_file_index(letter: char) -> Result<u64, String> {
+    v_poolu(move || build_file_index_blok(letter)).await?
+}
+
+fn build_file_index_blok(letter: char) -> Result<u64, String> {
+    roura::volej(|| ipc::client::build_file_index(letter)).map_err(|e| e.to_string())
 }
 
 /// Hledání v MFT indexu.
-#[tauri::command(async)]
-fn search_files(
-    letter: char,
+#[tauri::command]
+async fn search_files(letter: char,
     query: String,
-    limit: u32,
-) -> Result<Vec<core_types::proc::FileHit>, String> {
-    ipc::client::search_files(letter, query, limit).map_err(|e| e.to_string())
+    limit: u32) -> Result<Vec<core_types::proc::FileHit>, String> {
+    v_poolu(move || search_files_blok(letter, query, limit)).await?
+}
+
+fn search_files_blok(letter: char,
+    query: String,
+    limit: u32) -> Result<Vec<core_types::proc::FileHit>, String> {
+    roura::volej(|| ipc::client::search_files(letter, query.clone(), limit))
+        .map_err(|e| e.to_string())
 }
 
 /// Stav auto-úklidu (v4E).
@@ -340,9 +400,9 @@ struct CleanupDto {
     report: Option<core_types::proc::CleanupReport>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn query_cleanup() -> Result<CleanupDto, String> {
-    ipc::client::query_cleanup()
+    roura::volej(|| ipc::client::query_cleanup())
         .map(|(indexing, running, report)| CleanupDto {
             indexing,
             running,
@@ -352,16 +412,22 @@ fn query_cleanup() -> Result<CleanupDto, String> {
 }
 
 /// Startup položky (v6, SPEC kap. 7).
-#[tauri::command(async)]
-fn query_startup() -> Result<Vec<core_types::proc::StartupRow>, String> {
-    ipc::client::query_startup().map_err(|e| e.to_string())
+#[tauri::command]
+async fn query_startup() -> Result<Vec<core_types::proc::StartupRow>, String> {
+    v_poolu(move || query_startup_blok()).await?
+}
+
+fn query_startup_blok() -> Result<Vec<core_types::proc::StartupRow>, String> {
+    roura::volej(|| ipc::client::query_startup()).map_err(|e| e.to_string())
 }
 
 /// Přepnutí startup položky — T0 přes validační vrstvu (v6).
 #[tauri::command(async)]
 fn toggle_startup(id: String, on: bool) -> Result<core_types::action::ActionResult, String> {
-    ipc::client::toggle_action(core_types::action::Action::StartupToggle { id, on })
-        .map_err(|e| e.to_string())
+    roura::volej(|| {
+        ipc::client::toggle_action(core_types::action::Action::StartupToggle { id: id.clone(), on })
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// T1 plán ukončení procesu (v7) — vrací kroky k potvrzení, nebo deny.
@@ -383,10 +449,12 @@ fn plan_kill(pid: u32, create_time: String, tree: bool) -> Result<PlanOrDeny, St
     let create_time: i64 = create_time
         .parse()
         .map_err(|_| format!("neplatný čas vzniku procesu: {create_time:?}"))?;
-    ipc::client::plan_action(core_types::action::Action::KillProc {
-        pid,
-        create_time,
-        tree,
+    roura::volej(|| {
+        ipc::client::plan_action(core_types::action::Action::KillProc {
+            pid,
+            create_time,
+            tree,
+        })
     })
     .map(|r| match r {
         Ok(p) => PlanOrDeny::Plan(p),
@@ -398,53 +466,73 @@ fn plan_kill(pid: u32, create_time: String, tree: bool) -> Result<PlanOrDeny, St
 /// Provedení potvrzeného plánu (v5/v7).
 #[tauri::command(async)]
 fn execute_plan(plan_id: u64) -> Result<core_types::action::ActionResult, String> {
-    ipc::client::execute_action(plan_id).map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::execute_action(plan_id)).map_err(|e| e.to_string())
 }
 
 /// Kdo drží soubory (v8) — „proč to nejde smazat".
-#[tauri::command(async)]
-fn query_holders(paths: Vec<String>) -> Result<Vec<core_types::proc::HolderRow>, String> {
-    ipc::client::query_holders(paths).map_err(|e| e.to_string())
+#[tauri::command]
+async fn query_holders(paths: Vec<String>) -> Result<Vec<core_types::proc::HolderRow>, String> {
+    v_poolu(move || query_holders_blok(paths)).await?
+}
+
+fn query_holders_blok(paths: Vec<String>) -> Result<Vec<core_types::proc::HolderRow>, String> {
+    roura::volej(|| ipc::client::query_holders(paths.clone())).map_err(|e| e.to_string())
 }
 
 /// T1 plán smazání do koše (v8) — vrací kroky k potvrzení, nebo deny.
 #[tauri::command(async)]
 fn plan_delete(paths: Vec<String>) -> Result<PlanOrDeny, String> {
-    ipc::client::plan_action(core_types::action::Action::DeleteFiles { paths })
-        .map(|r| match r {
-            Ok(p) => PlanOrDeny::Plan(p),
-            Err(d) => PlanOrDeny::Deny(d),
+    roura::volej(|| {
+        ipc::client::plan_action(core_types::action::Action::DeleteFiles {
+            paths: paths.clone(),
         })
-        .map_err(|e| e.to_string())
+    })
+    .map(|r| match r {
+        Ok(p) => PlanOrDeny::Plan(p),
+        Err(d) => PlanOrDeny::Deny(d),
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// T1 plán odinstalace (v8) — vrací kroky k potvrzení, nebo deny.
 #[tauri::command(async)]
 fn plan_uninstall(identity_key: String) -> Result<PlanOrDeny, String> {
-    ipc::client::plan_action(core_types::action::Action::UninstallApp { identity_key })
-        .map(|r| match r {
-            Ok(p) => PlanOrDeny::Plan(p),
-            Err(d) => PlanOrDeny::Deny(d),
+    roura::volej(|| {
+        ipc::client::plan_action(core_types::action::Action::UninstallApp {
+            identity_key: identity_key.clone(),
         })
-        .map_err(|e| e.to_string())
+    })
+    .map(|r| match r {
+        Ok(p) => PlanOrDeny::Plan(p),
+        Err(d) => PlanOrDeny::Deny(d),
+    })
+    .map_err(|e| e.to_string())
 }
 
 
 /// T1 plán úklidu záznamu po programu, který na disku není (v10).
 #[tauri::command(async)]
 fn plan_purge_ghost(identity_key: String) -> Result<PlanOrDeny, String> {
-    ipc::client::plan_action(core_types::action::Action::PurgeGhost { identity_key })
-        .map(|r| match r {
-            Ok(p) => PlanOrDeny::Plan(p),
-            Err(d) => PlanOrDeny::Deny(d),
+    roura::volej(|| {
+        ipc::client::plan_action(core_types::action::Action::PurgeGhost {
+            identity_key: identity_key.clone(),
         })
-        .map_err(|e| e.to_string())
+    })
+    .map(|r| match r {
+        Ok(p) => PlanOrDeny::Plan(p),
+        Err(d) => PlanOrDeny::Deny(d),
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// Co po aplikaci zbylo na disku (v8).
-#[tauri::command(async)]
-fn query_leftovers(identity_key: String) -> Result<Vec<String>, String> {
-    ipc::client::query_leftovers(identity_key).map_err(|e| e.to_string())
+#[tauri::command]
+async fn query_leftovers(identity_key: String) -> Result<Vec<String>, String> {
+    v_poolu(move || query_leftovers_blok(identity_key)).await?
+}
+
+fn query_leftovers_blok(identity_key: String) -> Result<Vec<String>, String> {
+    roura::volej(|| ipc::client::query_leftovers(identity_key.clone())).map_err(|e| e.to_string())
 }
 
 /// Spuštěná odinstalace — co UI potřebuje k dalším dvěma krokům.
@@ -466,14 +554,18 @@ struct UninstallStarted {
 /// Služba plán znovu zvaliduje a vydá příkaz, spouštíme ho ale **tady**,
 /// v relaci uživatele — služba běží jako SYSTEM v session 0, kde by
 /// odinstalátor neměl viditelnou plochu ani správný `HKEY_CURRENT_USER`.
-#[tauri::command(async)]
-fn start_uninstall(plan_id: u64, identity_key: String) -> Result<UninstallStarted, String> {
+#[tauri::command]
+async fn start_uninstall(plan_id: u64, identity_key: String) -> Result<UninstallStarted, String> {
+    v_poolu(move || start_uninstall_blok(plan_id, identity_key)).await?
+}
+
+fn start_uninstall_blok(plan_id: u64, identity_key: String) -> Result<UninstallStarted, String> {
     // Cesty aplikace ještě než do nich odinstalátor sáhne.
-    let paths: Vec<String> = ipc::client::query_app_map(identity_key)
+    let paths: Vec<String> = roura::volej(|| ipc::client::query_app_map(identity_key.clone()))
         .map(|rows| rows.into_iter().map(|p| p.path).collect())
         .unwrap_or_default();
 
-    let (command, audit_id) = match ipc::client::authorize_uninstall(plan_id) {
+    let (command, audit_id) = match roura::volej(|| ipc::client::authorize_uninstall(plan_id)) {
         Ok(Ok(pair)) => pair,
         // Zamítnutí není chyba volání — vracíme ho UI k zobrazení.
         Ok(Err(deny)) => {
@@ -495,7 +587,9 @@ fn start_uninstall(plan_id: u64, identity_key: String) -> Result<UninstallStarte
         }),
         // Neúspěšný start se hlásí hned, ať audit nezůstane „running".
         Err(e) => {
-            let _ = ipc::client::report_uninstall(audit_id, String::new(), e.to_string());
+            let _ = roura::volej(|| {
+                ipc::client::report_uninstall(audit_id, String::new(), e.to_string())
+            });
             Err(e.to_string())
         }
     }
@@ -503,8 +597,12 @@ fn start_uninstall(plan_id: u64, identity_key: String) -> Result<UninstallStarte
 
 /// Zvedne zastavenou službu — pustí instalátor v opravném režimu.
 /// Výzvu UAC zobrazí Windows, potvrzuje ji uživatel.
-#[tauri::command(async)]
-fn repair_service() -> Result<(), String> {
+#[tauri::command]
+async fn repair_service() -> Result<(), String> {
+    v_poolu(move || repair_service_blok()).await?
+}
+
+fn repair_service_blok() -> Result<(), String> {
     repair::launch().map_err(|e| e.to_string())
 }
 
@@ -543,10 +641,12 @@ fn finish_uninstall(
         paths.len()
     );
     // Registr rozhoduje o tom, zda aplikace zmizela — ne odinstalátor.
-    let res =
-        ipc::client::report_uninstall(audit_id, identity_key, detail).map_err(|e| e.to_string())?;
+    let res = roura::volej(|| {
+        ipc::client::report_uninstall(audit_id, identity_key.clone(), detail.clone())
+    })
+    .map_err(|e| e.to_string())?;
     // Inventář ještě drží starý stav — nový sken ho srovná.
-    let _ = ipc::client::rescan_apps();
+    let _ = roura::volej(|| ipc::client::rescan_apps());
     Ok(UninstallDone {
         still_installed: res.outcome.as_deref() != Some("ok"),
         handed_off: res.outcome.as_deref() == Some("handed"),
@@ -555,21 +655,25 @@ fn finish_uninstall(
 }
 
 /// Auditní záznamy (v5) — historie zásahů do systému.
-#[tauri::command]
+#[tauri::command(async)]
 fn query_audit(limit: u32) -> Result<Vec<core_types::action::AuditRow>, String> {
-    ipc::client::query_audit(limit).map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_audit(limit)).map_err(|e| e.to_string())
 }
 
 /// Smaže záznam incidentu (vlastní DB záznam).
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_incident(id: i64) -> Result<(), String> {
-    ipc::client::delete_incident(id).map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::delete_incident(id)).map_err(|e| e.to_string())
 }
 
 /// Duplicity (v4D) — pomalé, async command.
-#[tauri::command(async)]
-fn find_duplicates(root: String, min_size: u64) -> Result<Vec<(u64, Vec<String>)>, String> {
-    ipc::client::find_duplicates(root, min_size).map_err(|e| e.to_string())
+#[tauri::command]
+async fn find_duplicates(root: String, min_size: u64) -> Result<Vec<(u64, Vec<String>)>, String> {
+    v_poolu(move || find_duplicates_blok(root, min_size)).await?
+}
+
+fn find_duplicates_blok(root: String, min_size: u64) -> Result<Vec<(u64, Vec<String>)>, String> {
+    roura::volej(|| ipc::client::find_duplicates(root.clone(), min_size)).map_err(|e| e.to_string())
 }
 /// Cesta do uvozovek pro explorer.exe. Koncová zpětná lomítka se musí
 /// zdvojit: `"C:\"` přečte Windows jako escapovanou uvozovku, takže
@@ -583,7 +687,7 @@ fn quoted(p: &std::path::Path) -> String {
 
 /// Otevře cestu v Průzkumníku (adresář přímo, soubor s /select).
 /// Jen otevření — žádná mutace; registry cesty sem nepatří.
-#[tauri::command]
+#[tauri::command(async)]
 fn open_path(path: String) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
 
@@ -623,18 +727,6 @@ fn open_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Cesta bezpečná i nad MAX_PATH. Bez prefixu vrací Windows u dlouhých
-/// cest „path not found" — a to by řádek nesprávně schovalo jako
-/// smazaný. Cesty z MFT jsou kanonické (`X:\…`, bez `.` a `..`), takže
-/// prefix nic nerozbije.
-fn long_path(p: &str) -> std::path::PathBuf {
-    if p.len() > 250 && p.as_bytes().get(1) == Some(&b':') && !p.starts_with(r"\\") {
-        std::path::PathBuf::from(format!(r"\?\{p}"))
-    } else {
-        std::path::PathBuf::from(p)
-    }
-}
-
 /// Které z cest na disku ještě jsou (jen čtení).
 ///
 /// Úklidový report spočte služba jednou po startu a dál ho drží
@@ -664,7 +756,13 @@ fn paths_exist(paths: Vec<String>) -> Vec<bool> {
             }
             // symlink_metadata nenásleduje reparse pointy: zajímá nás
             // sama položka v adresáři, ne cíl odkazu.
-            match std::fs::symlink_metadata(long_path(p)) {
+            //
+            // Cesta jde napřímo. Std si u dlouhých cest prefix `\\?\`
+            // doplní sám; ruční prefix tu dřív přišel o jedno zpětné
+            // lomítko, Windows pak vracely „neplatné jméno" místo
+            // NotFound a smazané soubory s cestou nad 250 znaků
+            // v seznamu zůstávaly navždy.
+            match std::fs::symlink_metadata(p) {
                 Ok(_) => true,
                 Err(e) => e.kind() != std::io::ErrorKind::NotFound,
             }
@@ -680,9 +778,9 @@ struct SelfUsageDto {
     db_bytes: u64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn query_self_usage() -> Result<SelfUsageDto, String> {
-    ipc::client::query_self_usage()
+    roura::volej(|| ipc::client::query_self_usage())
         .map(|u| SelfUsageDto {
             cpu_pct: u.cpu_pct,
             ws_bytes: u.ws_bytes,
@@ -866,17 +964,36 @@ fn query_launchable_icon(aumid: String) -> Option<core_types::proc::IconData> {
 }
 
 /// Jaká zkratka vyvolává vyhledávací lištu.
-#[tauri::command]
+#[tauri::command(async)]
 fn get_spotlight_hotkey() -> String {
     hotkey::load()
 }
 
+/// Proč zkratka právě neplatí (drží ji jiný program); `null` = platí,
+/// nebo je lišta vypnutá. Pro Nastavení — selhání registrace při startu
+/// UI se jinak nemá komu ohlásit.
+#[tauri::command(async)]
+fn get_spotlight_hotkey_error() -> Option<String> {
+    hotkey::chyba()
+}
+
 /// Změní zkratku. Projeví se hned, ne až po restartu.
-#[tauri::command]
+///
+/// Pořadí je schválně: nejdřív zabrat, teprve pak uložit. Zkratku,
+/// kterou drží jiný program, nesmíme uložit — po restartu by zase
+/// nefungovala a nikdo by nevěděl proč. Když zabrat nejde, vrátí se
+/// chyba a dál platí stará zkratka.
+///
+/// U vypnuté lišty se zkratka jen uloží. Dřív se zaregistrovala i tak:
+/// globálně zabrala kombinaci a otevírala lištu, kterou má uživatel
+/// vypnutou. Zaregistruje se až při zapnutí lišty.
+#[tauri::command(async)]
 fn set_spotlight_hotkey(accel: String) -> Result<(), String> {
-    hotkey::save(&accel)?;
-    hotkey::set(&accel);
-    Ok(())
+    hotkey::over(&accel)?;
+    if hotkey::zapnuta() {
+        hotkey::set(&accel)?;
+    }
+    hotkey::save(&accel)
 }
 
 /// Zvětšení uživatelského rozhraní (1.0 = beze změny).
@@ -920,14 +1037,25 @@ fn get_spotlight_enabled() -> bool {
 /// Vypnutá znamená, že se odregistruje i klávesová zkratka — jinak by
 /// Winsent dál držel Alt+mezerník, který by pak nefungoval ani jemu,
 /// ani nikomu jinému.
+///
+/// Když se při zapnutí nepodaří zkratku zabrat (mezitím si ji vzal jiný
+/// program), lišta zůstane vypnutá a vrátí se chyba. Dřív se tvářila
+/// zapnutá a zkratka mlčky nefungovala.
 #[tauri::command(async)]
 fn set_spotlight_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     hotkey::save_zapnuta(enabled)?;
     let zapis = if enabled { hotkey::load() } else { String::new() };
-    hotkey::set(&zapis);
+    let vysledek = hotkey::set(&zapis);
     if !enabled {
         let h = app.clone();
         let _ = app.run_on_main_thread(move || spotlight::hide(&h));
+    }
+    if let Err(e) = vysledek {
+        if enabled {
+            let _ = hotkey::save_zapnuta(false);
+            return Err(format!("{e} Lišta zůstává vypnutá."));
+        }
+        return Err(e);
     }
     Ok(())
 }
@@ -962,12 +1090,26 @@ fn hide_spotlight(app: tauri::AppHandle) {
 }
 
 /// Otevře lištu i bez zkratky (z hlavního okna).
-#[tauri::command]
+///
+/// Async a samotné otevření přes hlavní vlákno — stejně jako zkratka.
+/// Při prvním vyvolání se okno lišty teprve staví, a stavba WebView2
+/// zevnitř synchronního příkazu (tedy uvnitř obsluhy zprávy z jiného
+/// WebView2) na Windows uvázne: Tauri to u `WebviewWindowBuilder`
+/// výslovně píše. Zamrzlo by hlavní okno i tray.
+#[tauri::command(async)]
 fn show_spotlight(app: tauri::AppHandle) -> Result<(), String> {
     if !hotkey::zapnuta() {
         return Err("vyhledávací lišta je v Nastavení vypnutá".into());
     }
-    spotlight::toggle(&app, SPOTLIGHT_ROUTE)
+    let (tx, rx) = std::sync::mpsc::channel();
+    let h = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(spotlight::toggle(&h, SPOTLIGHT_ROUTE));
+    })
+    .map_err(|e| e.to_string())?;
+    // Čeká vlákno z poolu, ne hlavní — tady blokovat nevadí.
+    rx.recv()
+        .map_err(|_| "hlavní vlákno lištu neotevřelo".to_string())?
 }
 
 /// Procentní kódování pro dotaz v URL. Vlastní, protože kvůli jedné
@@ -989,7 +1131,7 @@ fn url_encode(s: &str) -> String {
 /// Kde leží databáze a kam by se dala přesunout.
 #[tauri::command(async)]
 fn query_db_location() -> Result<ipc::client::DbLocation, String> {
-    ipc::client::query_db_location().map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::query_db_location()).map_err(|e| e.to_string())
 }
 
 /// Přesune databázi jinam. Prázdno = zpátky na výchozí místo.
@@ -999,7 +1141,7 @@ fn query_db_location() -> Result<ipc::client::DbLocation, String> {
 /// nedrží otevřenou.
 #[tauri::command(async)]
 fn set_db_dir(dir: String) -> Result<(), String> {
-    ipc::client::set_db_dir(dir).map_err(|e| e.to_string())
+    roura::volej(|| ipc::client::set_db_dir(dir.clone())).map_err(|e| e.to_string())
 }
 
 /// Nechá uživatele vybrat složku. Vrací prázdno, když výběr zrušil.
@@ -1101,14 +1243,51 @@ struct UpdateInfo {
     error: Option<String>,
 }
 
+/// Poslední ověření rozdílu z `raw/main` přes API: jakou verzi měl
+/// commit, na který větev ukazovala, a kdy se to zjišťovalo.
+struct Overeni {
+    /// Verze z `raw/main`, ke které ověření patří.
+    raw: String,
+    /// Verze z konkrétního commitu, nebo proč se ji zjistit nepodařilo.
+    vysledek: Result<String, String>,
+    kdy: std::time::Instant,
+}
+
+/// Ověření sdílené mezi voláními `check_update` (UI se ptá každých 30 s).
+static OVERENI: std::sync::Mutex<Option<Overeni>> = std::sync::Mutex::new(None);
+
+/// Jak dlouho ověření platí, když se `raw/main` mezitím nezměnila.
+/// Dvakrát déle než CDN cache (max-age 300 s): víc než šest dotazů za
+/// hodinu to z hodinového limitu API (60) nevezme, i když se ověření
+/// nepovede (403) — neúspěch se pamatuje stejně jako úspěch.
+const OVERENI_PLATI: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Ptát se API znovu? Jen když se změnila verze na větvi (nové vydání,
+/// osvěžená cache), nebo když je poslední ověření staré.
+fn overit_znovu(posledni: Option<&Overeni>, raw: &str, ted: std::time::Instant) -> bool {
+    match posledni {
+        None => true,
+        Some(o) => o.raw != raw || ted.saturating_duration_since(o.kdy) >= OVERENI_PLATI,
+    }
+}
+
 /// Je v repozitáři jiná verze, než která běží?
 ///
 /// Rozdíl, ne „vyšší": verze je `0.1.0+RRRRMMDD.HHMM` a porovnávat to
 /// jako číslo by znamenalo psát parser, který se u prvního jiného tvaru
 /// splete. Vydavatel navíc může vydat i starší build zpátky, a i to je
 /// změna, o které má uživatel vědět.
-#[tauri::command(async)]
-fn check_update() -> UpdateInfo {
+#[tauri::command]
+async fn check_update() -> UpdateInfo {
+    v_poolu(check_update_blok).await.unwrap_or_else(|e| UpdateInfo {
+        current: String::new(),
+        latest: String::new(),
+        available: false,
+        error: Some(e),
+    })
+}
+
+fn check_update_blok() -> UpdateInfo {
     let current = installed_version().unwrap_or_default();
     if current.is_empty() {
         return UpdateInfo {
@@ -1127,7 +1306,8 @@ fn check_update() -> UpdateInfo {
     // odtud, začal stahovat starší commit. `raw` jede přes CDN, nemá
     // hodinový limit a pro odpověď „jaká verze je venku" stačí.
     //
-    // Commit se dohledá teprve tehdy, když je co stahovat (`run_update`).
+    // Commit se dohledá teprve tehdy, když větev hlásí rozdíl (a i pak
+    // jen jednou za čas, viz níže), a při stahování (`run_update`).
     let latest = match win_sys::http::get(
         RAW_HOST,
         &format!("/{REPO}/main/release/version.txt"),
@@ -1154,11 +1334,71 @@ fn check_update() -> UpdateInfo {
             }
         }
     };
-    UpdateInfo {
-        available: latest != current,
-        current,
-        latest,
-        error: None,
+    if latest == current {
+        return UpdateInfo {
+            available: false,
+            current,
+            latest,
+            error: None,
+        };
+    }
+    // Rozdíl z `raw/main` se ještě ověří přes konkrétní commit.
+    //
+    // Větev jde přes CDN cache (max-age 300 s), kdežto instalátor bere
+    // čerstvý commit z API. Kdo nainstaluje do pěti minut od vydání,
+    // má novější verzi, než jakou vrátí cache — a UI mu pak nabízelo
+    // „aktualizaci" na předchozí build. Rozdíl, ne „vyšší" (viz výše),
+    // zůstává.
+    //
+    // Ověření se pamatuje (viz `OVERENI`). Rozdíl trvá celou dobu, co
+    // aktualizace čeká nenainstalovaná, a ptát se API při každé
+    // třicetisekundové kontrole by byl zase hodinový limit pryč — a
+    // s ním `run_update` i instalátor, které si commit berou z API.
+    let potvrzena = {
+        let mut posledni = OVERENI.lock().unwrap_or_else(|p| p.into_inner());
+        let ted = std::time::Instant::now();
+        if overit_znovu(posledni.as_ref(), &latest, ted) {
+            let vysledek = latest_commit().and_then(|sha| {
+                win_sys::http::get(
+                    RAW_HOST,
+                    &format!("/{REPO}/{sha}/release/version.txt"),
+                    |_| {},
+                )
+                .map_err(|e| e.to_string())
+                .map(|b| String::from_utf8_lossy(&b).trim().to_string())
+            });
+            *posledni = Some(Overeni {
+                raw: latest.clone(),
+                vysledek,
+                kdy: ted,
+            });
+        }
+        posledni
+            .as_ref()
+            .map(|o| o.vysledek.clone())
+            .unwrap_or_else(|| Err("ověření chybí".into()))
+    };
+    match potvrzena {
+        Ok(v) if !v.is_empty() => UpdateInfo {
+            available: v != current,
+            current,
+            latest: v,
+            error: None,
+        },
+        // Ověřit nešlo (limit API, síť) — platí odpověď z větve jako
+        // dřív; chyba je jen pro ladění.
+        Ok(_) => UpdateInfo {
+            available: true,
+            current,
+            latest,
+            error: Some("commit vrátil prázdnou verzi".into()),
+        },
+        Err(e) => UpdateInfo {
+            available: true,
+            current,
+            latest,
+            error: Some(e),
+        },
     }
 }
 
@@ -1167,8 +1407,12 @@ fn check_update() -> UpdateInfo {
 /// Vrací se hned, jakmile je instalátor na světě — čekat nemá smysl:
 /// jeho první práce je zavřít tohle okno. Zbytek (služba, binárky,
 /// nové spuštění aplikace) dělá on.
-#[tauri::command(async)]
-fn run_update() -> Result<String, String> {
+#[tauri::command]
+async fn run_update() -> Result<String, String> {
+    v_poolu(move || run_update_blok()).await?
+}
+
+fn run_update_blok() -> Result<String, String> {
     let sha = latest_commit()?;
     let data = win_sys::http::get(
         RAW_HOST,
@@ -1334,6 +1578,7 @@ fn main() {
             query_autostart,
             set_autostart,
             get_spotlight_hotkey,
+            get_spotlight_hotkey_error,
             set_spotlight_hotkey,
             hide_spotlight,
             focus_spotlight,
@@ -1416,6 +1661,12 @@ fn main() {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
                 }
+                // Uspat i webview, stejně jako u zavření křížkem: samotné
+                // schování ho nezastaví a neviditelná stránka by po celé
+                // sezení tikala časovači a ptala se služby, dokud by
+                // uživatel okno jednou neotevřel a nezavřel. Probudí ho
+                // `show_main_window`, kudy vede každé otevření okna.
+                uspi_webview(app.handle(), "main", true);
             }
             // Globální zkratka pro vyhledávací lištu. Registruje se ve
             // vlastním vlákně (viz hotkey) a jen posílá práci sem.
@@ -1431,6 +1682,12 @@ fn main() {
                 let h = handle.clone();
                 // Okna se smějí obsluhovat jen z hlavního vlákna.
                 let _ = handle.run_on_main_thread(move || {
+                    // Pojistka: vypnutá lišta se zkratkou neotevírá, ani
+                    // kdyby registrace z nějakého důvodu zůstala viset
+                    // (třeba v okamžiku mezi vypnutím a odregistrací).
+                    if !hotkey::zapnuta() {
+                        return;
+                    }
                     if let Err(e) = spotlight::toggle(&h, SPOTLIGHT_ROUTE) {
                         spotlight::log(&format!("toggle selhal: {e}"));
                     }
@@ -1466,6 +1723,27 @@ fn main() {
 mod tests {
     use super::*;
 
+    // Čekající aktualizace nesmí každou kontrolou (30 s) brát dotaz
+    // z hodinového limitu API — ani když se ověření nepovedlo.
+    #[test]
+    fn overeni_aktualizace_se_neopakuje_kazdou_kontrolou() {
+        let t0 = std::time::Instant::now();
+        assert!(overit_znovu(None, "v2", t0));
+        for vysledek in [Ok("v2".to_string()), Err("403".to_string())] {
+            let o = Overeni {
+                raw: "v2".into(),
+                vysledek,
+                kdy: t0,
+            };
+            let za = |s| t0 + std::time::Duration::from_secs(s);
+            assert!(!overit_znovu(Some(&o), "v2", za(30)));
+            assert!(!overit_znovu(Some(&o), "v2", za(599)));
+            assert!(overit_znovu(Some(&o), "v2", za(600)));
+            // Nové vydání (jiná verze na větvi) se ověří hned.
+            assert!(overit_znovu(Some(&o), "v3", za(30)));
+        }
+    }
+
     #[test]
     fn msix_klic_nespoji_cestu_s_balickem() {
         assert_eq!(
@@ -1480,5 +1758,26 @@ mod tests {
         assert_eq!(msix_klic(r"D:\steam\Steam.exe"), None);
         // Vypadá jako rodina, ale identifikátor vydavatele nemá 13 znaků.
         assert_eq!(msix_klic("Neco.Divneho_kratke!App"), None);
+    }
+
+    // Smazaný soubor s cestou nad 250 znaků se musí ohlásit jako chybějící.
+    // Dřív ho vadný ruční prefix `\?\` držel v seznamu navždy.
+    #[test]
+    fn paths_exist_pozna_smazany_soubor_s_dlouhou_cestou() {
+        let koren = std::env::temp_dir().join(format!("winsent-dlouha-{}", std::process::id()));
+        let mut dir = koren.clone();
+        while dir.as_os_str().len() < 300 {
+            dir = dir.join("abcdefghijklmnopqrstuvwxyz0123456789");
+        }
+        std::fs::create_dir_all(&dir).expect("vytvořit dlouhou cestu");
+        let f = dir.join("soubor.txt");
+        std::fs::write(&f, b"x").expect("zapsat");
+        let s = f.to_string_lossy().into_owned();
+        assert!(s.len() > 250);
+
+        assert_eq!(paths_exist(vec![s.clone()]), vec![true]);
+        std::fs::remove_file(&f).expect("smazat");
+        assert_eq!(paths_exist(vec![s]), vec![false]);
+        let _ = std::fs::remove_dir_all(&koren);
     }
 }

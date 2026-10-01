@@ -349,7 +349,7 @@ fn najdi_zastupce(display_name: &str) -> Option<PathBuf> {
 
 /// Spustitelný soubor z mapy souborů aplikace.
 fn najdi_exe(identity_key: &str, display_name: &str) -> Option<PathBuf> {
-    let mapa = ipc::client::query_app_map(identity_key.to_string()).ok()?;
+    let mapa = crate::roura::volej(|| ipc::client::query_app_map(identity_key.to_string())).ok()?;
     let hledane = slova(display_name);
     let mut nejlepsi: Option<(usize, PathBuf)> = None;
     for radek in mapa.iter().filter(|r| r.role == "install") {

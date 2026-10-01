@@ -83,6 +83,11 @@ function w(id, nazev, sekce, href, ikona, popis, komp, sady, vychozi, extra = {}
 		komp,
 		typ: id,
 		sady,
+		/// Sady, bez kterých dlaždice nemá co kreslit. Když se některá
+		/// z nich nenačetla, rám místo těla ukáže „nepodařilo se načíst";
+		/// selhání ostatních (jména disků, čitelná jména programů…) je jen
+		/// značka „neaktuální" — jinak by kvůli nim zmizela i živá data.
+		hlavni: extra.hlavni ?? sady.slice(0, 1),
 		/// [sloupce, řádky]
 		vychozi,
 		/// Nejmenší rozumná velikost — pod ní se z dlaždice nedá nic vyčíst.
@@ -116,7 +121,9 @@ const SEZNAM = [
 
 	// -- Hardware -----------------------------------------------------
 	w('deska', 'Deska a BIOS', 'Hardware', '/hardware', CircuitBoard, 'model desky a verze firmwaru', KartyHardware, ['hardware'], [2, 2]),
-	w('teploty', 'Teploty', 'Hardware', '/hardware', Thermometer, 'co ze součástek teplotu hlásí', KartyHardware, ['system', 'volumes', 'hardware'], [2, 2]),
+	w('teploty', 'Teploty', 'Hardware', '/hardware', Thermometer, 'co ze součástek teplotu hlásí', KartyHardware, ['system', 'volumes', 'hardware'], [2, 2], {
+		hlavni: ['hardware']
+	}),
 	w('moduly', 'Paměťové moduly', 'Hardware', '/hardware', Microchip, 'osazené sloty a takt', KartyHardware, ['sysInfo'], [2, 3]),
 	w('obrazovky', 'Obrazovky', 'Hardware', '/hardware', Monitor, 'rozlišení a obnovovací frekvence', KartyHardware, ['displays'], [2, 2]),
 	w('pagefile', 'Stránkovací soubor', 'Hardware', '/hardware', Layers, 'co se odkládá na disk místo do RAM', KartyHardware, ['hardware'], [1, 2]),
@@ -128,7 +135,11 @@ const SEZNAM = [
 	w('smart', 'Zdraví disků', 'Files', '/files', Gauge, 'opotřebení a odsloužené hodiny', KartyDisk, ['volumes'], [2, 2]),
 	w('velke', 'Co zabírá místo', 'Files', '/files', FolderTree, 'největší složky a soubory', KartyDisk, ['cleanup'], [2, 4], { min: [2, 3] }),
 	w('duplicity', 'Duplicity', 'Files', '/files', Copy, 'kolik místa drží kopie téhož', KartyDisk, ['cleanup'], [1, 2]),
-	w('indexy', 'Stav indexů', 'Vyhledávání', '/search', FileSearch, 'na kterých discích už hledání funguje', KartyDisk, ['cleanup', 'volumes'], [2, 3]),
+	w('indexy', 'Stav indexů', 'Vyhledávání', '/search', FileSearch, 'na kterých discích už hledání funguje', KartyDisk, ['cleanup', 'volumes'], [2, 3], {
+		// Bez seznamu indexování by každý svazek vyšel jako „hledat se
+		// dá jen v NTFS" — nepravda, proto jsou hlavní obě sady.
+		hlavni: ['cleanup', 'volumes']
+	}),
 
 	// -- Programs -----------------------------------------------------
 	w('naposledy', 'Naposledy otevřené', 'Vyhledávání', '/search', Clock4, 'zkratka na to, co jsi otevíral z hledání', KartyProgramy, [], [2, 4], { min: [2, 2] }),

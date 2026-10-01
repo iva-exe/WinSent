@@ -52,8 +52,18 @@
 			await invoke('set_spotlight_enabled', { enabled: !spotlight });
 			spotlight = !spotlight;
 			spotlightChyba = '';
+			// Hláška o obsazené zkratce patří k jejímu stavu u hostitele:
+			// vypnutá lišta zkratku pustila, zapnutá ji právě zabrala.
+			nactiChybuZkratky();
 		} catch (e) {
 			spotlightChyba = String(e);
+			// Hostitel mohl stav uložit a selhat až při registraci
+			// zkratky. Přepínač má ukázat, co je doopravdy uložené.
+			try {
+				spotlight = await invoke('get_spotlight_enabled');
+			} catch {
+				/* nechá se poslední známý stav */
+			}
 		}
 	}
 
@@ -176,13 +186,59 @@
 		hkSnimam = true;
 		hkChyba = '';
 		window.addEventListener('keydown', snimej, true);
+		// Alt+Tab do hry uprostřed snímání: okno by jinak zůstalo
+		// v režimu, kdy spolkne první kombinaci, kterou člověk zmáčkne
+		// po návratu — a uloží ji jako globální zkratku.
+		window.addEventListener('blur', konecSnimani);
 	}
+
+	/// Jméno klávesy v zápisu, kterému rozumí parser hostitele, nebo
+	/// null, když se z ní zkratka udělat nedá.
+	///
+	/// Dřív se bralo e.key, tedy znak podle rozložení. Na české
+	/// klávesnici je to u horní řady „+ěščřžýáíé" a u Ctrl+Alt (AltGr)
+	/// „€ \ |…", šipky chodí jako „ArrowLeft" — parser nic z toho nezná
+	/// a Alt+1 se složilo do nesmyslného „Alt++". Číslice a šipky se proto
+	/// berou z fyzické pozice (e.code). U písmen ne: e.code je pozice
+	/// podle US, takže na QWERTZ by prohodilo Y a Z. Pro písmena platí
+	/// keyCode, který ve WebView2 na Windows nese virtuální kód klávesy
+	/// podle rozložení — přesně to, co pak dostane RegisterHotKey.
+	function jmenoKlavesy(e) {
+		const c = e.code;
+		if (c === 'Space') return 'Space';
+		let m = /^Digit([0-9])$/.exec(c);
+		if (m) return m[1];
+		m = /^Arrow(Left|Up|Right|Down)$/.exec(c);
+		if (m) return m[1];
+		if (/^F([1-9]|1[0-9]|2[0-4])$/.test(c)) return c;
+		if (/^Key[A-Z]$/.test(c)) {
+			if (e.keyCode >= 65 && e.keyCode <= 90) return String.fromCharCode(e.keyCode);
+			if (/^[a-z]$/i.test(e.key)) return e.key.toUpperCase();
+			return c.slice(3);
+		}
+		// Numerická klávesnice záměrně chybí: hostitel ji neumí
+		// pojmenovat a uložit ji jako číslici z horní řady by vyrobilo
+		// zkratku, která na numerické klávesnici nereaguje.
+		const OSTATNI = ['Home', 'End', 'PageUp', 'PageDown', 'Insert', 'Delete', 'Enter', 'Tab', 'Backspace'];
+		return OSTATNI.includes(c) ? c : null;
+	}
+
+	// Kombinace, které každý program používá na kopírování a spol.
+	// RegisterHotKey by je zabral celému systému — Ctrl+C by pak všude
+	// otevíral lištu místo kopírování, a to i ve hrách.
+	const EDITACNI = ['Ctrl+C', 'Ctrl+V', 'Ctrl+X', 'Ctrl+Z', 'Ctrl+Y', 'Ctrl+A', 'Ctrl+S', 'Ctrl+F'];
 
 	async function snimej(e) {
 		e.preventDefault();
 		e.stopPropagation();
+		// Pojistka proti osiřelému posluchači: kdyby úklid někde selhal,
+		// nesmí se stisk v jiné sekci uložit jako zkratka.
+		if (!hkSnimam) {
+			konecSnimani();
+			return;
+		}
 		// Samotný modifikátor ještě není zkratka — čeká se na klávesu.
-		if (['Control', 'Alt', 'Shift', 'Meta', 'OS'].includes(e.key)) return;
+		if (['Control', 'Alt', 'AltGraph', 'Shift', 'Meta', 'OS'].includes(e.key)) return;
 		if (e.key === 'Escape') {
 			konecSnimani();
 			return;
@@ -196,20 +252,66 @@
 			hkChyba = 'Zkratka bez modifikátoru by zabrala klávesu celému systému.';
 			return;
 		}
-		casti.push(e.code === 'Space' ? 'Space' : e.key.length === 1 ? e.key.toUpperCase() : e.key);
+		const klavesa = jmenoKlavesy(e);
+		if (!klavesa) {
+			hkChyba = 'Tuhle klávesu jako zkratku použít nejde — zkus písmeno, číslici, F1–F24, šipku nebo mezerník.';
+			return;
+		}
+		// Windows posílají AltGr jako Ctrl+Alt. Na české (a většině
+		// evropských) klávesnic AltGr+V píše @, AltGr+Q \, AltGr+E €…
+		// a globální zkratka Ctrl+Alt+V by ten znak sebrala všem
+		// programům — od té chvíle by @ nešlo napsat nikde. Pozná se to
+		// podle toho, že klávesa s Ctrl+Alt vydala jiný znak než sama.
+		if (e.ctrlKey && e.altKey && !e.metaKey) {
+			const pise = e.key === 'Dead' || (e.key.length === 1 && e.key.toUpperCase() !== klavesa);
+			if (pise || e.getModifierState?.('AltGraph')) {
+				hkChyba =
+					e.key === 'Dead'
+						? `Na tvé klávesnici AltGr+${klavesa} píše znak s diakritikou — zkratka by ho zabrala všem programům.`
+						: `Na tvé klávesnici AltGr+${klavesa} píše „${e.key}" — zkratka by ho zabrala všem programům.`;
+				return;
+			}
+		}
+		casti.push(klavesa);
 		const novy = casti.join('+');
+		if (EDITACNI.includes(novy)) {
+			hkChyba = `${novy} používají všechny programy — lišta by jim tu zkratku vzala.`;
+			return;
+		}
 		konecSnimani();
 		try {
 			await invoke('set_spotlight_hotkey', { accel: novy });
 			zkratka = novy;
+			nactiChybuZkratky();
 		} catch (err) {
+			// Hostitel mohl zápis uložit a selhat až při registraci
+			// (zkratku drží jiný program). Ukáže se chyba a k ní to, co
+			// je doopravdy uložené — ne to, co se zmáčklo.
 			hkChyba = String(err);
+			invoke('get_spotlight_hotkey')
+				.then((h) => (zkratka = h))
+				.catch(() => {});
 		}
+	}
+
+	/// Proč zkratka u hostitele právě neplatí (null = platí).
+	///
+	/// Bez toho se nepovedená registrace při startu UI nikde neukázala:
+	/// výchozí Alt+mezerník drží PowerToys Run, Nastavení ukazovalo
+	/// zkratku s popisem „vyvolá vyhledávání" a nic se nedělo.
+	///
+	/// Po NEúspěšné změně se volat nesmí: hostitel se vrátil ke staré
+	/// zkratce, ta platí, a odpověď by smazala hlášku, proč nová neprošla.
+	function nactiChybuZkratky() {
+		invoke('get_spotlight_hotkey_error')
+			.then((c) => (hkChyba = c ? String(c) : ''))
+			.catch(() => {});
 	}
 
 	function konecSnimani() {
 		hkSnimam = false;
 		window.removeEventListener('keydown', snimej, true);
+		window.removeEventListener('blur', konecSnimani);
 	}
 
 	// ── Kam se ukládá databáze ──
@@ -250,7 +352,10 @@
 			await nacistDb();
 			dbMsg = dir ? 'Uloženo.' : 'Vrátí se na výchozí místo.';
 		} catch (e) {
-			dbErr = String(e);
+			// Služba přesun odmítne třeba klientovi, který neběží jako
+			// správce. Odmítnutí chodí s technickou předponou z IPC —
+			// uživatel má číst hlavně to, proč a co s tím, ne odkud to přišlo.
+			dbErr = `Umístění se nezměnilo: ${String(e).replace(/^služba vrátila chybu:\s*/, '')}`;
 		}
 		dbBusy = false;
 	}
@@ -293,6 +398,7 @@
 		invoke('get_spotlight_hotkey')
 			.then((h) => (zkratka = h))
 			.catch(() => (zkratka = ''));
+		nactiChybuZkratky();
 		const t = setInterval(refresh, 2000);
 		// Vlastní tikot pro 'naposledy zjištěno' — bez něj by text
 		// zamrzl na hodnotě z posledního překreslení.
@@ -300,6 +406,11 @@
 		return () => {
 			clearInterval(t);
 			clearInterval(tik);
+			// Odchod ze stránky uprostřed snímání: posluchač visí na
+			// window, které je společné celému oknu, takže by přežil
+			// stránku, polykal klávesy v ostatních sekcích a první
+			// Ctrl/Alt+klávesu uložil jako globální zkratku.
+			konecSnimani();
 		};
 	});
 </script>
@@ -437,14 +548,18 @@
 			<span class="row-main">
 				<span class="row-name">Klávesová zkratka</span>
 				<span class="row-why">
-					{#if hkChyba}
-						{hkChyba}
-					{:else if hkSnimam}
+					{#if hkSnimam}
 						Zmáčkni novou kombinaci. Musí mít modifikátor (Alt, Ctrl, Shift, Win).
 					{:else}
 						Vyvolá vyhledávání kdekoli ve Windows, i když je aplikace zavřená.
 					{/if}
 				</span>
+				<!-- Chyba zvlášť a červeně. Dřív nahradila popis šedým textem
+				     a nepovedená registrace (zkratku drží jiný program) se
+				     dala snadno přehlédnout — lišta pak prostě nešla vyvolat. -->
+				{#if hkChyba}
+					<span class="row-err">{hkChyba}</span>
+				{/if}
 			</span>
 			<span class="row-act">
 				<kbd class="hk" class:snimam={hkSnimam}>{hkSnimam ? '…' : zkratka || '—'}</kbd>
@@ -600,7 +715,8 @@
 		<p class="row-why priv">
 			<ShieldCheck size={14} />
 			<span>
-				Bez obsahu disku: žádné cesty ani seznamy složek. Uloží se do Stažených
+				Bez obsahu disku: žádné seznamy souborů a složek. Cesty k programům (po spuštění,
+				pády) v něm zůstávají, jméno uživatele je v nich zamaskované. Uloží se do Stažených
 				souborů a nikam se neodesílá.
 			</span>
 		</p>

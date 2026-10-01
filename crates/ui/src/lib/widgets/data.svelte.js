@@ -51,8 +51,12 @@ const SADY = {
 /// hlídají samy a kreslí místo toho kostru.
 export const data = $state(Object.fromEntries(Object.keys(SADY).map((k) => [k, null])));
 
-/// Chyby po sadách. Dlaždice díky tomu umí říct „služba neodpovídá"
-/// místo toho, aby mlčky ukazovala prázdno.
+/// Chyby po sadách (text poslední chyby, `null` po úspěchu). Čte je rám
+/// dlaždice (Dlazdice.svelte): nenačtenou sadu ukáže jako „Data se
+/// nepodařilo načíst" místo prázdného stavu, který by zněl jako fakt,
+/// a starou hodnotu ztlumí se značkou „neaktuální". Hodnota v `data` se
+/// při chybě schválně nemaže — prázdné hlášení by lhalo víc než stará
+/// čísla.
 export const chyby = $state(Object.fromEntries(Object.keys(SADY).map((k) => [k, null])));
 
 /// Kolik vzorků drží živý průběh — čtyři minuty po sekundě.
@@ -121,6 +125,51 @@ async function doplnHistorii() {
 	dopl = false;
 }
 
+// ── smazané cesty z úklidového reportu ───────────────────────────────
+// Report počítá služba jednou po startu a pak ho jen drží; smazání
+// (v sekci Files nebo v Průzkumníku) ho nezmění. Sekce Files si proto
+// existenci cest ověřuje sama, ale dlaždice „Co zabírá místo"
+// a „Duplicity" braly report naslepo a ukazovaly i smazané věci až do
+// restartu služby. Tady se ověří totéž (paths_exist, jen čtení v procesu
+// UI, za „chybí" jen NotFound) a dlaždice podle toho filtrují.
+
+/// Cesty z reportu, které na disku už nejsou. Set se přiřazuje celý —
+/// $state ho neproxuje, mutace by překreslení nespustila.
+export const zmizele = $state({ set: new Set() });
+
+/// finished_ts reportu, který už je ověřený. `null` = ověřit při
+/// příštím načtení: po přihlášení sady (návrat na Home třeba ze sekce
+/// Files, kde se mohlo mazat) a po probuzení okna. Na každý 60s tik se
+/// neověřuje, ať se zbytečně nebudí disky.
+let overenyReport = null;
+let overuji = false;
+
+/// Cesty, na které se dlaždice ptají: všechny velké položky (po
+/// vyřazení smazaných se do seznamu posune další v pořadí) a všechny
+/// duplicity (počítá se z nich součet). Co je nad limit paths_exist,
+/// se hlásí jako existující, takže se nikdy neschová víc, než se ověřilo.
+function cestyReportu(r) {
+	const out = [];
+	for (const [, p] of r.big_dirs ?? []) out.push(p);
+	for (const [, p] of r.big_files ?? []) out.push(p);
+	for (const [, cesty] of r.dups ?? []) out.push(...cesty);
+	return [...new Set(out)];
+}
+
+async function overZmizele(r) {
+	if (overuji) return;
+	overuji = true;
+	try {
+		const cesty = cestyReportu(r);
+		const ziva = cesty.length ? await invoke('paths_exist', { paths: cesty }) : [];
+		zmizele.set = new Set(cesty.filter((_, i) => ziva[i] === false));
+		overenyReport = r.finished_ts;
+	} catch {
+		/* když se zeptat nejde, radši neschováme nic — zkusí se příště */
+	}
+	overuji = false;
+}
+
 const stav = new Map(); // klíč → { pocet, timer, bezi }
 
 async function tik(klic) {
@@ -131,8 +180,24 @@ async function tik(klic) {
 		data[klic] = await SADY[klic].nacti();
 		chyby[klic] = null;
 		if (klic === 'system') pridejVzorek(data.system);
+		const r = klic === 'cleanup' ? data.cleanup?.report : null;
+		if (r && r.finished_ts !== overenyReport) overZmizele(r);
+		s.odklad = 0;
 	} catch (e) {
 		chyby[klic] = String(e);
+		// Sada, která se ještě nikdy nenačetla, by na další pokus čekala
+		// celý svůj interval — u sysInfo nebo permUse pět až deset minut,
+		// typicky jen proto, že se služba po startu teprve rozjížděla.
+		// Dokud nic nemá, zkouší se dřív (5 s, 10 s, 20 s… až po interval).
+		if (data[klic] == null && stav.get(klic) === s && !s.opakuj) {
+			s.odklad = Math.min((s.odklad || 2500) * 2, SADY[klic].interval);
+			if (s.odklad < SADY[klic].interval) {
+				s.opakuj = setTimeout(() => {
+					s.opakuj = null;
+					if (stav.get(klic) === s) tik(klic);
+				}, s.odklad);
+			}
+		}
 	}
 	s.bezi = false;
 }
@@ -147,6 +212,7 @@ export function odebirej(klice) {
 		const s = stav.get(k) ?? { pocet: 0, timer: null, bezi: false };
 		s.pocet += 1;
 		if (s.pocet === 1) {
+			if (k === 'cleanup') overenyReport = null;
 			s.timer = setInterval(() => tik(k), SADY[k].interval);
 			tik(k);
 			if (k === 'system') doplnHistorii();
@@ -160,6 +226,7 @@ export function odebirej(klice) {
 			s.pocet -= 1;
 			if (s.pocet <= 0) {
 				clearInterval(s.timer);
+				clearTimeout(s.opakuj);
 				stav.delete(k);
 			}
 		}
@@ -168,6 +235,7 @@ export function odebirej(klice) {
 
 /// Dotáhne všechny odebírané sady hned — po probuzení okna.
 export function dohon() {
+	overenyReport = null;
 	for (const k of stav.keys()) tik(k);
 	if (stav.has('system')) doplnHistorii();
 }

@@ -10,8 +10,15 @@
 //! UI běží pod běžným uživatelem (SPEC 2.1) a na správu služeb
 //! nedosáhne. Nesahá proto na SCM samo — pustí instalátor, který si
 //! o práva správce řekne svým manifestem a Windows zobrazí obvyklou
-//! výzvu. Spuštění bez parametrů je zároveň oprava: doplní chybějící
-//! soubory, srovná registraci služby a nastartuje ji.
+//! výzvu. S přepínačem `/repair` instalátor jen srovná registraci
+//! služby a (re)startuje ji z nainstalovaných souborů — bez sítě.
+//! Dřív se pouštěl bez parametrů, tedy jako instalace, a ta se jako
+//! první ptá GitHubu: offline nebo s vyčerpaným limitem API skončila
+//! chybou dřív, než by službu vůbec zkusila nastartovat. Pro stažení
+//! chybějících souborů instalátor síť použije sám.
+//!
+//! Starší `WinsentSetup.exe`, který `/repair` nezná, přepínač přeskočí
+//! a zachová se jako dřív.
 //!
 //! Držíme tím linii celé aplikace: my ukážeme problém a cestu ven,
 //! spoušť mačká uživatel.
@@ -50,6 +57,7 @@ pub fn launch() -> Result<(), Error> {
         return Err(Error::NotFound(exe.display().to_string()));
     }
     let wexe = HSTRING::from(exe.to_string_lossy().as_ref());
+    let wargs = HSTRING::from("/repair");
     let wdir = exe
         .parent()
         .map(|p| HSTRING::from(p.to_string_lossy().as_ref()));
@@ -59,6 +67,7 @@ pub fn launch() -> Result<(), Error> {
         // NOASYNC → volání dokončí práci dřív, než se vrátí.
         fMask: SEE_MASK_NOASYNC,
         lpFile: windows::core::PCWSTR(wexe.as_ptr()),
+        lpParameters: windows::core::PCWSTR(wargs.as_ptr()),
         lpDirectory: wdir
             .as_ref()
             .map(|d| windows::core::PCWSTR(d.as_ptr()))

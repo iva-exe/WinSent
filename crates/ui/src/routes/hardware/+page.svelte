@@ -639,7 +639,7 @@
 									<div>
 										<dt>{m.slot || `Modul ${i + 1}`}</dt>
 										<dd>
-											{(m.size_mb / 1024).toFixed(0)} GB{m.mem_type ? ` ${m.mem_type}` : ''} @ {m.configured_mts || '—'} MT/s
+											{m.size_mb ? `${(m.size_mb / 1024).toFixed(0)} GB` : 'velikost ?'}{m.mem_type ? ` ${m.mem_type}` : ''} @ {m.configured_mts || '—'} MT/s
 											<!-- MT/s jsou přenosy, takt je jejich polovina (DDR =
 											     dva přenosy za takt). Ukazují se obě čísla, protože
 											     jiné nástroje ukazují jedno nebo druhé a „1600"

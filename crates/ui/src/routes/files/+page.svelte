@@ -143,24 +143,35 @@
 
 	async function askDelete(paths, ev) {
 		ev?.stopPropagation();
+		// Během provádění plánu nový neplánovat: askDelete by po svém
+		// doběhnutí shodil delBusy, ač execute ještě běží.
+		if (delBusy) return;
 		delBusy = true;
 		try {
 			const r = await invoke('plan_delete', { paths });
 			delPlan = r.plan_id != null ? { plan: r, paths } : { deny: r, paths };
 		} catch (e) {
+			// Bez časovače toast („služba neběží…") visel napořád, i když
+			// služba mezitím naběhla.
 			delToast = { kind: 'deny', text: String(e) };
+			setTimeout(() => (delToast = null), 4000);
 		}
 		delBusy = false;
 	}
 
 	async function confirmDelete() {
 		if (!delPlan?.plan || delBusy) return;
+		// Plán si podržet lokálně, po await už globální delPlan nečíst.
+		// Dřív ho „Zrušit" během mazání vynulovalo, čtení `.paths` pak
+		// spadlo na TypeError, ukázal se falešný chybový toast a smazaný
+		// řádek zůstal v seznamu, přestože soubor v koši byl.
+		const plan = delPlan;
 		delBusy = true;
 		try {
-			const r = await invoke('execute_plan', { planId: delPlan.plan.plan_id });
+			const r = await invoke('execute_plan', { planId: plan.plan.plan_id });
 			delToast =
 				r.verdict === 'allow' && r.outcome === 'ok'
-					? { kind: 'ok', text: `přesunuto do koše (${delPlan.paths.length})` }
+					? { kind: 'ok', text: `přesunuto do koše (${plan.paths.length})` }
 					: { kind: 'deny', text: r.deny_reason ?? `nepodařilo se (${r.outcome})` };
 			// Report ze služby se mazáním nemění — řádek zmizí až tím,
 			// že si sami ověříme, že soubor v koši opravdu skončil.
@@ -169,7 +180,8 @@
 			delToast = { kind: 'deny', text: String(e) };
 		}
 		delBusy = false;
-		delPlan = null;
+		// Jen když se mezitím neotevřel jiný plán — ten by se jinak zavřel.
+		if (delPlan === plan) delPlan = null;
 		setTimeout(() => (delToast = null), 4000);
 	}
 
@@ -501,7 +513,16 @@
 
 	<!-- ── Přesun do koše: plán → potvrzení (v8, T1) ── -->
 	{#if delPlan}
-		<div class="dlg-backdrop" role="presentation" onclick={() => (delPlan = null)} onkeydown={() => {}}>
+		<!-- Během mazání se dialog zavřít nedá: „zrušení" by vypadalo
+		     jako zrušení, ale mazání už běží a stejně se provede. -->
+		<div
+			class="dlg-backdrop"
+			role="presentation"
+			onclick={() => {
+				if (!delBusy) delPlan = null;
+			}}
+			onkeydown={() => {}}
+		>
 			<div class="dlg" role="dialog" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
 				{#if delPlan.deny}
 					<h2>Nelze smazat</h2>
@@ -518,7 +539,7 @@
 					</ul>
 					<p class="d-note">Z koše jde soubor kdykoli vrátit zpět.</p>
 					<div class="d-actions">
-						<button class="d-btn" onclick={() => (delPlan = null)}>Zrušit</button>
+						<button class="d-btn" disabled={delBusy} onclick={() => (delPlan = null)}>Zrušit</button>
 						<button class="d-btn primary" disabled={delBusy} onclick={confirmDelete}>
 							{delBusy ? 'mažu…' : 'Do koše'}
 						</button>

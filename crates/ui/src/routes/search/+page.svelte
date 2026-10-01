@@ -10,19 +10,32 @@
 
 	let zkratka = $state('');
 
+	let chybaListy = $state('');
+
+	// Uložená zkratka chodí i při vypnuté liště (load vrací aspoň
+	// DEFAULT), jenže zaregistrovaná pak není. Nápověda by slibovala
+	// zkratku, která nic nedělá, a klik by tiše selhal — proto se ptá
+	// i na stav lišty. Fallback true drží chování se starším hostitelem.
 	onMount(async () => {
 		try {
-			zkratka = await invoke('get_spotlight_hotkey');
+			const [hk, zap] = await Promise.all([
+				invoke('get_spotlight_hotkey'),
+				invoke('get_spotlight_enabled').catch(() => true)
+			]);
+			zkratka = zap ? hk : '';
 		} catch {
 			/* hostitel to neumí — jen se nezobrazí nápověda */
 		}
 	});
 
 	async function otevritListu() {
+		chybaListy = '';
 		try {
 			await invoke('show_spotlight');
-		} catch {
-			/* okno se neotevřelo; zkratka zůstává */
+		} catch (e) {
+			// Lištu mohl někdo vypnout v Nastavení až po otevření stránky;
+			// tiché spolknutí vypadalo jako mrtvé tlačítko.
+			chybaListy = String(e);
 		}
 	}
 </script>
@@ -33,9 +46,9 @@
 		{#if zkratka}
 			<!-- Lišta je hlavní způsob, jak se sem dostat — sekce v aplikaci
 			     je spíš pro toho, kdo si na zkratku ještě nezvykl. -->
-			<button class="hint" onclick={otevritListu} title="Otevřít vyhledávací lištu">
+			<button class="hint" onclick={otevritListu} title={chybaListy || 'Otevřít vyhledávací lištu'}>
 				<Keyboard size={15} />
-				<span>kdekoli ve Windows</span>
+				<span>{chybaListy || 'kdekoli ve Windows'}</span>
 				<kbd>{zkratka}</kbd>
 			</button>
 		{/if}

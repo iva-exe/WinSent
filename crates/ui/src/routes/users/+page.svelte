@@ -53,7 +53,13 @@
 	function fmtWhen(ts) {
 		if (!ts) return 'nikdy';
 		const d = new Date(ts * 1000);
-		const days = Math.floor((Date.now() - d.getTime()) / 86400e3);
+		// Rozdíl KALENDÁŘNÍCH dnů v místním čase, ne počet uplynulých 24h
+		// úseků — jinak přihlášení včera ve 23:30 vyšlo dnes ráno jako
+		// „dnes v 23:30". Math.round kvůli dnům se změnou času (23/25 h).
+		const now = new Date();
+		const d0 = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+		const n0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+		const days = Math.round((n0 - d0) / 86400e3);
 		const t = d.toLocaleDateString('cs-CZ');
 		if (days <= 0) return `dnes v ${d.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })}`;
 		if (days === 1) return 'včera';

@@ -113,11 +113,25 @@
 		chyba = '';
 		try {
 			const v = await invoke('toggle_startup', { id: r.id, on: !r.enabled });
-			if (v.verdict === 'deny') chyba = v.deny_reason ?? 'zamítnuto';
-			else if (data.startup) {
+			// Služba vrací „allow" i tehdy, když zápis selhal nebo se
+			// vrátil zpět (outcome failed / rolled_back). Dřív se bral
+			// za úspěch každý ne-„deny" a přepínač pak ukazoval stav,
+			// který v systému není. Úspěch je jen allow + ok — stejně
+			// jako v sekci On start.
+			if (v.verdict === 'allow' && v.outcome === 'ok') {
 				// Odpověď se promítne rovnou, ať přepínač nečeká pět
 				// minut na další dotaz.
-				data.startup = data.startup.map((x) => (x.id === r.id ? { ...x, enabled: !r.enabled } : x));
+				if (data.startup) data.startup = data.startup.map((x) => (x.id === r.id ? { ...x, enabled: !r.enabled } : x));
+			} else {
+				chyba = v.deny_reason ?? (v.verdict === 'deny' ? 'zamítnuto' : `nepodařilo se (${v.outcome ?? 'chyba'})`);
+				// Stav v systému se mohl změnit jen zčásti — srovnat ho
+				// se skutečností hned, ne až za pět minut dalším tikem.
+				// Přepínač zůstane po tu dobu zablokovaný (prepinam).
+				try {
+					data.startup = await invoke('query_startup');
+				} catch {
+					// další tik to dožene
+				}
 			}
 		} catch (e) {
 			chyba = String(e);
@@ -234,7 +248,12 @@
 	{/if}
 {:else if typ === 'startup'}
 	<ul class="w-list scroll">
-		{#each prepinatelne as r (r.id)}
+		<!-- Klíč s indexem: id je „zdroj|jméno" a stejné jméno hodnoty
+		     v Run, RunOnce i WOW6432Node\Run dá dvě položky se stejným
+		     id. Svelte na duplicitním klíči i v release buildu vyhodí
+		     výjimku a dlaždice by se nevykreslila. Přepínání jde podle
+		     r.id, klíč each na něj nemá vliv. -->
+		{#each prepinatelne as r, ix (r.id + '#' + ix)}
 			<li class="w-row">
 				<AppIcon src={ikony[r.identity_key]} name={r.app_name || r.name} size={15} />
 				<span class="w-name" title={r.command}>{r.app_name || r.name}</span>

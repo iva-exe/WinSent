@@ -5,7 +5,7 @@
 	// úklid je nevratná akce a ta patří do sekce, kde je vidět celý
 	// seznam a plán, ne do dlaždice na přehledu.
 	import { invoke } from '@tauri-apps/api/core';
-	import { data } from './data.svelte.js';
+	import { data, zmizele } from './data.svelte.js';
 	import { velikost, zaplneno, pred } from './pomoc.js';
 
 	// Rozměry přicházejí v jednotkách mřížky: šířka ve sloupcích,
@@ -55,16 +55,24 @@
 		if (!r) return [];
 		const zdroj = coZabira === 'dirs' ? (r.big_dirs ?? []) : (r.big_files ?? []);
 		const d = disk ?? diskyVReportu[0];
-		return zdroj.filter((x) => x[0] === d).slice(0, velka ? 8 : 4);
+		// Report drží služba od startu beze změny; co uživatel mezitím
+		// smazal, se vyřadí (viz zmizele v data.svelte.js), jinak by tu
+		// visela smazaná složka s původní velikostí.
+		return zdroj.filter((x) => x[0] === d && !zmizele.set.has(x[1])).slice(0, velka ? 8 : 4);
 	});
 
 	// ── duplicity ────────────────────────────────────────────────────
 	// Report drží jen sto největších skupin, takže výsledek je spodní
 	// odhad — a tak se to i musí napsat.
-	let dupNavic = $derived.by(() => {
-		const dups = cleanup?.report?.dups ?? [];
-		return dups.reduce((s, [vel, cesty]) => s + vel * Math.max(0, cesty.length - 1), 0);
-	});
+	// Smazané kopie se nepočítají a skupina, ze které zbyl jediný
+	// soubor, už duplicita není — stejně jako v sekci Files, ať se
+	// přehled se sekcí neliší.
+	let dupSkupiny = $derived(
+		(cleanup?.report?.dups ?? [])
+			.map(([vel, cesty]) => [vel, cesty.filter((p) => !zmizele.set.has(p))])
+			.filter(([, cesty]) => cesty.length > 1)
+	);
+	let dupNavic = $derived(dupSkupiny.reduce((s, [vel, cesty]) => s + vel * (cesty.length - 1), 0));
 
 	// ── indexy ───────────────────────────────────────────────────────
 	// Svazek, který v seznamu indexování chybí, není „ještě se nestihl":
@@ -169,7 +177,7 @@
 		<span class="w-big">{velikost(dupNavic)}</span>
 		<span class="w-sub">nejméně tolik drží kopie téhož</span>
 		<span class="w-sub">
-			{cleanup.report.dups.length} největších skupin · úklid je v sekci Files
+			{dupSkupiny.length} největších skupin · úklid je v sekci Files
 		</span>
 	{:else}
 		<span class="w-empty">Analýza duplicit ještě neproběhla.</span>

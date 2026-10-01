@@ -14,6 +14,7 @@
 // (klíčovaný each), tak pro přesouvání a mazání.
 
 import { REGISTR, RADEK, MEZERA, MAX_VYSKA, vychoziRozlozeni } from './registr.js';
+import { sekceViditelna } from '$lib/prefs.svelte.js';
 
 const KLIC = 'winsent.home.widgets';
 
@@ -130,6 +131,9 @@ export function jeNa(id) {
 export function pridej(id) {
 	const reg = REGISTR[id];
 	if (!reg || (!reg.vice && jeNa(id))) return;
+	// Dlaždici vypnuté sekce by Home nevykreslil — zapsat ji do
+	// rozložení by jen vyrobilo neviditelnou položku, kterou nejde odebrat.
+	if (reg.href && !sekceViditelna(reg.href)) return;
 	rozlozeni.dlazdice = [
 		...rozlozeni.dlazdice,
 		{ klic: novyKlic(id), id, w: reg.vychozi[0], h: reg.vychozi[1], text: '' }

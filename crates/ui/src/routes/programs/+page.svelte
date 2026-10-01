@@ -38,7 +38,16 @@
 	let sortKey = $state('name'); // name | publisher | date | paths
 	let selected = $state(null);
 	let map = $state([]);
-	let sizing = $state(false);
+	// Výpočet velikostí běží vždy jen jeden (dir_size zatěžuje disk ve
+	// službě). Dřív bool `sizing` zahodil požadavek na B, když se ještě
+	// počítalo A — B pak zůstala s „—" a navíc ukazovala loader, který
+	// patřil výpočtu A. Teď se pamatuje klíč běžícího výpočtu a poslední
+	// požadavek, který přišel mezitím.
+	let sizingKey = $state(null);
+	let pendingSizesKey = null;
+	// Klíč, jehož právě běžící výpočet zastaral (rescan během něj).
+	let staleSizingKey = null;
+	let sizing = $derived(sizingKey != null && sizingKey === selected?.identity_key);
 	let loadError = $state('');
 
 	// Ikony aplikací — stejný mechanismus jako Tasks (RGBA → canvas URL).
@@ -202,7 +211,11 @@
 		try {
 			apps = await invoke('query_apps');
 			loadError = '';
-			for (const a of apps.slice(0, 400)) fetchIcon(a.identity_key);
+			// Bez ořezu: inventář je řazený podle jména, takže dřívější
+			// slice(0, 400) nechal konec abecedy (VLC, VRChat…) natrvalo
+			// s monogramem. Zátěž je ohraničená — hotové klíče jsou no-op
+			// a bez ikony se po 6 pokusech přestane ptát.
+			for (const a of apps) fetchIcon(a.identity_key);
 		} catch (e) {
 			loadError = String(e);
 		}
@@ -230,9 +243,26 @@
 		if (stale) computeSizes(a.identity_key);
 	}
 
-	async function computeSizes(key) {
-		if (sizing) return;
-		sizing = true;
+	// `force` posílá jen rescan: běžící výpočet téže aplikace pak počítal
+	// nad starým inventářem a musí proběhnout znovu. Bez toho se při
+	// proklikávání A → B → A pouštěl dir_size pro A dvakrát po sobě
+	// (u velké hry desítky sekund disku navíc), přestože čerstvý výsledek
+	// A právě dobíhal.
+	async function computeSizes(key, force = false) {
+		if (sizingKey != null) {
+			if (force && key === sizingKey) staleSizingKey = key;
+			if (key === sizingKey && staleSizingKey !== key) {
+				// Vybraná je zrovna počítaná aplikace — její výsledek se
+				// použije, starší požadavek na jinou už neplatí.
+				pendingSizesKey = null;
+				return;
+			}
+			// Fronta s jedinou položkou: dopočítá se jen naposledy
+			// vybraná aplikace, při proklikávání se výpočty nevrší.
+			pendingSizesKey = key;
+			return;
+		}
+		sizingKey = key;
 		try {
 			const fresh = await invoke('compute_app_sizes', { identityKey: key });
 			// Uživatel mohl mezitím kliknout jinam — nepřepsat cizí mapu.
@@ -240,7 +270,11 @@
 		} catch {
 			/* chyba se ukáže absencí velikostí */
 		}
-		sizing = false;
+		sizingKey = null;
+		if (staleSizingKey === key) staleSizingKey = null;
+		const next = pendingSizesKey;
+		pendingSizesKey = null;
+		if (next && selected?.identity_key === next) computeSizes(next);
 	}
 
 	// Obnovení musí něco znamenat. Sken inventáře trvá přes 20 s —
@@ -274,7 +308,7 @@
 				const still = apps.find((a) => a.identity_key === selected.identity_key);
 				if (still) {
 					map = await invoke('query_app_map', { identityKey: selected.identity_key });
-					computeSizes(selected.identity_key);
+					computeSizes(selected.identity_key, true);
 				} else {
 					selected = null;
 					map = [];
@@ -349,7 +383,10 @@
 			const r = await invoke('plan_uninstall', { identityKey: app.identity_key });
 			uninstPlan = r.plan_id != null ? { plan: r, app } : { deny: r, app };
 		} catch (e) {
+			// Bez časovače toast („služba neběží…") visel napořád, i když
+			// služba mezitím naběhla.
 			uninstToast = { kind: 'deny', text: String(e) };
+			setTimeout(() => (uninstToast = null), 6000);
 		}
 		uninstBusy = false;
 	}
@@ -688,10 +725,14 @@
 							{sizing ? 'počítám velikosti…' : totalSize != null ? fmtSize(totalSize) : '—'}
 						</span>
 						{#if selected.kind === 'desktop' && !isSystemApp(selected)}
-							{#if selected.missing_install}
-								<!-- Program na disku není, zbyl po něm jen zápis
-								     v registru. Odinstalátor tu není co spustit,
-								     takže se místo něj nabídne úklid záznamu. -->
+							{#if selected.missing_install && selected.uninstaller_missing}
+								<!-- Program na disku není a chybí i odinstalátor,
+								     zbyl po něm jen zápis v registru. Není co spustit,
+								     takže se místo něj nabídne úklid záznamu. Když
+								     odinstalátor žije (hra smazaná ze Steamu, steam.exe
+								     je), služba úklid odmítne s „použij Odinstalovat" —
+								     dřív se ale tlačítko Odinstalovat v tomhle stavu
+								     neukázalo a detail vedl do slepé uličky. -->
 								<button
 									class="uninst-btn purge"
 									disabled={purgeBusy}

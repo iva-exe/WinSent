@@ -5,8 +5,13 @@
 // Proto prostý text s popisky, ne JSON: model i člověk potřebují vědět,
 // co které číslo znamená, a hlavičky sekcí jsou zároveň orientační body.
 //
-// CO SE DO ZÁZNAMU NEDÁVÁ: obsah disku. Žádné cesty k souborům, žádné
-// seznamy složek, duplicit ani prázdných souborů, žádné mapy instalací.
+// CO SE DO ZÁZNAMU NEDÁVÁ: obsah disku. Žádné seznamy souborů, složek,
+// duplicit ani prázdných souborů, žádné mapy instalací. Cesty k PROGRAMŮM
+// (příkazy po spuštění, moduly v hlášení o pádu, stránkovací soubor)
+// zůstávají — bez nich nejde poznat třeba podvržené exe mimo Program
+// Files —, jen se v nich maskuje jméno profilu. Text u tlačítka i hlavička
+// záznamu to musí říkat stejně: dřív slibovaly „žádné cesty" a uživatel
+// na to spoléhal, když soubor posílal dál.
 // Z celé sekce Files jde do záznamu jen technika disků — model, zdraví,
 // teplota, kapacita svazků. Uživatel si tenhle soubor někam pošle
 // a v cestách typu `C:\Users\Jméno\Dokumenty\…` je víc o něm samotném
@@ -33,14 +38,45 @@ const SUB = '-'.repeat(72);
 //   · SSID Wi-Fi — jméno sítě jde v databázích wardrivingu přeložit
 //     na adresu domu. Tohle je z celého záznamu nejcitlivější údaj.
 //   · SID účtu — část pro stroj pryč, RID zůstává (500 = Administrator,
-//     1001 = první uživatel), protože ten nese význam.
+//     1001 = první uživatel), protože ten nese význam. SID z Entra
+//     (S-1-12-1-…) pryč celý: je to zakódované GUID objektu v tenantu.
 //   · cesty do profilu — jméno složky uživatele nahrazeno.
 //   · celá jména účtů — skutečné jméno člověka do záznamu nepatří.
 
 const RE_IPV4 = /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b/g;
-const RE_IPV6 = /\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{0,4}\b/g;
+// IPv6 jen v podobách, které čas ani nic jiného nenapodobí: plných osm
+// skupin, nebo zkrácený zápis s „::" chycený CELÝ (i s IPv4 na konci).
+// Dřívější volný vzor „2 až 7 skupin" bral i čas 18:04:12 a u fe80::…
+// chytil jen kus za „::", takže v textu zůstal prefix i půlka
+// identifikátoru rozhraní.
+//
+// Okraje: shoda nesmí začít uprostřed delší adresy (před ní celá hex
+// skupina s dvojtečkou nebo „::"), ale samotná dvojtečka před ní
+// („IPv6:fe80::…") ani za ní („…:7334: timed out") ji rušit nesmí —
+// dřívější „žádná dvojtečka kolem" pustilo v chybových hláškách celou
+// adresu.
+const H6 = '[0-9A-Fa-f]{1,4}';
+const RE_IPV6 = new RegExp(
+	`(?<!\\w)(?<!(?:^|[^\\w:])${H6}:)(?<!::)(?:(?:${H6}:){7}${H6}` +
+		`|(?:${H6}:){1,7}:(?:${H6}(?::${H6}){0,6})?` +
+		`|::(?:${H6}(?::${H6}){0,6})?)` +
+		`(?:\\.\\d{1,3}){0,3}(?!\\w|:[0-9A-Fa-f:])`,
+	'g'
+);
 const RE_MAC = /\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b/g;
 const RE_SID = /\bS-1-5-21-\d+-\d+-\d+-(\d+)\b/g;
+// Účty a skupiny z Entra (Azure AD). Všechny čtyři části dohromady jsou
+// GUID objektu v tenantu — celosvětově jednoznačný identifikátor člověka
+// nebo firmy. RID tu žádný význam nenese, takže jde pryč celé.
+const RE_SID_ENTRA = /\bS-1-12-1-\d+-\d+-\d+-\d+\b/g;
+// Čtyřdílné číslo za slovem „verze/version" je verze, ne adresa.
+// Hlášení o pádu píše „Verze modulu: 2.1.0.12" a maska z toho dělala
+// 2.1.x.x — přesně ten údaj, kvůli kterému se detail čte. Daň: IP
+// zapsaná hned za slovem „version" projde nemaskovaná; to se ve volném
+// textu, který sem chodí, prakticky neděje.
+// Slovo verze musí začínat jako slovo: „conversion" ani „konverze"
+// verzi neohlašují a IP za nimi se maskovat musí.
+const RE_PRED_VERZI = /(?<!\p{L})(?:verz\p{L}*|version|ver\.)(?:\s+\p{L}+)?["']?\s*[:=]?\s*["']?$/iu;
 // Oddělovač může být obojí. Registr obsahuje, co do něj instalátor
 // zapsal, a Windows si poradí s `C:/Users/Jméno` stejně jako
 // s `C:\Users\Jméno` — jenže maska hlídající jen zpětné lomítko takový
@@ -131,12 +167,20 @@ function maskMac(v) {
 function clean(v) {
 	let s = String(v ?? '');
 	if (!s) return s;
-	s = s.replace(RE_MAC, (m) => maskMac(m));
-	s = s.replace(RE_IPV6, (m) => (m.includes('::') && m.length < 4 ? m : maskIp(m)));
-	s = s.replace(RE_IPV4, (m) => maskIp(m));
+	// Hotové masky se do textu vrací až na konci. Jinak je další vzor
+	// prohnal znovu: z MAC „9C:6B:00:xx:xx:xx" udělal IPv6 vzor
+	// „9C:6B:…" a zmizel i výrobce, který měl zůstat.
+	const hotove = [];
+	const odloz = (t) => `\u0000${hotove.push(t) - 1}\u0000`;
+	s = s.replace(RE_MAC, (m) => odloz(maskMac(m)));
+	s = s.replace(RE_IPV6, (m) => odloz(KEEP_IP.has(m) ? m : maskIp(m)));
+	s = s.replace(RE_IPV4, (m, off, cely) =>
+		RE_PRED_VERZI.test(cely.slice(Math.max(0, off - 40), off)) ? m : maskIp(m)
+	);
 	s = s.replace(RE_SID, (_m, rid) => `S-1-5-21-<stroj>-${rid}`);
+	s = s.replace(RE_SID_ENTRA, 'S-1-12-1-<tenant>');
 	s = s.replace(RE_PROFILE, maskProfilovouSlozku);
-	return s;
+	return s.replace(/\u0000(\d+)\u0000/g, (_m, i) => hotove[Number(i)]);
 }
 
 function maskList(a) {
@@ -157,6 +201,26 @@ function day(t) {
 	const d = new Date(t * 1000);
 	const p = (n) => String(n).padStart(2, '0');
 	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/// Dovětek k řádku „Skutečně:" — prázdný, když data pokrývají celé
+/// žádané okno, jinak proč začínají později.
+///
+/// `sluzbaOd` je start běžící služby (now − uptime z pingu). Výpadek
+/// služby se smí tvrdit jen tehdy, když data začínají právě jejím
+/// startem. Dřív se psal u všeho, co nezačínalo bootem — jenže boot se
+/// měří z GetTickCount64 a ten po rychlém spuštění (vypnutí je ve
+/// skutečnosti hibernace) i po uspání počítá od startu před několika
+/// dny. Počítač vypnutý přes noc tak dostal „výpadek služby" a čtenář
+/// i model hledali poruchu, která nebyla.
+function procKratsiOkno(oldest, from, boot, sluzbaOd) {
+	const REZERVA = 300;
+	if (oldest <= from + REZERVA) return '';
+	if (boot != null && Math.abs(oldest - boot) <= REZERVA) return '  — začíná startem systému';
+	if (sluzbaOd != null && Math.abs(oldest - sluzbaOd) <= REZERVA) {
+		return '  — začíná startem služby (čerstvá instalace nebo výpadek služby)';
+	}
+	return '  — starší data nejsou (počítač byl vypnutý či uspaný, nebo služba ještě neměřila)';
 }
 
 /// Doba lidsky. Sloupec „30 dnů" míchal „43200 m" a „65 min" — minuty
@@ -374,12 +438,13 @@ export function reportText(d) {
 	const boot = d.system?.uptime_s != null ? d.now - d.system.uptime_s : null;
 	L.push(`Okno dat:   ${ts(d.from)} .. ${ts(d.now)}  (žádáno 24 hodin)`);
 	if (oldest) {
-		const why =
-			boot != null && oldest <= boot + 120
-				? ''
-				: boot != null && oldest > boot
-					? '  — omezeno startem systému nebo instalací nástroje'
-					: '';
+		// Nejdřív jestli okno vůbec je kratší, teprve pak proč. Dřív se
+		// porovnávalo jen s bootem, takže stroj běžící tři dny s plnými
+		// 24 h dat dostal „omezeno startem systému" — a data opravdu
+		// začínající bootem žádné vysvětlení. Rezerva pět minut pokryje
+		// minutové kbelíky i službu, která po bootu naběhne se zpožděním.
+		const sluzbaOd = d.ping?.uptime_s != null ? d.now - d.ping.uptime_s : null;
+		const why = procKratsiOkno(oldest, d.from, boot, sluzbaOd);
 		L.push(
 			`Skutečně:   ${ts(oldest)} .. ${ts(d.now)}  (${dur(covered)}, ${d.sysHist.length} vzorků)${why}`
 		);
@@ -402,9 +467,10 @@ export function reportText(d) {
 	L.push('');
 	L.push('CO V ZÁZNAMU ZÁMĚRNĚ NENÍ');
 	L.push(SUB);
-	L.push('Obsah disku: žádné cesty k souborům, seznamy složek, duplicity');
-	L.push('ani mapy instalací. Z disků jde do záznamu jen technika —');
-	L.push('model, zdraví, teplota, kapacita.');
+	L.push('Obsah disku: žádné seznamy souborů a složek, duplicity ani mapy');
+	L.push('instalací. Z disků jde do záznamu jen technika — model, zdraví,');
+	L.push('teplota, kapacita. Cesty k programům (po spuštění, pády, stránkovací');
+	L.push('soubor) zůstávají, jméno profilu je v nich maskované.');
 	L.push('');
 	L.push('Identifikující údaje jsou maskované, ne smazané, aby zbytek šel');
 	L.push('pořád analyzovat:');
@@ -412,7 +478,8 @@ export function reportText(d) {
 	L.push('  · MAC adresa   zůstává jen výrobce karty, zbytek xx:xx:xx');
 	L.push('  · Wi-Fi        jména sítí vynechána úplně — v databázích');
 	L.push('                 wardrivingu se dají přeložit na adresu domu');
-	L.push('  · SID účtu     část pro stroj pryč, RID zůstává (nese význam)');
+	L.push('  · SID účtu     část pro stroj pryč, RID zůstává (nese význam);');
+	L.push('                 SID z Entra (S-1-12-1-…) pryč celý');
 	L.push('  · cesty        C:\\Users\\Jméno → C:\\Users\\<uživatel>');
 	L.push('  · celá jména   skutečné jméno člověka u účtu vynecháno');
 	L.push('');
@@ -438,8 +505,10 @@ export function reportText(d) {
 		for (const m of mods) {
 			const typ = m.mem_type ? ` ${m.mem_type}` : '';
 			const takt = m.clock_mhz ? `takt ${m.clock_mhz} MHz, ` : '';
+			// 0 = deska velikost nehlásí (SMBIOS 0xFFFF), ne prázdný slot.
+			const vel = m.size_mb ? `${m.size_mb} MB` : 'velikost neznámá';
 			L.push(
-				`       ${m.size_mb} MB${typ} @ ${m.configured_mts ?? '?'} MT/s (${takt}umí ${m.speed_mts ?? '?'})  slot ${m.slot ?? '?'}  ${m.manufacturer ?? ''} ${m.part_number ?? ''}`
+				`       ${vel}${typ} @ ${m.configured_mts ?? '?'} MT/s (${takt}umí ${m.speed_mts ?? '?'})  slot ${m.slot ?? '?'}  ${m.manufacturer ?? ''} ${m.part_number ?? ''}`
 			);
 		}
 		// Jeden modul ve víceslotové desce = jednokanálový režim, tedy
@@ -543,8 +612,21 @@ export function reportText(d) {
 			// tedy nebyl údaj, jen šum přes celou sekci.
 			const teplota =
 				c.celsius != null ? `teplota ${Math.round(c.celsius)} °C (zdroj ${c.temp_source}), ` : '';
+			// c.throttling je jen „takt teď pod 95 % maxima", bez ohledu
+			// na zátěž — v klidu je to běžné úsporné řízení. Záznam z toho
+			// dřív psal „omezení: ANO" a čtenář i model radili čistit
+			// chlazení. O brzdění rozhoduje d.system.thermal_throttle
+			// (takt pod 70 % maxima při zátěži nad 50 %), stejný příznak,
+			// se kterým počítají incidenty.
+			const brzdeni = d.system?.thermal_throttle
+				? 'ANO — takt pod 70 % maxima při zátěži CPU nad 50 %'
+				: !c.throttling
+					? 'ne'
+					: d.system
+						? `ne (takt teď pod maximem při zátěži CPU ${Math.round(d.system.cpu_pct ?? 0)} %)`
+						: 'nezjištěno (takt teď pod maximem, zátěž CPU neznámá)';
 			L.push(
-				`CPU:    ${teplota}takt ${c.clock_mhz ?? '?'} / ${c.max_mhz ?? '?'} MHz, omezení: ${c.throttling ? 'ANO' : 'ne'}`
+				`CPU:    ${teplota}takt ${c.clock_mhz ?? '?'} / ${c.max_mhz ?? '?'} MHz, brzdění: ${brzdeni}`
 			);
 			if (c.celsius == null) {
 				L.push(
@@ -557,7 +639,7 @@ export function reportText(d) {
 		if (h.pagefile?.size_mb) {
 			const pf = h.pagefile;
 			L.push(
-				`Stránkovací soubor: ${pf.path} — ${pf.used_mb} / ${pf.size_mb} MB využito, špička ${pf.peak_mb} MB`
+				`Stránkovací soubor: ${clean(pf.path)} — ${pf.used_mb} / ${pf.size_mb} MB využito, špička ${pf.peak_mb} MB`
 			);
 		}
 		if (h.battery) {
@@ -857,7 +939,9 @@ export function reportText(d) {
 			L.push('');
 			L.push('Správci, kteří nejsou lokálním účtem (doména, Entra):');
 			for (const f of u.foreign_admins) {
-				L.push(`  ${pad(f.name, 40)} ${pad(f.kind, 16)} ${clean(f.sid)}`);
+				// I jméno přes clean(): SID z Entra, který Windows nepřeloží,
+				// stojí ve sloupci jména sám — a maskou by jinak prošel.
+				L.push(`  ${pad(clean(f.name), 40)} ${pad(f.kind, 16)} ${clean(f.sid)}`);
 			}
 		}
 	}

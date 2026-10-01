@@ -277,7 +277,10 @@ export function systemPathInfo(path = '') {
 	const name = p.slice(p.lastIndexOf('\\') + 1);
 	// Kořen svazku má přednost: pagefile a hiberfil bývají úplně
 	// největší soubory na disku a zaslouží si přesnou hlášku.
-	if (/^[a-z]:\\[^\\]+$/.test(p) && ROOT_SYSTEM_FILES[name]) {
+	// Jen vlastní klíče tabulky: `C:\constructor` či `C:\__proto__` by
+	// jinak přes Object.prototype dostaly značku povinné součásti
+	// s tooltipem „function Object() { [native code] }" a skrytý koš.
+	if (/^[a-z]:\\[^\\]+$/.test(p) && Object.hasOwn(ROOT_SYSTEM_FILES, name)) {
 		return { level: 'mandatory', reason: ROOT_SYSTEM_FILES[name] };
 	}
 	for (const r of PATH_RULES) {

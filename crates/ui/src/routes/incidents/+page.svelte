@@ -133,16 +133,22 @@
 	// hlášení Windows, ke kterému žádný náš incident není).
 	let selRow = $state(null);
 
+	// Okno metrik: u našeho incidentu ho známe, u hlášení Windows
+	// se odvodí od času pádu. Když v tu dobu hlídač neběžel, prostě
+	// nic nepřijde a UI to řekne — nedomýšlí se. Jedno místo pro výběr
+	// i export, ať se meze nerozejdou.
+	function oknoRadku(row) {
+		return {
+			from: row.incident?.window_from ?? row.ts - 300,
+			to: row.incident?.window_to ?? row.ts + 30
+		};
+	}
+
 	async function selectRow(row) {
 		selRow = row;
 		selected = row.incident;
 		windowPoints = [];
-		// Okno metrik: u našeho incidentu ho známe, u hlášení Windows
-		// se odvodí od času pádu. Když v tu dobu hlídač neběžel, prostě
-		// nic nepřijde a UI to řekne — nedomýšlí se.
-		const base = row.ts;
-		const from = row.incident?.window_from ?? base - 300;
-		const to = row.incident?.window_to ?? base + 30;
+		const { from, to } = oknoRadku(row);
 		try {
 			windowPoints = await invoke('query_system_history', { from, to });
 		} catch {
@@ -203,9 +209,22 @@
 		// Klíč hlášení Windows se skládá z obsahu, ne z pořadí v poli —
 		// pořadí se mezi spuštěními mění a skrytá položka by se pak
 		// vrátila, případně by zmizela jiná.
+		//
+		// Ts má celé sekundy, takže dva pády téže aplikace ve stejné
+		// sekundě (víc procesů po resetu ovladače grafiky, smyčka
+		// pád–restart) daly stejný klíč a duplicitní klíč v {#each}
+		// shodil celou sekci (Svelte to hlídá i v release buildu).
+		// Druhý a další dostanou pořadové #n; první zůstává ve starém
+		// tvaru, ať se nevrátí, co si uživatel už dřív skryl. Pořadí
+		// mezi stejnými (app, ts) dává protokol (od nejnovějšího podle
+		// EventRecordID), takže #n mezi spuštěními sedí.
+		const videno = new Map();
 		crashes.forEach((c, k) => {
 			if (used.has(k)) return;
-			rows.push({ key: `c:${c.app}:${c.ts}`, ts: c.ts, incident: null, report: c });
+			const zaklad = `c:${c.app}:${c.ts}`;
+			const n = videno.get(zaklad) ?? 0;
+			videno.set(zaklad, n + 1);
+			rows.push({ key: n === 0 ? zaklad : `${zaklad}#${n}`, ts: c.ts, incident: null, report: c });
 		});
 		return rows.sort((a, b) => b.ts - a.ts);
 	});
@@ -285,7 +304,17 @@
 	// nebo model je to přesně to, oč jde. Načítá se proto až na kliknutí,
 	// ne dopředu.
 	async function gatherExtras(row) {
-		const out = { procs: [], detail: null, hw: null, drivers: null, sys: null };
+		const out = { procs: [], detail: null, hw: null, drivers: null, sys: null, points: [] };
+		// Okno metrik se načítá pro EXPORTOVANÝ řádek. Dřív se bralo
+		// z windowPoints, tedy z řádku, který je zrovna vybraný — export
+		// z kontextového menu jiného řádku pak nesl CPU/RAM/síť cizího
+		// incidentu, a bez výběru tvrdil, že hlídač tehdy neběžel.
+		try {
+			const { from, to } = oknoRadku(row);
+			out.points = await invoke('query_system_history', { from, to });
+		} catch {
+			/* z té doby nejsou vzorky — soubor to řekne */
+		}
 		try {
 			const r = await invoke('query_procs_at', { ts: row.ts });
 			out.procs = r?.rows ?? [];
@@ -400,9 +429,10 @@
 
 		L.push('CO DĚLAL POČÍTAČ V TU CHVÍLI');
 		L.push('-'.repeat(60));
-		if (windowPoints.length > 1) {
+		const pts = x?.points ?? [];
+		if (pts.length > 1) {
 			L.push('čas                     CPU%   RAM MB   síť dolů B/s   síť nahoru B/s');
-			for (const p of windowPoints) {
+			for (const p of pts) {
 				L.push(
 					[
 						fmtTs(p.ts).padEnd(22),
@@ -490,7 +520,8 @@
 				// nástroje nedá splést s polovičním výkonem.
 				const typ = m.mem_type ? ` ${m.mem_type}` : '';
 				const takt = m.clock_mhz ? ` (takt ${m.clock_mhz} MHz)` : '';
-				L.push(`RAM:  ${m.size_mb} MB${typ} @ ${m.configured_mts || m.speed_mts || '?'} MT/s${takt}  slot ${m.slot ?? '?'}  ${m.manufacturer ?? ''} ${m.part_number ?? ''}`);
+				const vel = m.size_mb ? `${m.size_mb} MB` : 'velikost neznámá';
+				L.push(`RAM:  ${vel}${typ} @ ${m.configured_mts || m.speed_mts || '?'} MT/s${takt}  slot ${m.slot ?? '?'}  ${m.manufacturer ?? ''} ${m.part_number ?? ''}`);
 			}
 			for (const d of s.disks ?? []) L.push(`Disk: [${d.index}] ${d.model}`);
 		}
@@ -505,8 +536,15 @@
 				L.push(`Deska: ${h.board.manufacturer ?? ''} ${h.board.product ?? ''}  BIOS ${h.board.bios_version ?? '?'} z ${h.board.bios_date ?? '?'}`);
 			}
 			if (h.cpu_thermal) {
+				// `throttling` je jen „takt teď pod 95 % maxima" bez ohledu
+				// na zátěž — v klidu běžné úsporné řízení. Dřív tu stálo
+				// „omezení: ano" a čtenář exportu (člověk i AI) z toho četl
+				// přehřívání. O brzdění rozhoduje příznak u incidentu, ne tohle.
+				const podMax = h.cpu_thermal.throttling
+					? ' — takt je teď pod maximem (v klidu běžné úsporné řízení, o přehřívání to nic neříká)'
+					: '';
 				L.push(
-					`Teplota CPU: ${h.cpu_thermal.celsius ?? '—'} °C (zdroj: ${h.cpu_thermal.temp_source}), takt ${h.cpu_thermal.clock_mhz ?? '?'}/${h.cpu_thermal.max_mhz ?? '?'} MHz, omezení: ${h.cpu_thermal.throttling ? 'ano' : 'ne'}`
+					`Teplota CPU: ${h.cpu_thermal.celsius ?? '—'} °C (zdroj: ${h.cpu_thermal.temp_source}), takt ${h.cpu_thermal.clock_mhz ?? '?'}/${h.cpu_thermal.max_mhz ?? '?'} MHz${podMax}`
 				);
 			}
 			for (const d of h.disks ?? []) {
@@ -934,8 +972,8 @@
 						{/if}
 					</button>
 					<p class="foot">
-						Záznam jde odstranit ikonou koše v seznamu — maže se jen tenhle zápis,
-						v systému se nic nemění.
+						Ikonou oka v seznamu položku schováš — nic se nemaže, najdeš ji dole
+						ve Skrytých položkách a odtud ji vrátíš zpět.
 					</p>
 				{/if}
 			</section>

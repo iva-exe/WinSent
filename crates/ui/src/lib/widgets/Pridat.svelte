@@ -6,6 +6,7 @@
 	import { Plus, Check } from 'lucide-svelte';
 	import { REGISTR } from './registr.js';
 	import { rozlozeni, pridej, obnovVychozi } from './rozlozeni.svelte.js';
+	import { sekceViditelna } from '$lib/prefs.svelte.js';
 
 	let hledani = $state('');
 
@@ -13,6 +14,11 @@
 		const q = hledani.trim().toLowerCase();
 		const skupiny = new Map();
 		for (const w of Object.values(REGISTR)) {
+			// Widget vypnuté sekce Home nevykreslí (stejná podmínka jako
+			// v routes/home). Dřív se tu přesto nabízel: klik ho zapsal
+			// do rozložení, položka se přepnula na „už je na ploše",
+			// ale na ploše nic nepřibylo a nešlo ho ani odebrat.
+			if (w.href && !sekceViditelna(w.href)) continue;
 			if (q && !`${w.nazev} ${w.sekce} ${w.popis ?? ''}`.toLowerCase().includes(q)) continue;
 			if (!skupiny.has(w.sekce)) skupiny.set(w.sekce, []);
 			skupiny.get(w.sekce).push(w);

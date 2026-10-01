@@ -220,5 +220,48 @@ if (/Users[\\/]Jan/.test(cely)) {
 	chyb++;
 }
 
+// Volný text (hlášení o pádu): maska nesmí komolit časy a verze a musí
+// zakrýt adresy celé. Dřívější vzor IPv6 bral i čas 18:04:12, IPv4
+// verzi 2.1.0.12, MAC prohnal podruhé (zmizel výrobce) a u fe80::…
+// nechal v textu půlku identifikátoru rozhraní.
+const VOLNY_TEXT = [
+	['spadlo v 18:04:12, verze 1.0.9.164', 'čas a verze zůstanou', 'spadlo v 18:04:12, verze 1.0.9.164'],
+	['Verze modulu: 2.1.0.12', 'verze modulu z hlášení o pádu', 'Verze modulu: 2.1.0.12'],
+	['{"app_version":"1.2.3.4"}', 'verze v JSONu', '{"app_version":"1.2.3.4"}'],
+	['spojení na 192.168.1.20 selhalo', 'IPv4 v textu', 'spojení na 192.168.x.x selhalo'],
+	['MAC 9C-6B-00-12-34-56', 'MAC si nechá výrobce', 'MAC 9C:6B:00:xx:xx:xx'],
+	['adresa fe80::1c2d:3e4f:5a6b:7c8d%12', 'zkrácená IPv6 celá', 'adresa fe80::…%12'],
+	['z 2001:db8:85a3::8a2e:370:7334 port 443', 'IPv6 s prefixem', 'z 2001:db8:… port 443'],
+	['2001:0db8:85a3:0000:0000:8a2e:0370:7334', 'plná IPv6', '2001:0db8:…'],
+	['naslouchá na :: a ::1', 'nespecifikovaná a loopback zůstanou', 'naslouchá na :: a ::1'],
+	// Dvojtečka hned za adresou (chybová hláška) nebo před ní (předpona
+	// „IPv6:") dřív maskování zrušila a adresa prošla celá.
+	['connect to 2001:db8:85a3::8a2e:370:7334: timed out', 'IPv6 před dvojtečkou', 'connect to 2001:db8:…: timed out'],
+	['IPv6:fe80::1c2d:3e4f:5a6b:7c8d', 'IPv6 za předponou', 'IPv6:fe80::…'],
+	// „version" uvnitř slova není slovo verze — IP za ním se maskuje.
+	['conversion 192.168.1.20 failed', 'conversion není verze', 'conversion 192.168.x.x failed'],
+	['konverze 10.1.2.3', 'konverze není verze', 'konverze 10.1.x.x'],
+	['člen S-1-12-1-1234567890-123456789-987654321-1122334455', 'SID z Entra', 'člen S-1-12-1-<tenant>'],
+	['účet S-1-5-21-111-222-333-1001', 'lokální SID si nechá RID', 'účet S-1-5-21-<stroj>-1001']
+];
+for (const [vstup, popis, ocekavano] of VOLNY_TEXT) {
+	const txt = reportText({
+		now,
+		from: now - 86400,
+		users: UCTY,
+		crashes: [{ ts: now - 5, app: 'Pad.exe', repeats: 1, summary: vstup }]
+	});
+	const radky = txt.split('\n');
+	const zac = radky.findIndex((l) => l.includes('Pad.exe'));
+	const je = (radky[zac + 1] ?? '').trim();
+	const ok = je === ocekavano;
+	if (!ok) chyb++;
+	console.log(`  ${ok ? 'ok  ' : 'CHYBA'}  volný text: ${popis}`);
+	if (!ok) {
+		console.log(`          čekáno: ${ocekavano}`);
+		console.log(`          je:     ${je}`);
+	}
+}
+
 console.log(chyb === 0 ? '\nBRÁNA maskcheck: PASS' : `\nBRÁNA maskcheck: FAIL (${chyb})`);
 process.exit(chyb === 0 ? 0 : 1);

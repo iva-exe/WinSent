@@ -93,12 +93,25 @@ export function ochranaRadky(report) {
 			['veřejná', p.fw_public]
 		];
 		const fwOff = fw.filter(([, v]) => v === false).map(([n]) => n);
+		const fwOn = fw.filter(([, v]) => v === true).map(([n]) => n);
+		// Neznámý profil (hodnota v registru chybí nebo nejde přečíst)
+		// není zapnutý profil. Dřív stačilo, že žádný není VYPNUTÝ, a při
+		// trojím null svítilo zeleně „zapnutý" — falešný pocit ochrany,
+		// proti kterému se sekce Security vymezuje. Zelená jen tehdy,
+		// když jsou zapnuté opravdu všechny tři.
+		const fwVse = fwOn.length === fw.length;
 		rows.push({
 			icon: Flame,
 			name: 'Firewall',
-			state: fwOff.length === 0 ? 'zapnutý' : `vypnutý (${fwOff.join(', ')})`,
+			state: fwOff.length
+				? `vypnutý (${fwOff.join(', ')})`
+				: fwOn.length === 0
+					? 'nezjištěno'
+					: fwVse
+						? 'zapnutý'
+						: `zapnutý (${fwOn.join(', ')})`,
 			detail: fw.map(([n, v]) => `${n}: ${v == null ? '—' : v ? 'ano' : 'NE'}`).join(' · '),
-			tone: fwOff.length === 0 ? 'ok' : 'warn'
+			tone: fwOff.length ? 'warn' : fwVse ? 'ok' : 'dim'
 		});
 
 		// Secure Boot: None = legacy BIOS, kde neexistuje.

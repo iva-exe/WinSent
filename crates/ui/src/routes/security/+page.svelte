@@ -215,6 +215,35 @@
 		)
 	);
 
+	// Varování v hlavičce po aplikacích, ne po záznamech. Záznam je
+	// dvojice aplikace × schopnost (a u aplikací se složkou podle verze
+	// i víc verzí), takže Teams ve videohovoru vyšel jako „Teams, Teams
+	// používají kameru" a schopnost se brala jen z prvního záznamu —
+	// „Discord, WindowsCamera používají mikrofon" byla pro jednu z nich lež.
+	let liveText = $derived.by(() => {
+		const apps = new Map();
+		for (const p of liveNow) {
+			const k = p.group_key || p.app;
+			if (!apps.has(k)) apps.set(k, { name: p.app_name, caps: new Set() });
+			apps.get(k).caps.add(p.capability);
+		}
+		const seznam = [...apps.values()].map((a) => ({
+			name: a.name,
+			co:
+				a.caps.has('webcam') && a.caps.has('microphone')
+					? 'kameru i mikrofon'
+					: a.caps.has('webcam')
+						? 'kameru'
+						: 'mikrofon'
+		}));
+		if (!seznam.length) return '';
+		if (seznam.every((a) => a.co === seznam[0].co)) {
+			const kdo = seznam.map((a) => a.name).join(', ');
+			return `${kdo} ${seznam.length === 1 ? 'používá' : 'používají'} ${seznam[0].co} právě teď`;
+		}
+		return `Právě teď používá ${seznam.map((a) => `${a.name} ${a.co}`).join(', ')}`;
+	});
+
 	// Kolik času aplikace schopnost držela za posledních 30 dní.
 	//
 	// Načítá se JEDNÍM dotazem pro všechny řádky. Dřív to bylo schované
@@ -297,9 +326,7 @@
 		{#if liveNow.length}
 			<span class="live-warn">
 				<span class="live-dot"></span>
-				{liveNow.map((l) => l.app_name).join(', ')}
-				{liveNow.length === 1 ? 'používá' : 'používají'}
-				{liveNow[0].capability === 'webcam' ? 'kameru' : 'mikrofon'} právě teď
+				{liveText}
 			</span>
 		{/if}
 	</header>
