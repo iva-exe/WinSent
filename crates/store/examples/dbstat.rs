@@ -1,4 +1,5 @@
-//! Kontrola obsahu DB: `cargo run -p store --example dbcheck`.
+//! Kontrola obsahu DB: `cargo run -p store --example dbstat`.
+//! (Jmenovalo se dbcheck a přepisovalo stejnojmennou binárku brány z crates/ipc.)
 //! Vypíše počty řádků vzorků a rozsah časů (readonly přístup).
 
 use rusqlite::OpenFlags;

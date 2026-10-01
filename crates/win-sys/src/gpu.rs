@@ -6,9 +6,13 @@
 
 use std::ffi::c_void;
 
-use windows::core::{s, PCSTR};
-use windows::Win32::Foundation::FreeLibrary;
-use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+use windows::core::{s, w, HSTRING, PCSTR};
+use windows::Win32::Foundation::{FreeLibrary, HMODULE};
+use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::System::LibraryLoader::{
+    GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32,
+};
+use windows::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
 
 /// nvmlUtilization_t.
 #[repr(C)]
@@ -66,7 +70,7 @@ impl Nvml {
     pub fn init() -> Option<Nvml> {
         // SAFETY: standardní dynamické načtení; symboly ověřujeme.
         unsafe {
-            let lib = LoadLibraryA(s!("nvml.dll")).ok()?;
+            let lib = load_nvml()?;
             let init: FnInit = std::mem::transmute(load(lib, s!("nvmlInit_v2"))?);
             let by_index: FnDeviceByIndex =
                 std::mem::transmute(load(lib, s!("nvmlDeviceGetHandleByIndex_v2"))?);
@@ -179,6 +183,35 @@ impl Drop for Nvml {
             let _ = FreeLibrary(self.lib);
         }
     }
+}
+
+/// Načte nvml.dll jen z míst, kam smí zapisovat výhradně admin.
+///
+/// Dřív tu bylo `LoadLibraryA("nvml.dll")` holým jménem. Na stroji bez
+/// NVIDIA (AMD, Intel) knihovna v System32 není, takže standardní
+/// hledání došlo až do PATH — a v machine PATH bývá adresář zapisovatelný
+/// běžným uživatelem (třeba `%APPDATA%\nvm`). Podvržená nvml.dll by se
+/// pak při startu služby spustila jako SYSTEM. Proto:
+/// 1. System32 (DCH ovladače ji instalují sem),
+/// 2. plná cesta do NVSMI v Program Files (starší non-DCH ovladače);
+///    Program Files se bere přes known folder, ne z proměnné prostředí.
+///
+/// U NVSMI se závislosti hledají jen vedle DLL a v System32, ne v PATH.
+unsafe fn load_nvml() -> Option<HMODULE> {
+    if let Ok(lib) = LoadLibraryExW(w!("nvml.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32) {
+        return Some(lib);
+    }
+    let pf = SHGetKnownFolderPath(&FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, None).ok()?;
+    let dir = pf.to_string();
+    // Řetězec alokoval shell, uvolňuje se přes CoTaskMemFree.
+    CoTaskMemFree(Some(pf.0 as *const c_void));
+    let path = format!(r"{}\NVIDIA Corporation\NVSMI\nvml.dll", dir.ok()?);
+    LoadLibraryExW(
+        &HSTRING::from(path),
+        None,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
+    )
+    .ok()
 }
 
 /// GetProcAddress helper.

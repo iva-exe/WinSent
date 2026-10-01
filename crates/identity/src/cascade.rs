@@ -6,17 +6,36 @@ use core_types::proc::Confidence;
 
 use crate::{parent_dir, under_dir, under_system_root, Identity, Tables};
 
-/// Identita vlastních procesů. Poznává se podle jména binárky nebo
-/// instalačního adresáře služby — WebView2 renderery se poznají podle
-/// toho, že leží v našem instalačním stromu.
-fn own_identity(path: &str, image_name: &str) -> Option<Identity> {
-    const OWN_EXES: &[&str] = &["syswatch.exe", "winsent.exe", "ui.exe"];
+/// Adresář, ze kterého běží služba (malými písmeny) — v instalaci
+/// `%ProgramFiles%\Winsent`, ve vývoji `<workspace>\target\debug`.
+/// UI se staví i instaluje do téhož adresáře.
+fn own_dir() -> Option<&'static str> {
+    static DIR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let exe = std::env::current_exe().ok()?;
+        Some(exe.parent()?.to_str()?.to_ascii_lowercase())
+    })
+    .as_deref()
+}
+
+/// Identita vlastních procesů: služba a UI ležící přímo v adresáři,
+/// ze kterého běží služba.
+///
+/// Dřív stačilo jméno (syswatch.exe, winsent.exe, ui.exe kdekoli na
+/// disku) nebo cesta obsahující `\programdata\syswatch\` — tam ale smí
+/// zakládat soubory každý uživatel. Libovolná binárka se tak v Procesech
+/// schovala pod řádek monitoru s vydavatelem Winsent a přesnou
+/// identitou. A nainstalované UI (syswatch-ui.exe) pravidlo naopak
+/// míjelo. Adresář služby je v instalaci chráněný (Program Files).
+fn own_identity(path: &str) -> Option<Identity> {
+    own_identity_in(path, own_dir()?)
+}
+
+fn own_identity_in(path: &str, own_dir: &str) -> Option<Identity> {
+    const OWN_EXES: &[&str] = &["syswatch.exe", "syswatch-ui.exe"];
     let lc = path.to_ascii_lowercase();
-    let name_lc = image_name.to_ascii_lowercase();
-    let own_dir = lc.contains("\\programdata\\syswatch\\")
-        || lc.contains("\\winsent\\target\\debug\\")
-        || lc.contains("\\winsent\\target\\release\\");
-    if !(OWN_EXES.contains(&name_lc.as_str()) || own_dir) {
+    let name_lc = lc.rsplit('\\').next().unwrap_or_default();
+    if parent_dir(&lc) != own_dir.trim_end_matches('\\') || !OWN_EXES.contains(&name_lc) {
         return None;
     }
     Some(Identity {
@@ -49,24 +68,33 @@ pub fn resolve(pid: u32, image_name: &str, path: Option<&str>, tables: &Tables) 
         };
     };
 
-    // 1b. Vlastní procesy — služba (syswatch.exe), UI (winsent.exe)
-    //     i WebView2 potomci UI patří pod JEDNU aplikaci „Winsent".
-    //     Jinak by se ve vývoji rozpadly na tři různé řádky podle cest.
-    if let Some(id) = own_identity(path, image_name) {
+    // 1b. Vlastní procesy — služba (syswatch.exe) a UI (syswatch-ui.exe)
+    //     patří pod JEDNU aplikaci „Winsent". WebView2 renderery UI sem
+    //     přidá až reparent_hosts v collector-proc podle rodiče.
+    if let Some(id) = own_identity(path) {
         return id;
     }
 
     // Podpis (potřebný pro krok 2 i 4) — zjistíme jednou.
     let signer = win_sys::trust::signer_subject(std::path::Path::new(path));
 
-    // 2. Windows OS — cesta pod %SystemRoot% a Microsoft podpis.
-    //    Edge/Office jsou v Program Files (mimo SystemRoot) → sem nespadnou.
+    // 2. Windows OS — cesta pod %SystemRoot% a PLATNÝ podpis Microsoftu,
+    //    embedded nebo katalogový. Edge/Office jsou v Program Files
+    //    (mimo SystemRoot) → sem nespadnou.
+    //
+    //    Dřív stačilo „bez embedded podpisu", protože systémové soubory
+    //    jsou podepsané jen katalogem. Jenže to splnila i libovolná
+    //    nepodepsaná binárka v C:\Windows\Temp nebo C:\Windows\Tasks
+    //    (zapisovatelné pro běžného uživatele) a u embedded podpisu se
+    //    platnost nekontrolovala vůbec — stačil vlastní certifikát
+    //    s CN „Microsoft Corporation". Katalog se ověřuje jen u souborů
+    //    bez embedded podpisu, ať se neplatí dvakrát.
     if under_system_root(path) {
-        let is_ms = signer
-            .subject
-            .as_deref()
-            .map(|s| s.contains("Microsoft"))
-            .unwrap_or(signer.valid || signer.subject.is_none());
+        let is_ms = match signer.subject.as_deref() {
+            Some(s) => signer.valid && is_microsoft_signer(s),
+            None => win_sys::trust::catalog_signer(std::path::Path::new(path))
+                .is_some_and(|s| is_microsoft_signer(&s)),
+        };
         if is_ms {
             return Identity {
                 identity_key: "os:windows".into(),
@@ -130,6 +158,17 @@ pub fn resolve(pid: u32, image_name: &str, path: Option<&str>, tables: &Tables) 
     }
 }
 
+/// Podepisuje tímhle jménem Microsoft soubory Windows? Celé jméno, ne
+/// podřetězec: „Microsoft Windows Hardware Compatibility Publisher"
+/// podepisuje katalogy ovladačů TŘETÍCH stran (WHQL), takže by z nich
+/// udělal Windows, a podřetězec by pustil i „Not Microsoft s.r.o.".
+fn is_microsoft_signer(subject: &str) -> bool {
+    matches!(
+        subject.trim(),
+        "Microsoft Windows" | "Microsoft Windows Publisher" | "Microsoft Corporation"
+    )
+}
+
 /// Zpřehlední MSIX PackageFamilyName na čitelné jméno (část před `_`).
 fn msix_display(family: &str) -> String {
     family.split('_').next().unwrap_or(family).to_string()
@@ -145,4 +184,38 @@ fn clean_subject(subject: &str) -> String {
         .trim_end_matches(" Corporation")
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Vlastní identita jen pro naše binárky přímo v adresáři služby —
+    // ne podle jména kdekoli na disku, ne podle ProgramData.
+    #[test]
+    fn own_identity_needs_our_directory() {
+        let dir = r"c:\program files\winsent";
+        assert!(own_identity_in(r"C:\Program Files\Winsent\syswatch.exe", dir).is_some());
+        assert!(own_identity_in(r"C:\Program Files\Winsent\syswatch-ui.exe", dir).is_some());
+        for cizi in [
+            r"C:\Users\x\Downloads\syswatch.exe",
+            r"C:\Temp\ui.exe",
+            r"C:\ProgramData\syswatch\x\evil.exe",
+            r"C:\Program Files\Winsent\jiny.exe",
+            r"C:\Program Files\Winsent\sub\syswatch.exe",
+            r"C:\Program Files\Winsent2\syswatch.exe",
+        ] {
+            assert!(own_identity_in(cizi, dir).is_none(), "{cizi}");
+        }
+    }
+
+    #[test]
+    fn microsoft_signer_is_exact_name() {
+        assert!(is_microsoft_signer("Microsoft Windows"));
+        assert!(is_microsoft_signer("Microsoft Corporation"));
+        assert!(!is_microsoft_signer(
+            "Microsoft Windows Hardware Compatibility Publisher"
+        ));
+        assert!(!is_microsoft_signer("Not Microsoft Corporation s.r.o."));
+    }
 }

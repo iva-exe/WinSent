@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -42,7 +43,8 @@ impl Identity {
     }
 }
 
-/// Statické tabulky pro kaskádu (uninstall záznamy). Zjištěno jednou.
+/// Tabulky pro kaskádu (uninstall záznamy). Načtou se při startu a znovu
+/// po změně přihlášených uživatelů (viz `worker`).
 #[derive(Debug, Clone, Default)]
 pub struct Tables {
     /// Instalační adresáře, seřazené sestupně dle délky cesty —
@@ -51,6 +53,8 @@ pub struct Tables {
     /// identity_key („app:…“) → DisplayIcon spec z uninstall registru
     /// („cesta,index“) — fallback, když .exe procesu ikonu nemá.
     pub icons: HashMap<String, String>,
+    /// Hive uživatelů, ze kterých se tabulky četly (viz `user_sids`).
+    sids: Vec<String>,
 }
 
 /// Jeden instalační adresář z uninstall registru.
@@ -128,6 +132,15 @@ pub struct Engine {
     pending: HashSet<u32>,
     sig_cache_len: usize,
     icons: IconStore,
+    /// Kolikrát worker přenačetl tabulky (sdílené s workerem).
+    generation: Arc<AtomicU64>,
+    /// Generace, ke které patří identity v `per_pid`.
+    seen_generation: u64,
+    /// PIDy, jejichž identita pochází ze starých tabulek a má se
+    /// dopočítat znovu. Do té doby platí ta stará — kdyby se zahodila,
+    /// celé Procesy by po přihlášení na chvíli spadly na provisional
+    /// seskupení podle jména.
+    stale: HashSet<u32>,
 }
 
 impl Engine {
@@ -136,11 +149,13 @@ impl Engine {
         let (tx, rx) = std::sync::mpsc::channel::<Job>();
         let (tx_done, rx_done) = std::sync::mpsc::channel::<Done>();
         let icons: IconStore = Arc::new(Mutex::new(HashMap::new()));
+        let generation = Arc::new(AtomicU64::new(0));
 
         let icons_worker = Arc::clone(&icons);
+        let generation_worker = Arc::clone(&generation);
         std::thread::Builder::new()
             .name("identity".into())
-            .spawn(move || worker(rx, tx_done, tables, icons_worker))
+            .spawn(move || worker(rx, tx_done, tables, icons_worker, generation_worker))
             .expect("spuštění identity vlákna");
 
         Engine {
@@ -152,6 +167,9 @@ impl Engine {
             pending: HashSet::new(),
             sig_cache_len: 0,
             icons,
+            generation,
+            seen_generation: 0,
+            stale: HashSet::new(),
         }
     }
 
@@ -186,6 +204,18 @@ impl Engine {
         create_time: i64,
     ) -> (Identity, Protection) {
         self.drain();
+        // Worker přenačetl tabulky (přihlásil se uživatel, jehož hive
+        // při startu služby ještě nebyla načtená). Všechno, co se
+        // spočítalo se starými, se dopočítá znovu.
+        let generation = self.generation.load(Ordering::Relaxed);
+        if generation != self.seen_generation {
+            self.seen_generation = generation;
+            // Pokrývá i rozpracované PIDy, jejichž výsledek ze starých
+            // tabulek ještě visí v kanálu: nováček dostane provisional do
+            // `per_pid` dřív, než se zařadí do `pending`, a oba se mažou
+            // vždy spolu — `pending` je tak podmnožinou klíčů `per_pid`.
+            self.stale = self.per_pid.keys().copied().collect();
+        }
         // Cache drží PID, ale PID Windows recykluje. Když se čas vzniku
         // liší, je za tím číslem jiný proces a stará identita by mu
         // podstrčila cizí aplikaci — záznam se zahodí a začne se znovu.
@@ -193,8 +223,21 @@ impl Engine {
             self.per_pid.remove(&pid);
             self.prot_pid.remove(&pid);
             self.pending.remove(&pid);
+            self.stale.remove(&pid);
         }
         if let Some(id) = self.per_pid.get(&pid) {
+            // Zastaralý výsledek se znovu zařadí, jen když na tenhle PID
+            // zrovna nic nečeká: rozpracovaný job mohl začít ještě se
+            // starými tabulkami, takže PID zůstane `stale`, dokud jeho
+            // výsledek nedorazí, a teprve pak se pošle znovu.
+            if !self.pending.contains(&pid) && self.stale.remove(&pid) {
+                self.pending.insert(pid);
+                let _ = self.tx.send(Job {
+                    pid,
+                    birth: create_time,
+                    image_name: image_name.to_string(),
+                });
+            }
             let prot = self.prot_pid.get(&pid).copied().unwrap_or_default();
             return (id.clone(), prot);
         }
@@ -217,6 +260,7 @@ impl Engine {
         self.prot_pid.retain(|pid, _| live.contains(pid));
         self.pending.retain(|pid| live.contains(pid));
         self.birth.retain(|pid, _| live.contains(pid));
+        self.stale.retain(|pid| live.contains(pid));
     }
 
     /// Orientační velikost cache (pro měření).
@@ -227,11 +271,39 @@ impl Engine {
 
 /// Background worker: fetch cesty, kaskáda, cache podpisů. Jediné vlákno,
 /// takže cache nepotřebuje zámky.
-fn worker(rx: Receiver<Job>, tx_done: Sender<Done>, tables: Tables, icons: IconStore) {
+fn worker(
+    rx: Receiver<Job>,
+    tx_done: Sender<Done>,
+    mut tables: Tables,
+    icons: IconStore,
+    generation: Arc<AtomicU64>,
+) {
     let _ = win_sys::threading::set_current_thread_below_normal();
     let mut sig_cache: HashMap<SigKey, Identity> = HashMap::new();
+    // Služba startuje při bootu dřív, než se kdokoli přihlásí, takže
+    // hive uživatele v HKEY_USERS ještě není a jeho aplikace „jen pro
+    // mě" v tabulkách chybí. Jednou za minutu se levně podívá, jestli
+    // se množina přihlášených nezměnila, a pak tabulky načte znovu.
+    const KONTROLA: std::time::Duration = std::time::Duration::from_secs(60);
+    let mut posledni = std::time::Instant::now();
 
-    while let Ok(job) = rx.recv() {
+    loop {
+        let job = match rx.recv_timeout(KONTROLA) {
+            Ok(job) => Some(job),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        if posledni.elapsed() >= KONTROLA {
+            posledni = std::time::Instant::now();
+            if user_sids() != tables.sids {
+                tables = load_tables();
+                // Cache drží hotové identity — se starými tabulkami by
+                // přežil i `sig:` výsledek aplikace, která teď má `app:`.
+                sig_cache.clear();
+                generation.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let Some(job) = job else { continue };
         let path = win_sys::procinfo::image_path(job.pid);
 
         // Cache podle (cesta, velikost, mtime) — procesy stejné binárky
@@ -293,28 +365,54 @@ fn worker(rx: Receiver<Job>, tx_done: Sender<Done>, tables: Tables, icons: IconS
     }
 }
 
-/// Načte uninstall záznamy z registru (SPEC kap. 5.1) — jednou při startu.
+/// Hive lidských účtů načtené v HKEY_USERS (S-1-5-21-*, bez `_Classes`).
+/// Mění se přihlášením a odhlášením — podle toho worker pozná, že má
+/// tabulky načíst znovu.
+fn user_sids() -> Vec<String> {
+    let mut sids: Vec<String> = win_sys::registry::enum_subkeys(win_sys::registry::HKEY_USERS, "")
+        .into_iter()
+        .filter(|s| s.starts_with("S-1-5-21") && !s.ends_with("_Classes"))
+        .collect();
+    sids.sort();
+    sids
+}
+
+/// Načte uninstall záznamy z registru (SPEC kap. 5.1). Při startu
+/// a znovu, když se změní přihlášení uživatelé (viz `worker`).
 pub fn load_tables() -> Tables {
     use win_sys::registry::{
-        enum_subkeys, read_string, read_u64, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+        enum_subkeys, read_string, read_u64, RegKey, HKEY_LOCAL_MACHINE, HKEY_USERS,
     };
     let mut uninstall = Vec::new();
-    let roots = [
+    // HKEY_CURRENT_USER tu být NESMÍ: identitu počítá služba pod účtem
+    // SYSTEM a její HKCU je hive SYSTEMU s prázdnou větví Uninstall.
+    // Aplikace instalované „jen pro mě" (Discord, VS Code User,
+    // Modrinth, Roblox…) pak v kaskádě nenašly InstallLocation, dostaly
+    // klíč `sig:`/`path:` a nespárovaly se s řádkem `app:` v Programech —
+    // bez ikony z DisplayIcon a bez akcí, které chtějí `app:`. Kořeny
+    // jsou stejné jako v inventáři (collector-inv), aby klíče seděly.
+    let mut roots: Vec<(RegKey, String)> = vec![
         (
             HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall".to_string(),
         ),
         (
             HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
-        ),
-        (
-            HKEY_CURRENT_USER,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall".to_string(),
         ),
     ];
+    let sids = user_sids();
+    for sid in &sids {
+        for w in ["", r"\WOW6432Node"] {
+            roots.push((
+                HKEY_USERS,
+                format!(r"{sid}\SOFTWARE{w}\Microsoft\Windows\CurrentVersion\Uninstall"),
+            ));
+        }
+    }
     let mut icons = HashMap::new();
     for (root, base) in roots {
+        let base = base.as_str();
         for sub in enum_subkeys(root, base) {
             let key = format!("{base}\\{sub}");
             // Bez DisplayName to není aplikace pro uživatele, jen stub.
@@ -357,7 +455,11 @@ pub fn load_tables() -> Tables {
         icons = icons.len(),
         "načteny uninstall záznamy pro identitu"
     );
-    Tables { uninstall, icons }
+    Tables {
+        uninstall,
+        icons,
+        sids,
+    }
 }
 
 /// `InstallLocation` → porovnatelný prefix cesty, nebo `None`, když je
@@ -391,10 +493,33 @@ fn install_prefix(raw: &str) -> Option<String> {
         env("ProgramData").unwrap_or_else(|| r"c:\programdata".into()),
         env("PUBLIC").unwrap_or_else(|| r"c:\users\public".into()),
     ];
-    if generic.iter().any(|g| g.trim_end_matches('\\') == lc) {
+    if generic.iter().any(|g| g.trim_end_matches('\\') == lc) || profile_container(&lc) {
         return None;
     }
     Some(lc)
+}
+
+/// Je cesta sdílený kontejner uvnitř profilu — profil sám, AppData,
+/// Local, Roaming nebo Local\Programs? Záznamy „jen pro mě" občas
+/// zapíšou jako InstallLocation právě tohle a jako nejdelší shoda by
+/// pak přebily podpisy všeho, co v profilu běží. Tvar se pozná vzorem,
+/// ne z proměnných prostředí: služba běží pod SYSTEM a její %APPDATA%
+/// je profil SYSTEMU.
+fn profile_container(lc: &str) -> bool {
+    let env = |k: &str| std::env::var(k).ok().map(|v| v.to_ascii_lowercase());
+    let drive = env("SystemDrive").unwrap_or_else(|| "c:".into());
+    let Some(rest) = lc.strip_prefix(&format!(r"{}\users\", drive.trim_end_matches('\\'))) else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('\\').collect();
+    matches!(
+        parts.as_slice(),
+        [_] | [_, "appdata"]
+            | [_, "appdata", "local"]
+            | [_, "appdata", "roaming"]
+            | [_, "appdata", "locallow"]
+            | [_, "appdata", "local", "programs"]
+    )
 }
 
 /// Označí instalační adresáře, které jsou nadřazené jiné instalaci.
@@ -445,11 +570,14 @@ pub(crate) fn under_dir(path_lc: &str, dir_lc: &str) -> bool {
         && path_lc.as_bytes()[dir_lc.len()] == b'\\'
 }
 
-/// Je cesta pod systémovým adresářem Windows?
+/// Je cesta pod systémovým adresářem Windows? Na hranici komponenty —
+/// prostý prefix bral i `C:\Windows.old\…` nebo `C:\WindowsApps2\…`.
 pub(crate) fn under_system_root(path: &str) -> bool {
     let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-    path.to_ascii_lowercase()
-        .starts_with(&sysroot.to_ascii_lowercase())
+    under_dir(
+        &path.to_ascii_lowercase(),
+        sysroot.trim_end_matches('\\').to_ascii_lowercase().as_str(),
+    )
 }
 
 /// Parent adresář cesty (pro path fallback).
@@ -459,4 +587,44 @@ pub(crate) fn parent_dir(path: &str) -> String {
         .and_then(|p| p.to_str())
         .unwrap_or(path)
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Prefix systémového adresáře na hranici komponenty.
+    #[test]
+    fn system_root_is_matched_on_component_boundary() {
+        let sr = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        assert!(under_system_root(&format!(r"{sr}\System32\svchost.exe")));
+        assert!(!under_system_root(&format!(r"{sr}.old\System32\evil.exe")));
+        assert!(!under_system_root(&format!(r"{sr}Apps2\evil.exe")));
+    }
+
+    // Kontejnery v profilu nejsou bydliště jedné aplikace; konkrétní
+    // instalace pod nimi ano.
+    #[test]
+    fn profile_containers_are_not_install_dirs() {
+        let d = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        for kontejner in [
+            r"\Users\IVA",
+            r"\Users\IVA\AppData\Local",
+            r"\Users\IVA\AppData\Roaming\",
+            r"\Users\IVA\AppData\Local\Programs",
+        ] {
+            assert!(
+                install_prefix(&format!("{d}{kontejner}")).is_none(),
+                "{kontejner}"
+            );
+        }
+        let discord = install_prefix(&format!(r"{d}\Users\IVA\AppData\Local\Discord"));
+        let ocekavano = format!(
+            r"{}\users\iva\appdata\local\discord",
+            d.to_ascii_lowercase()
+        );
+        assert_eq!(discord, Some(ocekavano));
+        let code = format!(r"{d}\Users\IVA\AppData\Local\Programs\Microsoft VS Code");
+        assert!(install_prefix(&code).is_some());
+    }
 }

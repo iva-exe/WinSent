@@ -83,8 +83,13 @@ pub fn query(channel: &str, xpath: &str, limit: usize) -> Result<Vec<Event>, Err
         if !ok || returned == 0 {
             break;
         }
-        for ev in batch.iter().take(returned as usize) {
-            let guard = Evt(EVT_HANDLE(*ev));
+        // Všechny vrácené handly hned pod guard. Dřív vznikal guard až
+        // ve smyčce, takže při dosažení limitu uprostřed dávky zbytek
+        // handlů nikdo nezavřel — ~33 kB trvale ve službě za každé
+        // otevření Incidentů (limit 40 není násobek 16).
+        let n = (returned as usize).min(batch.len());
+        let guards: Vec<Evt> = batch[..n].iter().map(|h| Evt(EVT_HANDLE(*h))).collect();
+        for guard in &guards {
             if let Some(xml) = render(guard.0) {
                 out.push(parse(&xml));
             }

@@ -24,16 +24,30 @@ pub struct Orchestrator {
     next_id: AtomicU64,
     /// Striktní režim (SPEC 17.5): nevratná T1 → bod obnovení.
     strict: bool,
+    /// Žádost na zapisovací vlákno, ať pustí zámek DB (viz audit_conn).
+    uvolni_zapis: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Orchestrator {
-    pub fn new(audit_conn: store::Connection) -> Orchestrator {
+    pub fn new(
+        audit_conn: store::Connection,
+        uvolni_zapis: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Orchestrator {
         Orchestrator {
             audit_conn: Mutex::new(audit_conn),
             plans: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             strict: true,
+            uvolni_zapis,
         }
+    }
+
+    /// Spojení pro zápis auditu. Napřed požádá zapisovací vlákno, ať
+    /// pustí zámek databáze — dávka vzorků ho jinak drží déle, než
+    /// auditní spojení čeká (viz `Davka::zadost` v daemonu).
+    fn audit_conn(&self) -> std::sync::MutexGuard<'_, store::Connection> {
+        self.uvolni_zapis.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.audit_conn.lock().expect("audit conn lock")
     }
 
     /// Audit zápis (allow i deny — každá akce nechává stopu).
@@ -45,7 +59,7 @@ impl Orchestrator {
         outcome: Option<&str>,
         detail: Option<&str>,
     ) -> i64 {
-        let conn = self.audit_conn.lock().expect("audit conn lock");
+        let conn = self.audit_conn();
         let reversible = actor_toggle::reversible_hint(action);
         store::audit::insert(
             &conn,
@@ -241,6 +255,34 @@ impl Orchestrator {
         detail: &str,
     ) -> ActionResult {
         let t0 = Instant::now();
+        // Prázdný klíč posílá UI jen tehdy, když odinstalátor vůbec nešel
+        // spustit (zrušené UAC, chybějící soubor). Pak se nic nikomu
+        // nepředalo — i aplikace ze Steamu musí skončit jako failed.
+        let start_selhal = identity_key.is_empty();
+        // Výsledek se smí doplnit JEN k rozpracované odinstalaci, a to
+        // k té aplikaci, kterou zapsal audit — ne té, kterou jmenuje
+        // klient. Dřív se `UPDATE … WHERE id = ?` provedl pro libovolné
+        // id: přes pipe šlo přepsat výsledek kteréhokoli záznamu
+        // (i odmítnutí nebo ukončení procesu) a UI po zrušeném UAC
+        // posílalo prázdný klíč, pro který „ověření" vyšlo jako
+        // úspěch — historie pak tvrdila, že se odinstalace povedla,
+        // přestože se odinstalátor vůbec nespustil.
+        let identity_key = if audit_id > 0 {
+            let conn = self.audit_conn.lock().expect("audit conn lock");
+            match rozpracovana_odinstalace(&conn, audit_id) {
+                Some(target) => target,
+                None => {
+                    return deny_result(
+                        "auditní záznam nepatří rozpracované odinstalaci",
+                        t0,
+                        audit_id,
+                    )
+                }
+            }
+        } else {
+            identity_key.to_string()
+        };
+        let identity_key = identity_key.as_str();
         let action = Action::UninstallApp {
             identity_key: identity_key.to_string(),
         };
@@ -251,7 +293,7 @@ impl Orchestrator {
         // posílat uživatele opakovaně dělat něco, co se ve skutečnosti
         // nikdy nepokazilo.
         let name = identity_key.strip_prefix("app:").unwrap_or(identity_key);
-        let handoff = (!verified)
+        let handoff = (!verified && !start_selhal)
             .then(|| validate::uninstall_command(name))
             .flatten()
             .and_then(|c| actor_app::hands_off(&c));
@@ -265,7 +307,16 @@ impl Orchestrator {
             None => detail.to_string(),
         };
         if audit_id > 0 {
-            let conn = self.audit_conn.lock().expect("audit conn lock");
+            let conn = self.audit_conn();
+            // Znovu pod zámkem: mezi čtením a zápisem běželo ověření
+            // registru a záznam mezitím mohl uzavřít souběžný report.
+            if rozpracovana_odinstalace(&conn, audit_id).is_none() {
+                return deny_result(
+                    "auditní záznam nepatří rozpracované odinstalaci",
+                    t0,
+                    audit_id,
+                );
+            }
             if let Err(e) = store::audit::set_outcome(&conn, audit_id, outcome, &detail) {
                 tracing::error!(error = %e, "doplnění výsledku do auditu selhalo");
             }
@@ -330,6 +381,27 @@ fn execute_for(action: &Action) -> (bool, bool, String) {
     }
 }
 
+/// Cíl (identity_key) auditního záznamu, který je rozpracovanou
+/// odinstalací — jinak None.
+///
+/// 'handed' zůstává otevřené: launcher (Steam) dokončí odinstalaci až po
+/// potvrzení ve svém okně a pozdější report je legitimní. Uzavřený
+/// výsledek ('ok', 'failed') ani záznamy jiných akcí se nepřepisují.
+fn rozpracovana_odinstalace(conn: &store::Connection, audit_id: i64) -> Option<String> {
+    let uninstall = Action::UninstallApp {
+        identity_key: String::new(),
+    }
+    .name();
+    conn.query_row(
+        "SELECT target FROM audit
+         WHERE id = ?1 AND action = ?2 AND verdict = 'allow'
+           AND outcome IN ('running', 'handed')",
+        (audit_id, uninstall),
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
 fn deny_result(reason: impl Into<String>, t0: Instant, audit_id: i64) -> ActionResult {
     ActionResult {
         verdict: "deny".into(),
@@ -354,7 +426,7 @@ mod tests {
     fn orch() -> Orchestrator {
         let conn = store::Connection::open_in_memory().expect("in-memory DB");
         store::migrations::run(&conn).expect("migrace");
-        Orchestrator::new(conn)
+        Orchestrator::new(conn, Default::default())
     }
 
     // Brána v5: expirovaný plán je při Execute odmítnut.
@@ -402,5 +474,53 @@ mod tests {
         let conn = o.audit_conn.lock().unwrap();
         let rows = store::audit::recent(&conn, 5).unwrap();
         assert_eq!(rows[0].verdict, "deny");
+    }
+
+    fn outcome_of(o: &Orchestrator, id: i64) -> Option<String> {
+        let conn = o.audit_conn.lock().unwrap();
+        store::audit::recent(&conn, 50)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.outcome)
+    }
+
+    // ReportUninstall nesmí přepsat záznam jiné akce ani už uzavřenou
+    // odinstalaci; ověřuje se aplikace ze záznamu, ne z požadavku.
+    #[test]
+    fn report_uninstall_jen_pro_rozpracovanou_odinstalaci() {
+        let o = orch();
+        let kill = o.audit(
+            &Action::TestOp {
+                target: "demo".into(),
+                fail_at: None,
+            },
+            "allow",
+            None,
+            Some("ok"),
+            None,
+        );
+        let r = o.report_uninstall(kill, "app:cokoli", "podvrh");
+        assert_eq!(r.verdict, "deny");
+        assert_eq!(outcome_of(&o, kill).as_deref(), Some("ok"));
+
+        // Aplikace, která v registru není → ověření „odinstalováno" = ok.
+        let uninst = o.audit(
+            &Action::UninstallApp {
+                identity_key: "app:Winsent test neexistujici aplikace 7f3c".into(),
+            },
+            "allow",
+            None,
+            Some("running"),
+            None,
+        );
+        // Prázdný klíč od klienta (UI po zrušeném UAC) se ignoruje.
+        let r = o.report_uninstall(uninst, "", "spuštění selhalo");
+        assert_eq!(r.verdict, "allow");
+        assert_eq!(outcome_of(&o, uninst).as_deref(), Some("ok"));
+
+        // Podruhé už je záznam uzavřený.
+        let r = o.report_uninstall(uninst, "", "znovu");
+        assert_eq!(r.verdict, "deny");
     }
 }

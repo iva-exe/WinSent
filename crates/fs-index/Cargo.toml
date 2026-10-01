@@ -9,3 +9,10 @@ publish.workspace = true
 core-types = { workspace = true }
 win-sys = { workspace = true }
 thiserror = { workspace = true }
+# Uložený index leží v adresáři, kam smí zapisovat i běžný uživatel;
+# služba si ho proto zamyká vlastní DACL a ověřuje vlastníka (snapshot.rs).
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+] }

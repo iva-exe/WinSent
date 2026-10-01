@@ -45,8 +45,19 @@ pub fn read_msg<R: Read, T: DeserializeOwned>(r: &mut R) -> Result<Option<T>, Er
         });
     }
 
-    let mut payload = vec![0u8; len as usize];
-    r.read_exact(&mut payload)?;
+    // Payload se čte postupně, ne do předem nulovaného bufferu podle
+    // prefixu. `vec![0; len]` započítal celých 8 MB do commit charge
+    // ještě před prvním bajtem dat — stačilo otevřít tisíce spojení,
+    // poslat do každého čtyři bajty `00 00 80 00` a služba (SYSTEM)
+    // vyčerpala commit limit celého systému. Takhle paměť roste jen
+    // s tím, co klient opravdu poslal. Počáteční kapacita je malá
+    // a strop jen pojistka, ať běžné odpovědi nepřealokovávají.
+    let mut payload = Vec::with_capacity((len as usize).min(64 * 1024));
+    r.by_ref().take(u64::from(len)).read_to_end(&mut payload)?;
+    if payload.len() != len as usize {
+        // Spojení skončilo uprostřed rámce — to není čistý konec.
+        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+    }
     Ok(Some(postcard::from_bytes(&payload)?))
 }
 
@@ -74,5 +85,18 @@ mod tests {
         buf.extend_from_slice(&u32::MAX.to_le_bytes());
         let res: Result<Option<Request>, _> = read_msg(&mut buf.as_slice());
         assert!(matches!(res, Err(Error::FrameTooLarge { .. })));
+    }
+
+    // Prefix slibuje víc, než klient poslal: chyba, ne `Ok(None)` —
+    // useknutý rámec není čisté zavření spojení.
+    #[test]
+    fn truncated_payload_is_error() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1000u32.to_le_bytes());
+        buf.extend_from_slice(&[1, 2, 3]);
+        let res: Result<Option<Request>, _> = read_msg(&mut buf.as_slice());
+        assert!(
+            matches!(res, Err(Error::Io(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof)
+        );
     }
 }

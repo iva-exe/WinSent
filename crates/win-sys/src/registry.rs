@@ -83,24 +83,66 @@ pub fn read_u64(root: HKEY, subkey: &str, value: &str) -> Option<u64> {
 /// Vyjmenuje hodnoty klíče jako (název, data jako string). Nečíselné
 /// typy se přeskočí — startup Run klíče drží REG_SZ/EXPAND_SZ.
 pub fn enum_values(root: HKEY, subkey: &str) -> Vec<(String, String)> {
-    use windows::Win32::System::Registry::RegEnumValueW;
+    use windows::Win32::Foundation::{ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS};
+    use windows::Win32::System::Registry::{RegEnumValueW, RegQueryInfoKeyW};
+    // Strop jména hodnoty dle registru (16 383 znaků + nula).
+    const MAX_NAME: usize = 16_384;
     let mut out = Vec::new();
     let wsub = HSTRING::from(subkey);
     let mut hkey = HKEY::default();
-    // SAFETY: klíč se vždy zavírá; buffery mají pevné velikosti a délky
-    // se předávají API dle kontraktu.
+    // SAFETY: klíč se vždy zavírá; buffery jsou Vec a délky se před
+    // každým voláním nastavují na jejich skutečnou kapacitu.
     unsafe {
         if RegOpenKeyExW(root, &wsub, None, KEY_READ, &mut hkey).is_err() {
             return out;
         }
+        // Buffery podle největší hodnoty v klíči. Dřív byly pevné
+        // (512 znaků / 2 KiB) a první větší hodnota — i REG_BINARY, který
+        // se stejně přeskakuje — vrátila ERROR_MORE_DATA, což se bralo
+        // jako konec výčtu: zbytek Run klíče zmizel (a šlo to zneužít
+        // ke skrytí položky bez admina).
+        let mut values = 0u32;
+        let mut max_name = 0u32;
+        let mut max_data = 0u32;
+        let (name_cap, data_cap) = if RegQueryInfoKeyW(
+            hkey,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&mut values),
+            Some(&mut max_name),
+            Some(&mut max_data),
+            None,
+            None,
+        )
+        .is_ok()
+        {
+            (max_name as usize + 1, max_data as usize + 2)
+        } else {
+            values = u32::MAX;
+            (MAX_NAME, 64 * 1024)
+        };
+        let mut name = vec![0u16; name_cap.clamp(1, MAX_NAME)];
+        // Strop dat jedné hodnoty. Run klíč smí zapsat i běžný uživatel:
+        // bez stropu by hodnota o 16 MB donutila službu (SYSTEM) alokovat
+        // stejně velký buffer při každém skenu a celá odpověď seznamu po
+        // spuštění by přerostla limit rámce IPC — UI by neukázalo nic,
+        // tedy přesně to schování položky, kvůli kterému se buffery
+        // přestaly zkracovat. Delší hodnota se ukáže jako položka bez
+        // příkazu.
+        const MAX_DATA: usize = 64 * 1024;
+        let mut data = vec![0u8; data_cap.clamp(4, MAX_DATA)];
         let mut index = 0u32;
-        loop {
-            let mut name = [0u16; 512];
+        let mut retries = 0u32;
+        // Horní mez chrání před zacyklením, kdyby klíč pod rukama rostl.
+        while index < values.min(100_000) {
             let mut name_len = name.len() as u32;
-            let mut data = [0u8; 2048];
             let mut data_len = data.len() as u32;
             let mut kind = 0u32;
-            if RegEnumValueW(
+            let r = RegEnumValueW(
                 hkey,
                 index,
                 Some(windows::core::PWSTR(name.as_mut_ptr())),
@@ -109,22 +151,59 @@ pub fn enum_values(root: HKEY, subkey: &str) -> Vec<(String, String)> {
                 Some(&mut kind),
                 Some(data.as_mut_ptr()),
                 Some(&mut data_len),
-            )
-            .is_err()
-            {
+            );
+            if r == ERROR_NO_MORE_ITEMS {
                 break;
             }
+            if r == ERROR_MORE_DATA && retries < 3 && data.len() < MAX_DATA {
+                // Hodnota mezitím narostla: zvětšit a zkusit stejný index.
+                retries += 1;
+                data.resize((data_len as usize + 2).max(data.len() * 2).min(MAX_DATA), 0);
+                if name.len() < MAX_NAME {
+                    name.resize((name.len() * 2).min(MAX_NAME), 0);
+                }
+                continue;
+            }
+            if r == ERROR_MORE_DATA && data.len() >= MAX_DATA {
+                // Hodnota přes strop: zjistit jen jméno a typ (bez dat).
+                retries = 0;
+                index += 1;
+                let mut name_len = name.len() as u32;
+                let mut kind = 0u32;
+                let r = RegEnumValueW(
+                    hkey,
+                    index - 1,
+                    Some(windows::core::PWSTR(name.as_mut_ptr())),
+                    &mut name_len,
+                    None,
+                    Some(&mut kind),
+                    None,
+                    None,
+                );
+                if r.is_ok() && (kind == 1 || kind == 2) {
+                    out.push((
+                        String::from_utf16_lossy(&name[..(name_len as usize).min(name.len())]),
+                        String::new(),
+                    ));
+                }
+                continue;
+            }
+            retries = 0;
             index += 1;
+            if r.is_err() {
+                // Jednu nečitelnou hodnotu přeskočit, výčet tím nekončí.
+                continue;
+            }
             // 1 = REG_SZ, 2 = REG_EXPAND_SZ.
             if kind == 1 || kind == 2 {
-                let chars = (data_len as usize / 2).min(1024);
+                let chars = (data_len as usize).min(data.len()) / 2;
                 let wide: Vec<u16> = data[..chars * 2]
                     .chunks_exact(2)
                     .map(|c| u16::from_le_bytes([c[0], c[1]]))
                     .collect();
                 let end = wide.iter().position(|&c| c == 0).unwrap_or(wide.len());
                 out.push((
-                    String::from_utf16_lossy(&name[..name_len as usize]),
+                    String::from_utf16_lossy(&name[..(name_len as usize).min(name.len())]),
                     String::from_utf16_lossy(&wide[..end]),
                 ));
             }

@@ -115,6 +115,217 @@ pub fn signer_subject(path: &Path) -> SignerInfo {
     }
 }
 
+/// Podepisující platného katalogu, ve kterém je soubor zapsaný — nebo
+/// `None`, když v žádném systémovém katalogu není (nebo se katalog
+/// neověří).
+///
+/// Většina souborů Windows nemá embedded podpis, podepsané jsou jen
+/// otiskem v katalogu (`CatRoot`). Identita je dřív brala podle cesty:
+/// „bez podpisu pod %SystemRoot%" = Windows. To ale platilo i pro
+/// libovolnou nepodepsanou binárku v uživatelsky zapisovatelném
+/// `C:\Windows\Temp` nebo `C:\Windows\Tasks` — monitor ji sám schoval
+/// pod řádek „Windows" s přesnou identitou. Tohle je poctivý test
+/// „soubor je opravdu ze systému": otisk souboru je v katalogu
+/// a katalog má platný podpis.
+///
+/// Blokující (jednotky až desítky ms) — jen z background vlákna
+/// identity, a jen u souborů bez embedded podpisu.
+pub fn catalog_signer(path: &Path) -> Option<String> {
+    use std::os::windows::io::AsRawHandle;
+    let file = std::fs::File::open(path).ok()?;
+    let h = windows::Win32::Foundation::HANDLE(file.as_raw_handle());
+    // Katalogy Windows 10/11 nesou SHA-256; starší balíčky ovladačů
+    // jen SHA-1.
+    [windows::core::w!("SHA256"), windows::core::w!("SHA1")]
+        .into_iter()
+        .find_map(|alg| catalog::signer(path, h, alg))
+}
+
+/// Ověření souboru proti systémovým katalogům (WTD_CHOICE_CATALOG).
+mod catalog {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use windows::core::{GUID, PCWSTR};
+    use windows::Win32::Foundation::{HANDLE, HWND};
+    use windows::Win32::Security::Cryptography::Catalog::{
+        CryptCATAdminAcquireContext2, CryptCATAdminCalcHashFromFileHandle2,
+        CryptCATAdminEnumCatalogFromHash, CryptCATAdminReleaseCatalogContext,
+        CryptCATAdminReleaseContext, CryptCATCatalogInfoFromContext, CATALOG_INFO,
+    };
+    use windows::Win32::Security::Cryptography::{
+        CertGetNameStringW, CERT_NAME_SIMPLE_DISPLAY_TYPE,
+    };
+    use windows::Win32::Security::WinTrust::{
+        WTHelperGetProvCertFromChain, WTHelperGetProvSignerFromChain,
+        WTHelperProvDataFromStateData, WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2,
+        WINTRUST_CATALOG_INFO, WINTRUST_DATA, WINTRUST_DATA_0, WTD_CHOICE_CATALOG, WTD_REVOKE_NONE,
+        WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE,
+    };
+
+    /// Jeden pokus s daným hashovacím algoritmem.
+    pub(super) fn signer(path: &Path, file: HANDLE, alg: PCWSTR) -> Option<String> {
+        let mut admin: isize = 0;
+        // SAFETY: kontext se vždy uvolní níž; `admin` žije přes celé
+        // použití v `with_admin`.
+        unsafe { CryptCATAdminAcquireContext2(&mut admin, None, alg, None, None) }.ok()?;
+        let out = with_admin(path, file, admin);
+        // SAFETY: `admin` pochází z úspěšného AcquireContext2.
+        unsafe {
+            let _ = CryptCATAdminReleaseContext(admin, 0);
+        }
+        out
+    }
+
+    fn with_admin(path: &Path, file: HANDLE, admin: isize) -> Option<String> {
+        // SAFETY: dvoufázové volání podle kontraktu — nejdřív délka,
+        // pak buffer té délky. První volání s prázdným bufferem končí
+        // chybou „málo místa", délku ale vyplní.
+        let mut hash = unsafe {
+            let mut len = 0u32;
+            let _ = CryptCATAdminCalcHashFromFileHandle2(admin, file, &mut len, None, None);
+            if len == 0 || len > 64 {
+                return None;
+            }
+            let mut hash = vec![0u8; len as usize];
+            CryptCATAdminCalcHashFromFileHandle2(
+                admin,
+                file,
+                &mut len,
+                Some(hash.as_mut_ptr()),
+                None,
+            )
+            .ok()?;
+            hash.truncate(len as usize);
+            hash
+        };
+        // SAFETY: hash je platný buffer; vrácený kontext katalogu se
+        // uvolní hned po použití.
+        let cat = unsafe { CryptCATAdminEnumCatalogFromHash(admin, &hash, None, None) };
+        if cat == 0 {
+            return None;
+        }
+        let mut info = CATALOG_INFO {
+            cbStruct: std::mem::size_of::<CATALOG_INFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: `cat` je platný kontext z EnumCatalogFromHash.
+        let out = if unsafe { CryptCATCatalogInfoFromContext(cat, &mut info, 0) }.is_ok() {
+            verify(path, file, admin, &info, &mut hash)
+        } else {
+            None
+        };
+        // SAFETY: párové uvolnění kontextu katalogu.
+        unsafe {
+            let _ = CryptCATAdminReleaseCatalogContext(admin, cat, 0);
+        }
+        out
+    }
+
+    /// WinVerifyTrust v režimu katalogu; při úspěchu jméno toho, kdo
+    /// katalog podepsal.
+    fn verify(
+        path: &Path,
+        file: HANDLE,
+        admin: isize,
+        info: &CATALOG_INFO,
+        hash: &mut [u8],
+    ) -> Option<String> {
+        // Člen katalogu se adresuje otiskem jako hex řetězcem.
+        let tag: Vec<u16> = hash
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<String>()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let wpath: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let ci = WINTRUST_CATALOG_INFO {
+            cbStruct: std::mem::size_of::<WINTRUST_CATALOG_INFO>() as u32,
+            dwCatalogVersion: 0,
+            pcwszCatalogFilePath: PCWSTR(info.wszCatalogFile.as_ptr()),
+            pcwszMemberTag: PCWSTR(tag.as_ptr()),
+            pcwszMemberFilePath: PCWSTR(wpath.as_ptr()),
+            hMemberFile: file,
+            pbCalculatedFileHash: hash.as_mut_ptr(),
+            cbCalculatedFileHash: hash.len() as u32,
+            pcCatalogContext: std::ptr::null_mut(),
+            hCatAdmin: admin,
+        };
+        // SAFETY: všechny ukazatele v `ci` míří do bufferů, které žijí
+        // do konce funkce; VERIFY naplní stav, párové CLOSE ho uvolní
+        // a ze stavu se čte jen mezi nimi.
+        unsafe {
+            let mut data = WINTRUST_DATA {
+                cbStruct: std::mem::size_of::<WINTRUST_DATA>() as u32,
+                dwUIChoice: WTD_UI_NONE,
+                fdwRevocationChecks: WTD_REVOKE_NONE,
+                dwUnionChoice: WTD_CHOICE_CATALOG,
+                Anonymous: WINTRUST_DATA_0 {
+                    pCatalog: &ci as *const _ as *mut _,
+                },
+                dwStateAction: WTD_STATEACTION_VERIFY,
+                ..Default::default()
+            };
+            let mut action: GUID = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+            let status = WinVerifyTrust(
+                HWND::default(),
+                &mut action,
+                &mut data as *mut _ as *mut c_void,
+            );
+            let subject = if status == 0 {
+                signer_of_state(data.hWVTStateData)
+            } else {
+                None
+            };
+            data.dwStateAction = WTD_STATEACTION_CLOSE;
+            WinVerifyTrust(
+                HWND::default(),
+                &mut action,
+                &mut data as *mut _ as *mut c_void,
+            );
+            subject
+        }
+    }
+
+    /// SAFETY: `state` je hWVTStateData z úspěšného VERIFY, ještě před CLOSE.
+    unsafe fn signer_of_state(state: HANDLE) -> Option<String> {
+        let prov = WTHelperProvDataFromStateData(state);
+        if prov.is_null() {
+            return None;
+        }
+        let sgnr = WTHelperGetProvSignerFromChain(prov, 0, false, 0);
+        if sgnr.is_null() {
+            return None;
+        }
+        let cert = WTHelperGetProvCertFromChain(sgnr, 0);
+        if cert.is_null() || (*cert).pCert.is_null() {
+            return None;
+        }
+        let pcert = (*cert).pCert;
+        let len = CertGetNameStringW(pcert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, None, None);
+        if len <= 1 {
+            return None;
+        }
+        let mut name = vec![0u16; len as usize];
+        CertGetNameStringW(
+            pcert,
+            CERT_NAME_SIMPLE_DISPLAY_TYPE,
+            0,
+            None,
+            Some(&mut name),
+        );
+        let end = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+        let s = String::from_utf16_lossy(&name[..end]).trim().to_string();
+        (!s.is_empty()).then_some(s)
+    }
+}
+
 /// Extrakce subjektu embedded Authenticode podpisu přes CryptQueryObject.
 mod signer {
     use std::os::windows::ffi::OsStrExt;
@@ -218,5 +429,37 @@ mod signer {
         };
         let _ = CertFreeCertificateContext(Some(cert));
         subject
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Systémový soubor bez embedded podpisu se pozná podle katalogu
+    // podepsaného Microsoftem; nepodepsaný soubor v katalogu není.
+    #[test]
+    fn catalog_signer_tells_system_file_from_unsigned() {
+        let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let mut nalezeno = 0;
+        for jmeno in ["svchost.exe", "notepad.exe", "cmd.exe", "kernel32.dll"] {
+            let p = Path::new(&sysroot).join("System32").join(jmeno);
+            if !p.exists() || signer::embedded_subject(&p).is_some() {
+                continue;
+            }
+            let s = catalog_signer(&p);
+            assert!(
+                s.as_deref().is_some_and(|s| s.contains("Microsoft")),
+                "{jmeno}: {s:?}"
+            );
+            nalezeno += 1;
+        }
+        assert!(nalezeno > 0, "žádný katalogově podepsaný soubor k ověření");
+
+        let tmp = std::env::temp_dir().join(format!("ws-trust-{}.exe", std::process::id()));
+        std::fs::write(&tmp, b"MZ neni to program").unwrap();
+        let s = catalog_signer(&tmp);
+        let _ = std::fs::remove_file(&tmp);
+        assert!(s.is_none(), "{s:?}");
     }
 }

@@ -30,6 +30,62 @@ pub enum Error {
     },
     #[error("nelze spustit watcher configu: {0}")]
     Watch(#[from] notify::Error),
+    #[error("{0}")]
+    Rejected(String),
+}
+
+/// Ověří, že cesta pro databázi je absolutní cesta na místním pevném
+/// disku (`X:\…`), a vrátí ji.
+///
+/// Zapisuje do ní služba pod účtem SYSTEM. Relativní cesta se dřív
+/// vyhodnotila vůči pracovnímu adresáři služby (C:\Windows\System32),
+/// síťová (UNC, namapovaný disk) by databázi s WAL dala na místo, kde
+/// SQLite nemá spolehlivé zamykání a které zmizí s výpadkem sítě,
+/// a tvar `\\?\` / `\\.\` obchází běžné zpracování cest. `is_fixed`
+/// je oddělené kvůli testům — skutečnou odpověď dává GetDriveTypeW.
+fn validate_db_dir(d: &str, is_fixed: impl Fn(char) -> bool) -> Result<PathBuf, String> {
+    use std::path::{Component, Prefix};
+    let p = PathBuf::from(d);
+    let mut comps = p.components();
+    let letter = match comps.next() {
+        Some(Component::Prefix(pre)) => match pre.kind() {
+            Prefix::Disk(l) => (l as char).to_ascii_uppercase(),
+            _ => {
+                return Err(format!(
+                    "{d}: databáze může ležet jen na místním disku (cesta typu D:\\Data), ne na síťové cestě"
+                ))
+            }
+        },
+        _ => {
+            return Err(format!(
+                "{d}: zadej celou cestu včetně písmene disku (například D:\\Data)"
+            ))
+        }
+    };
+    if !p.is_absolute() {
+        return Err(format!(
+            "{d}: zadej celou cestu včetně písmene disku (například D:\\Data)"
+        ));
+    }
+    // `..` by z na pohled nevinné cesty udělal jinou; poctivá cesta ho
+    // nepotřebuje.
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(format!("{d}: cesta nesmí obsahovat „..\""));
+    }
+    if !is_fixed(letter) {
+        return Err(format!(
+            "{letter}: není místní pevný disk — databáze nemůže ležet na síťovém, \
+             vyměnitelném ani virtuálním svazku"
+        ));
+    }
+    Ok(p)
+}
+
+/// Je svazek s tímto písmenem místní pevný disk (DRIVE_FIXED)?
+fn is_fixed_drive(letter: char) -> bool {
+    win_sys::volumes::volumes()
+        .iter()
+        .any(|v| v.letter.eq_ignore_ascii_case(&letter) && v.fixed)
 }
 
 /// Vzor config.toml zapisovaný při prvním startu.
@@ -55,7 +111,7 @@ retention_interval_s = 60
 pub fn set_db_dir(cfg_path: &Path, dir: &str) -> Result<(), Error> {
     let d = dir.trim();
     if !d.is_empty() {
-        let p = PathBuf::from(d);
+        let p = validate_db_dir(d, is_fixed_drive).map_err(Error::Rejected)?;
         std::fs::create_dir_all(&p).map_err(|source| Error::Io {
             path: p.clone(),
             source,
@@ -182,4 +238,32 @@ pub fn watch(
     let dir = path.parent().unwrap_or(path);
     watcher.watch(dir, notify::RecursiveMode::NonRecursive)?;
     Ok(watcher)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Jen C: a D: jsou „pevné" — ostatní písmena hrají síťový/USB disk.
+    fn pevne(l: char) -> bool {
+        matches!(l, 'C' | 'D')
+    }
+
+    // Služba (SYSTEM) smí zapisovat jen do absolutní cesty na místním
+    // pevném disku; relativní cesta by mířila do System32.
+    #[test]
+    fn db_dir_jen_absolutni_na_pevnem_disku() {
+        assert!(validate_db_dir(r"D:\Data\Winsent", pevne).is_ok());
+        assert!(validate_db_dir(r"d:\data", pevne).is_ok());
+        assert!(validate_db_dir(r"Data\Winsent", pevne).is_err());
+        assert!(validate_db_dir(r"..\..\Users\Public", pevne).is_err());
+        assert!(validate_db_dir(r"\Data", pevne).is_err());
+        assert!(validate_db_dir(r"D:Data", pevne).is_err());
+        assert!(validate_db_dir(r"\\server\share\db", pevne).is_err());
+        assert!(validate_db_dir(r"\\?\D:\Data", pevne).is_err());
+        assert!(validate_db_dir(r"\\?\UNC\server\share", pevne).is_err());
+        assert!(validate_db_dir(r"\\.\D:\Data", pevne).is_err());
+        assert!(validate_db_dir(r"Z:\Data", pevne).is_err());
+        assert!(validate_db_dir(r"D:\Data\..\..\Windows", pevne).is_err());
+    }
 }

@@ -4,9 +4,6 @@
 
 use core_types::proc::{ProcRow, SystemSnapshot};
 
-/// Zpráva pro zapisovací vlákno store — vzorky i události jdou jedním
-/// kanálem, aby DB měla jediného zapisovatele.
-
 /// Jedno sezení použití oprávnění pro zápis do databáze (v9D).
 #[derive(Debug, Clone)]
 pub struct PermUseEntry {
@@ -15,8 +12,31 @@ pub struct PermUseEntry {
     pub start_ts: i64,
     /// `None` = aplikace ji drží právě teď.
     pub stop_ts: Option<i64>,
+    /// Relace opravdu běží: registr ji hlásí otevřenou A aplikace běží.
+    pub in_use: bool,
 }
 
+impl PermUseEntry {
+    /// Okamžik, do kdy relaci prokazatelně vidíme (`seen_ts` v DB).
+    ///
+    /// Na „teď" se posouvá jen u živé relace. Zaseknutý záznam (Windows
+    /// nedopsaly konec: výpadek napájení, BSOD, pád aplikace) dřív
+    /// dostával `seen = teď` s každou minutovou dávkou — otevřená
+    /// relace se počítá do `seen_ts`, takže u aplikace naskočilo
+    /// „Posledních 30 dnů: 720 h" mikrofonu a dál rostlo. Neživá relace
+    /// bez konce proto posílá svůj začátek: MAX v zápisu zachová, co
+    /// jsme dřív viděli živě, a nic nového nepřičte.
+    pub fn seen_ts(&self, now: i64) -> i64 {
+        if self.in_use {
+            now
+        } else {
+            self.stop_ts.unwrap_or(self.start_ts)
+        }
+    }
+}
+
+/// Zpráva pro zapisovací vlákno store — vzorky i události jdou jedním
+/// kanálem, aby DB měla jediného zapisovatele.
 pub enum StoreMsg {
     Tick(i64, Vec<ProcRow>, SystemSnapshot),
     /// Výsledek skenu inventáře (v4) — nahradí obsah app/app_path.
@@ -199,4 +219,28 @@ pub fn crash_detail(exit_code: u32, name: &str, app: &str) -> String {
 /// Minimální JSON escape pro řetězce do detail polí.
 pub fn json_str(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn relace(in_use: bool, stop_ts: Option<i64>) -> PermUseEntry {
+        PermUseEntry {
+            app: "C:#app.exe".into(),
+            capability: "microphone".into(),
+            start_ts: 1_000,
+            stop_ts,
+            in_use,
+        }
+    }
+
+    // Zaseknutá relace (bez konce, aplikace neběží) se nesmí natahovat
+    // k „teď" — jinak by se jí do součtu načítaly hodiny až stovky hodin.
+    #[test]
+    fn seen_ts_posouva_jen_zivou_relaci() {
+        assert_eq!(relace(true, None).seen_ts(9_000), 9_000);
+        assert_eq!(relace(false, None).seen_ts(9_000), 1_000);
+        assert_eq!(relace(false, Some(2_000)).seen_ts(9_000), 2_000);
+    }
 }

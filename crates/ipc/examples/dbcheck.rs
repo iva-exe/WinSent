@@ -56,6 +56,49 @@ fn main() {
         }
     }
 
+    // Přesun databáze smí jen elevovaný správce: služba běží jako SYSTEM
+    // a cesta od klienta by jí jinak dovolila zakládat a přepisovat
+    // soubory, kam běžný uživatel nesmí. Brána běžně běží neelevovaně —
+    // pak se ověřuje, že služba přesun ODMÍTNE a nic nezmění.
+    if !proces_je_elevovany_spravce() {
+        let docasna = std::env::temp_dir().join("winsent-dbcheck");
+        match ipc::client::set_db_dir(docasna.display().to_string()) {
+            Err(e) if e.to_string().contains("správce") => {
+                println!("  neelevovanému klientovi odmítnuto správně: {e}")
+            }
+            Err(e) => {
+                println!("CHYBA: odmítnuto, ale z jiného důvodu: {e}");
+                fails += 1;
+            }
+            Ok(()) => {
+                println!("CHYBA: služba přijala přesun databáze od neelevovaného klienta");
+                fails += 1;
+                // Hned vrátit — jinak by se databáze při příštím startu
+                // služby přestěhovala do dočasné složky (stará služba
+                // přání přijímá od kohokoli).
+                if let Err(e) = ipc::client::set_db_dir(start.wanted_dir.clone()) {
+                    println!("CHYBA: návrat přání selhal: {e}");
+                }
+            }
+        }
+        match ipc::client::query_db_location() {
+            Ok(k) if k.wanted_dir == start.wanted_dir => println!("  nastavení beze změny"),
+            Ok(k) => {
+                println!("CHYBA: přání se změnilo na {:?}", k.wanted_dir);
+                fails += 1;
+            }
+            Err(e) => {
+                println!("CHYBA: kontrolní dotaz selhal: {e}");
+                fails += 1;
+            }
+        }
+        println!("\nBRÁNA dbcheck: {}", if fails == 0 { "PASS" } else { "FAIL" });
+        if fails > 0 {
+            std::process::exit(1);
+        }
+        return;
+    }
+
     // Platná složka se musí přijmout a ohlásit jako čekající přesun.
     let docasna = std::env::temp_dir().join("winsent-dbcheck");
     let cesta = docasna.display().to_string();
@@ -109,4 +152,24 @@ fn main() {
     if fails > 0 {
         std::process::exit(1);
     }
+}
+
+/// Členství ve správcích pro tento proces (TRUE jen pro elevovaný token).
+fn proces_je_elevovany_spravce() -> bool {
+    use windows::Win32::Security::{
+        CheckTokenMembership, CreateWellKnownSid, WinBuiltinAdministratorsSid, PSID,
+    };
+    let mut sid = [0u8; 68];
+    let mut len = sid.len() as u32;
+    let mut member = windows::core::BOOL(0);
+    // SAFETY: buffery vlastníme; None = token vlákna (zde primární).
+    unsafe {
+        if CreateWellKnownSid(WinBuiltinAdministratorsSid, None, Some(PSID(sid.as_mut_ptr() as _)), &mut len).is_err() {
+            return false;
+        }
+        if CheckTokenMembership(None, PSID(sid.as_mut_ptr() as _), &mut member).is_err() {
+            return false;
+        }
+    }
+    member.as_bool()
 }

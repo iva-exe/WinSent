@@ -18,28 +18,57 @@ pub fn system_uptime_s() -> u64 {
 
 /// Takty CPU: (aktuální průměr MHz, max MHz) přes CallNtPowerInformation
 /// (SPEC kap. 15.2 stupeň 3 — dostupné na 100 % strojů).
+///
+/// `n_cpus` je jen odhad, stejně jako u `core_times`: dotaz chce buffer
+/// na VŠECHNA logická jádra, kdežto `available_parallelism()` vrací na
+/// strojích s víc než 64 jádry jen jednu skupinu procesorů. Menší buffer
+/// skončil na STATUS_BUFFER_TOO_SMALL a takty zůstaly trvale 0 MHz.
 pub fn cpu_clocks(n_cpus: usize) -> Result<(u32, u32), Error> {
-    let mut info = vec![PROCESSOR_POWER_INFORMATION::default(); n_cpus];
-    // SAFETY: výstupní pole má přesnou velikost dle kontraktu API.
-    let status = unsafe {
-        CallNtPowerInformation(
-            windows::Win32::System::Power::ProcessorInformation,
-            None,
-            0,
-            Some(info.as_mut_ptr() as *mut _),
-            (info.len() * std::mem::size_of::<PROCESSOR_POWER_INFORMATION>()) as u32,
-        )
-    };
-    if status.0 != 0 {
+    use windows::Win32::System::Threading::{GetActiveProcessorCount, ALL_PROCESSOR_GROUPS};
+    const STATUS_BUFFER_TOO_SMALL: i32 = 0xC000_0023_u32 as i32;
+    // SAFETY: čisté čtení počtu procesorů; 0 = selhání.
+    let all = unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) } as usize;
+    let mut want = n_cpus.max(all).max(1);
+    let mut info = Vec::new();
+    let mut status = 0;
+    // API potřebnou délku nevrací — zvětšuje se naslepo, nanejvýš pár
+    // pokusů (2048 jader nemá ani ten největší server).
+    for _ in 0..6 {
+        info = vec![PROCESSOR_POWER_INFORMATION::default(); want];
+        // SAFETY: délka bufferu odpovídá alokovanému poli.
+        status = unsafe {
+            CallNtPowerInformation(
+                windows::Win32::System::Power::ProcessorInformation,
+                None,
+                0,
+                Some(info.as_mut_ptr() as *mut _),
+                (info.len() * std::mem::size_of::<PROCESSOR_POWER_INFORMATION>()) as u32,
+            )
+        }
+        .0;
+        if status != STATUS_BUFFER_TOO_SMALL || want >= 2048 {
+            break;
+        }
+        want = (want * 2).min(2048);
+    }
+    if status != 0 {
         return Err(Error::Win32 {
             call: "CallNtPowerInformation(ProcessorInformation)",
-            code: status.0,
+            code: status,
         });
     }
-    let cur =
-        (info.iter().map(|p| p.CurrentMhz as u64).sum::<u64>() / info.len().max(1) as u64) as u32;
-    let max = info.iter().map(|p| p.MaxMhz).max().unwrap_or(0);
-    Ok((cur, max))
+    Ok(clocks_from(&info))
+}
+
+/// Průměrný a maximální takt jen z vyplněných záznamů. Buffer může být
+/// větší než počet jader (zvětšuje se naslepo) a nevyplněné nuly by
+/// stáhly průměr dolů.
+fn clocks_from(info: &[PROCESSOR_POWER_INFORMATION]) -> (u32, u32) {
+    let filled: Vec<&PROCESSOR_POWER_INFORMATION> = info.iter().filter(|p| p.MaxMhz != 0).collect();
+    let cur = (filled.iter().map(|p| p.CurrentMhz as u64).sum::<u64>()
+        / filled.len().max(1) as u64) as u32;
+    let max = filled.iter().map(|p| p.MaxMhz).max().unwrap_or(0);
+    (cur, max)
 }
 
 /// Kumulativní systémové časy v jednotkách 100 ns (od bootu).
@@ -184,4 +213,30 @@ pub fn memory_status_mb() -> Result<(u64, u64), Error> {
     let total = mem.ullTotalPhys / (1024 * 1024);
     let used = (mem.ullTotalPhys - mem.ullAvailPhys) / (1024 * 1024);
     Ok((used, total))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Nevyplněné záznamy (buffer zvětšený naslepo) nesmí stáhnout průměr.
+    #[test]
+    fn takty_jen_z_vyplnenych_zaznamu() {
+        let p = |cur: u32, max: u32| PROCESSOR_POWER_INFORMATION {
+            CurrentMhz: cur,
+            MaxMhz: max,
+            ..Default::default()
+        };
+        let info = [p(3000, 4000), p(2000, 4000), p(0, 0), p(0, 0)];
+        assert_eq!(clocks_from(&info), (2500, 4000));
+        assert_eq!(clocks_from(&[]), (0, 0));
+    }
+
+    #[test]
+    fn takty_se_prectou_i_s_malym_odhadem() {
+        // Odhad 1 jádro: dřív STATUS_BUFFER_TOO_SMALL na každém stroji
+        // s víc jádry.
+        let (_, max) = cpu_clocks(1).expect("takty musí jít přečíst");
+        assert!(max > 0);
+    }
 }

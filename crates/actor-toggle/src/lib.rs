@@ -83,13 +83,14 @@ fn apply_startup(id: &str, on: bool) -> Result<String, String> {
         return Err("neplatný identifikátor".into());
     };
     match source {
-        "run_user" | "run_machine" | "folder_user" | "folder_common" => {
-            let machine = source == "run_machine";
-            let sub = if source.starts_with("run") {
-                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
-            } else {
-                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder"
-            };
+        "run_user" | "run_machine" | "run_machine32" | "folder_user" | "folder_common" => {
+            // Klíč StartupApproved bere zápis od kolektoru, který stav
+            // čte. Vlastní kopie mapování se rozešla s Windows: 32bitové
+            // položky (Run32) a společná složka (HKLM) se zapisovaly
+            // jinam, než kam Windows koukají, a přepnutí nic neudělalo.
+            let (machine, sub) = collector_boot::Source::parse(source)
+                .and_then(collector_boot::approved_key)
+                .ok_or_else(|| format!("zdroj {source} nelze přepínat"))?;
             // 12 bajtů: [0] = 0x02 povoleno / 0x03 zakázáno,
             // [4..12] = FILETIME okamžiku zákazu (0 u povolení).
             let mut data = [0u8; 12];
@@ -128,13 +129,9 @@ fn apply_startup(id: &str, on: bool) -> Result<String, String> {
 fn read_startup_state(id: &str) -> Option<bool> {
     let (source, name) = id.split_once('|')?;
     match source {
-        "run_user" | "run_machine" | "folder_user" | "folder_common" => {
-            let machine = source == "run_machine";
-            let sub = if source.starts_with("run") {
-                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
-            } else {
-                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder"
-            };
+        "run_user" | "run_machine" | "run_machine32" | "folder_user" | "folder_common" => {
+            let (machine, sub) =
+                collector_boot::Source::parse(source).and_then(collector_boot::approved_key)?;
             let (root, sub) = user_scope(machine, sub).ok()?;
             // Chybí-li hodnota, položka je povolená.
             Some(

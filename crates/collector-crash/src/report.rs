@@ -97,9 +97,42 @@ pub fn exception_human(code: &str) -> Option<&'static str> {
 
 /// Kdo je viník, řečeno pro člověka.
 ///
-/// `drivers` je soupis ovladačů (jméno souboru INF nebo modulu → popis),
+/// `drivers` je soupis ovladačů (publikované jméno INF → popis),
 /// aby šlo říct „ovladač grafiky od NVIDIA" místo `nvwgf2umx.dll`.
 pub fn culprit_human(c: &AppCrash, drivers: &[(String, String)]) -> String {
+    let inf = driver_package(&c.module_path).and_then(|pkg| published_inf(&pkg));
+    culprit_with(c, drivers, inf.as_deref())
+}
+
+/// Balíček ovladače, ze kterého modul pochází — jméno složky
+/// v `…\DriverStore\FileRepository\<balíček>\…`
+/// (např. `nv_dispi.inf_amd64_2c1e…`).
+///
+/// Uživatelské části ovladačů (nvwgf2umx.dll, atidxx64.dll, igd10iumd64.dll)
+/// se od Windows 10 nahrávají přímo z úložiště ovladačů, takže cesta
+/// modulu je spolehlivý doklad, ke kterému balíčku patří.
+fn driver_package(module_path: &str) -> Option<String> {
+    let lc = module_path.to_ascii_lowercase();
+    const ZNACKA: &str = r"\driverstore\filerepository\";
+    let i = lc.find(ZNACKA)? + ZNACKA.len();
+    let pkg = lc[i..].split('\\').next()?;
+    // Jméno balíčku jde do cesty v registru — nic, co by z ní utíkalo.
+    (!pkg.is_empty() && !pkg.contains("..")).then(|| pkg.to_string())
+}
+
+/// Publikované jméno INF (`oem34.inf`) balíčku z databáze ovladačů.
+/// Soupis ovladačů nese právě tohle jméno, ne původní `nv_dispi.inf`.
+fn published_inf(pkg: &str) -> Option<String> {
+    win_sys::registry::read_string(
+        win_sys::registry::HKEY_LOCAL_MACHINE,
+        &format!(r"SYSTEM\DriverDatabase\DriverPackages\{pkg}"),
+        "",
+    )
+}
+
+/// Jádro `culprit_human` bez sahání do registru (kvůli testům):
+/// `inf` je publikované jméno INF balíčku, ze kterého modul pochází.
+fn culprit_with(c: &AppCrash, drivers: &[(String, String)], inf: Option<&str>) -> String {
     let m = c.module.to_ascii_lowercase();
     let app = c.app.to_ascii_lowercase();
 
@@ -129,13 +162,19 @@ pub fn culprit_human(c: &AppCrash, drivers: &[(String, String)]) -> String {
             c.module, c.app
         );
     }
-    // Ovladač: když jméno modulu sedí na něco ze soupisu ovladačů,
-    // umíme říct od koho je a jak starý.
-    let stem = m.trim_end_matches(".dll").trim_end_matches(".sys");
-    if let Some((_, popis)) = drivers
-        .iter()
-        .find(|(name, _)| !stem.is_empty() && name.to_ascii_lowercase().contains(stem))
-    {
+    // Ovladač: když modul pochází z balíčku ovladače ze soupisu, umíme
+    // říct od koho je a jak starý.
+    //
+    // Dřív se jméno modulu hledalo jako podřetězec jména INF. Jenže
+    // doinstalované ovladače mají INF publikovaný jako `oemNN.inf`,
+    // takže nvwgf2umx.dll nesedl nikdy, a naopak krátké jméno sedlo
+    // náhodou: hid.dll se přisoudil ovladači z hidserv.inf. Teď se
+    // páruje přes balíček v úložišti ovladačů, a to celým jménem.
+    if let Some((_, popis)) = inf.and_then(|inf| {
+        drivers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(inf))
+    }) {
         return format!(
             "Pád nastal v modulu {}, který patří k tomuhle ovladači: {popis}. \
              Když se to opakuje, stojí za pokus jeho aktualizace.",
@@ -212,16 +251,41 @@ mod tests {
         assert!(t.contains("hra.exe"), "{t}");
     }
 
-    // Když modul sedí na ovladač, řekne se od koho je.
+    // Když modul pochází z balíčku ovladače, řekne se od koho je.
+    // Soupis nese publikované jméno (oem34.inf), ne jméno modulu.
     #[test]
     fn driver_module_is_matched_to_its_driver() {
-        let drv = vec![(
-            "nvwgf2umx".to_string(),
-            "grafika NVIDIA, verze 551.23 z 2. 2. 2024".to_string(),
-        )];
-        let t = culprit_human(&crash("hra.exe", "nvwgf2umx.dll", "c0000005"), &drv);
+        let drv = vec![
+            ("hidserv.inf".to_string(), "HID od Microsoftu".to_string()),
+            (
+                "oem34.inf".to_string(),
+                "grafika NVIDIA, verze 551.23 z 2. 2. 2024".to_string(),
+            ),
+        ];
+        let mut c = crash("hra.exe", "nvwgf2umx.dll", "c0000005");
+        c.module_path =
+            r"C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_2c1e\nvwgf2umx.dll"
+                .into();
+        assert_eq!(
+            driver_package(&c.module_path).as_deref(),
+            Some("nv_dispi.inf_amd64_2c1e")
+        );
+        let t = culprit_with(&c, &drv, Some("oem34.inf"));
         assert!(t.contains("NVIDIA"), "{t}");
         assert!(t.contains("551.23"), "{t}");
+    }
+
+    // Krátké jméno modulu nesmí sednout na podřetězec cizího INF:
+    // hid.dll s ovladačem z hidserv.inf nemá nic společného.
+    #[test]
+    fn module_name_is_not_matched_by_substring() {
+        let drv = vec![("hidserv.inf".to_string(), "HID od Microsoftu".to_string())];
+        let mut c = crash("hra.exe", "hid.dll", "c0000005");
+        c.module_path = r"C:\WINDOWS\System32\hid.dll".into();
+        assert!(driver_package(&c.module_path).is_none());
+        let t = culprit_with(&c, &drv, None);
+        assert!(!t.contains("ovladači"), "{t}");
+        assert!(t.contains("doplněk nebo knihovna"), "{t}");
     }
 
     // Shrnutí musí být jedna srozumitelná věta.

@@ -21,7 +21,8 @@
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::System::Memory::{
-    MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_READ,
+    MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, VirtualQuery, FILE_MAP_READ,
+    MEMORY_BASIC_INFORMATION,
 };
 
 /// Odkud teplota přišla. Jde do UI vedle čísla — uživatel má vždycky
@@ -106,6 +107,31 @@ const HDR_READING_COUNT: usize = 0x28;
 const READING_TYPE_TEMP: u32 = 1;
 /// Popisek v prvku měření (`szLabelOrig`, 128 B).
 const READ_LABEL: usize = 12;
+/// Hodnota měření (`Value`, double) v prvku: za tReading, dwSensorIndex,
+/// dwReadingID (3×4 B), szLabelOrig[128], szLabelUser[128] a szUnit[16]
+/// pod #pragma pack(1), tedy 12 + 128 + 128 + 16 = 284. Pevný offset,
+/// ne "velikost prvku − 32": novější HWiNFO má prvek 460 B a za čtyřmi
+/// double ještě utfLabelUser[128] a utfUnit[16] — odečet od konce pak
+/// mířil doprostřed popisku a teplota z HWiNFO tiše nevycházela.
+const READ_VALUE: usize = READ_LABEL + 128 + 128 + 16;
+/// Konec hlavičky, kterou čteme (`HDR_READING_COUNT` + 4).
+const HDR_END: usize = HDR_READING_COUNT + 4;
+
+/// Vejdou se všechny prvky měření, jak je popisuje hlavička, do
+/// namapované oblasti? Hlavičce se dřív věřilo naslepo — nekonzistentní
+/// nebo podvržená sekce znamenala čtení za koncem pohledu a access
+/// violation, která shodí celou službu (není to panic, nic ji nechytí).
+/// Prvek musí pojmout popisek (12 + 128 B) i čtyři `double` na konci,
+/// jinak by čtení přesahovalo do sousedního prvku nebo za konec dat.
+fn readings_fit(region: usize, off: usize, size: usize, count: usize) -> bool {
+    if size < READ_VALUE + 32 || count == 0 || count >= 10_000 {
+        return false;
+    }
+    count
+        .checked_mul(size)
+        .and_then(|n| n.checked_add(off))
+        .is_some_and(|end| end <= region)
+}
 
 /// Teplota CPU z HWiNFO, když uživatel má zapnutou sdílenou paměť.
 fn hwinfo_cpu_temp() -> Option<f32> {
@@ -124,17 +150,28 @@ fn hwinfo_cpu_temp() -> Option<f32> {
         }
         let base = view.Value as *const u8;
         let rd = |off: usize| -> u32 { std::ptr::read_unaligned(base.add(off) as *const u32) };
+        // Skutečná velikost pohledu (zaokrouhlená na stránky — i to je
+        // čitelná paměť). Hlavička sama o sobě nic nezaručuje.
+        let mut mbi = MEMORY_BASIC_INFORMATION::default();
+        let region = if VirtualQuery(
+            Some(view.Value as *const _),
+            &mut mbi,
+            std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+        ) == 0
+        {
+            0
+        } else {
+            mbi.RegionSize
+        };
 
         let mut out = None;
         // "HWiS" — bez podpisu tomu nevěříme.
-        if rd(HDR_SIGNATURE) == u32::from_le_bytes(*b"HWiS") {
+        if region >= HDR_END && rd(HDR_SIGNATURE) == u32::from_le_bytes(*b"HWiS") {
             let off = rd(HDR_READING_OFFSET) as usize;
             let size = rd(HDR_READING_SIZE) as usize;
             let count = rd(HDR_READING_COUNT) as usize;
-            // Value je první ze čtyř `double` na konci prvku — offset
-            // se dopočítá z velikosti, ať nezáleží na zarovnání.
-            if size > 32 + READ_LABEL && count > 0 && count < 10_000 {
-                let value_off = size - 32;
+            if readings_fit(region, off, size, count) {
+                let value_off = READ_VALUE;
                 let mut best: Option<f32> = None;
                 for i in 0..count {
                     let e = off + i * size;
@@ -184,6 +221,14 @@ unsafe fn cstr(ptr: *const u8, max: usize) -> String {
 
 // ── 2. LibreHardwareMonitor / OpenHardwareMonitor přes WMI ─────────
 
+/// Desetinné číslo z WMI řetězce. wmi::get_prop převádí float na text
+/// podle lokalizace účtu — služba běží jako SYSTEM a ten má na české
+/// instalaci desetinnou čárku („45,875“), na které `f32::from_str`
+/// selže. Bez téhle pojistky LHM na českých Windows nikdy neprošel.
+fn parse_wmi_float(s: &str) -> Option<f32> {
+    s.trim().replace(',', ".").parse().ok()
+}
+
 /// Teplota CPU z LHM/OHM, když uživatel jeden z nich má spuštěný.
 fn lhm_cpu_temp() -> Option<f32> {
     for ns in [r"root\LibreHardwareMonitor", r"root\OpenHardwareMonitor"] {
@@ -194,8 +239,14 @@ fn lhm_cpu_temp() -> Option<f32> {
         );
         let mut best: Option<f32> = None;
         for r in &rows {
-            let name = r.get("Name")?.to_ascii_lowercase();
-            let v: f32 = r.get("Value")?.parse().ok()?;
+            // Nečitelný řádek přeskočit — `?` tu dřív ukončil celou
+            // funkci a s ní i druhý jmenný prostor.
+            let Some(name) = r.get("Name").map(|s| s.to_ascii_lowercase()) else {
+                continue;
+            };
+            let Some(v) = r.get("Value").and_then(|s| parse_wmi_float(s)) else {
+                continue;
+            };
             if !(1.0..=125.0).contains(&v) {
                 continue;
             }
@@ -257,6 +308,30 @@ mod tests {
             ..t
         };
         assert!(!t.throttling());
+    }
+
+    // SYSTEM na české instalaci formátuje float s čárkou.
+    #[test]
+    fn wmi_float_s_desetinnou_carkou() {
+        assert_eq!(parse_wmi_float("45,875"), Some(45.875));
+        assert_eq!(parse_wmi_float("45.5"), Some(45.5));
+        assert_eq!(parse_wmi_float(" 45 "), Some(45.0));
+        assert_eq!(parse_wmi_float("n/a"), None);
+    }
+
+    // Hlavička HWiNFO, která slibuje víc prvků, než sekce obsahuje,
+    // se odmítne místo čtení za koncem pohledu.
+    #[test]
+    fn hwinfo_hlavicka_nesmi_prerust_mapovani() {
+        // Skutečné rozložení: 316 B na prvek.
+        assert!(readings_fit(4096 * 4, 0x2C, 316, 40));
+        // 9999 prvků v 4 KiB sekci.
+        assert!(!readings_fit(4096, 0x2C, 316, 9999));
+        // Prvek menší než popisek + čtyři double.
+        assert!(!readings_fit(1 << 20, 0x2C, 45, 10));
+        // Přetečení násobení/sčítání nesmí projít.
+        assert!(!readings_fit(usize::MAX, usize::MAX - 10, 316, 1));
+        assert!(!readings_fit(4096, 0x2C, 316, 0));
     }
 
     // Kaskáda vždy něco vrátí a nikdy si teplotu nevymyslí: buď je

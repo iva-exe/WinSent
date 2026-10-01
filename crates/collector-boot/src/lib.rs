@@ -35,8 +35,16 @@ pub fn shutdown(_state: State) {}
 pub enum Source {
     /// HKCU\…\Run
     RunUser,
-    /// HKLM\…\Run (+ Wow6432Node)
+    /// HKLM\…\Run
     RunMachine,
+    /// HKLM\SOFTWARE\WOW6432Node\…\Run — 32bitové položky. Windows jim
+    /// vedou stav v `StartupApproved\Run32`, ne v `…\Run`.
+    RunMachine32,
+    /// HKCU\…\RunOnce — spustí se jednou a Windows hodnotu smažou.
+    /// StartupApproved pro ně neexistuje, přepínat nejdou.
+    RunOnceUser,
+    /// HKLM\…\RunOnce (viz `RunOnceUser`).
+    RunOnceMachine,
     /// Startup složka uživatele
     FolderUser,
     /// Startup složka pro všechny
@@ -53,6 +61,9 @@ impl Source {
         match self {
             Source::RunUser => "run_user",
             Source::RunMachine => "run_machine",
+            Source::RunMachine32 => "run_machine32",
+            Source::RunOnceUser => "run_once_user",
+            Source::RunOnceMachine => "run_once_machine",
             Source::FolderUser => "folder_user",
             Source::FolderCommon => "folder_common",
             Source::Task => "task",
@@ -68,6 +79,9 @@ impl Source {
         Some(match s {
             "run_user" => Source::RunUser,
             "run_machine" => Source::RunMachine,
+            "run_machine32" => Source::RunMachine32,
+            "run_once_user" => Source::RunOnceUser,
+            "run_once_machine" => Source::RunOnceMachine,
             "folder_user" => Source::FolderUser,
             "folder_common" => Source::FolderCommon,
             "task" => Source::Task,
@@ -78,9 +92,14 @@ impl Source {
         })
     }
 
-    /// Jde položku přepínat? Shell rozšíření zásadně ne.
+    /// Jde položku přepínat? Shell rozšíření zásadně ne, RunOnce taky
+    /// ne — Windows u něj StartupApproved nečtou, přepnutí by nic
+    /// nezměnilo.
     pub fn toggleable(&self) -> bool {
-        !matches!(self, Source::Shell)
+        !matches!(
+            self,
+            Source::Shell | Source::RunOnceUser | Source::RunOnceMachine
+        )
     }
 }
 
@@ -109,8 +128,20 @@ pub fn scan() -> Vec<BootItem> {
     tasks(&mut out);
     services(&mut out);
     shell_hooks(&mut out);
+    dedup_ids(&mut out);
     out.sort_by_key(|i| i.name.to_lowercase());
     out
+}
+
+/// Pojistka: id musí být v seznamu jedinečné. UI ho používá jako klíč
+/// keyed `{#each}` a Svelte na duplicitě v produkčním buildu vyhodí
+/// výjimku — celá stránka Po spuštění (i dlaždice na Home) se pak
+/// přestala vykreslovat. Run klíče už jedinečnost zaručují zdrojem,
+/// tohle je jen pro případ, že ji jiný backend někdy poruší. Vyhrává
+/// první výskyt, přepnutí podle id stejně cílí jen na jednu položku.
+fn dedup_ids(items: &mut Vec<BootItem>) {
+    let mut videno = std::collections::HashSet::new();
+    items.retain(|i| videno.insert(i.id.clone()));
 }
 /// Hive přihlášeného uživatele pro čtení i zápis uživatelských položek.
 ///
@@ -127,35 +158,36 @@ pub fn user_hive() -> Option<String> {
 /// Backend 1: Run klíče (HKLM + hive uživatele, Wow6432Node, Run i RunOnce).
 fn run_keys(out: &mut Vec<BootItem>) {
     use win_sys::registry::{enum_values, HKEY_LOCAL_MACHINE, HKEY_USERS};
-    const RUNS: &[(&str, bool)] = &[
-        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", false),
-        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce", true),
+    // Každý klíč má vlastní zdroj, a tedy i vlastní id `{zdroj}|{jméno}`.
+    // Dřív měly HKLM Run, RunOnce i WOW6432Node\Run společné
+    // `run_machine` (a uživatelské Run s RunOnce `run_user`): stejné
+    // jméno hodnoty ve dvou klíčích (32 + 64bitová Java, updater v Run
+    // i RunOnce) dalo dvě položky se stejným id a UI na tom spadlo.
+    // Vlastní zdroj zároveň určuje správný StartupApproved klíč.
+    const RUN: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+    const RUN_ONCE: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce";
+    const RUN_32: &str = r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run";
+    let mut roots: Vec<(win_sys::registry::RegKey, String, Source)> = vec![
+        (HKEY_LOCAL_MACHINE, RUN.to_string(), Source::RunMachine),
         (
-            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
-            false,
+            HKEY_LOCAL_MACHINE,
+            RUN_ONCE.to_string(),
+            Source::RunOnceMachine,
         ),
+        (HKEY_LOCAL_MACHINE, RUN_32.to_string(), Source::RunMachine32),
     ];
-    let hive = user_hive();
-    let mut roots: Vec<(win_sys::registry::RegKey, String, bool)> = Vec::new();
-    for (sub, _) in RUNS {
-        roots.push((HKEY_LOCAL_MACHINE, (*sub).to_string(), true));
+    // Wow6432Node existuje jen pod HKLM.
+    if let Some(sid) = user_hive() {
+        roots.push((HKEY_USERS, format!(r"{sid}\{RUN}"), Source::RunUser));
+        roots.push((
+            HKEY_USERS,
+            format!(r"{sid}\{RUN_ONCE}"),
+            Source::RunOnceUser,
+        ));
     }
-    if let Some(sid) = hive.as_deref() {
-        for (sub, _) in RUNS {
-            if sub.contains("WOW6432Node") {
-                continue; // Wow6432Node existuje jen pod HKLM.
-            }
-            roots.push((HKEY_USERS, format!(r"{sid}\{sub}"), false));
-        }
-    }
-    for (root, sub, machine) in roots {
-        let once = sub.contains("RunOnce");
+    for (root, sub, source) in roots {
+        let once = matches!(source, Source::RunOnceUser | Source::RunOnceMachine);
         for (name, cmd) in enum_values(root, &sub) {
-            let source = if machine {
-                Source::RunMachine
-            } else {
-                Source::RunUser
-            };
             let enabled = approved_state(source, &name).unwrap_or(true);
             out.push(BootItem {
                 id: format!("{}|{name}", source.as_str()),
@@ -312,20 +344,28 @@ pub fn approved_state(source: Source, name: &str) -> Option<bool> {
 }
 
 /// Kde leží StartupApproved pro daný zdroj: (HKLM?, podklíč).
+///
+/// Mapování odpovídá tomu, co čte Explorer a Správce úloh. Dřív šly
+/// 32bitové položky z WOW6432Node do `…\Run` (Windows je vedou v
+/// `…\Run32`) a společná složka Po spuštění do hive uživatele (Windows
+/// ji vedou v HKLM). Zobrazený stav pak neodpovídal skutečnosti
+/// a přepnutí zapsalo hodnotu, kterou Windows ignorují — ověření ji
+/// přečetlo zpátky ze stejného místa a ohlásilo úspěch, položka ale
+/// startovala dál. Zápis (actor-toggle) bere klíč odsud, ať se čtení
+/// a zápis nemohou znovu rozejít.
 pub fn approved_key(source: Source) -> Option<(bool, &'static str)> {
+    const BASE_RUN: &str =
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+    const BASE_RUN32: &str =
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32";
+    const BASE_FOLDER: &str =
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder";
     match source {
-        Source::RunUser => Some((
-            false,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run",
-        )),
-        Source::RunMachine => Some((
-            true,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run",
-        )),
-        Source::FolderUser | Source::FolderCommon => Some((
-            false,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder",
-        )),
+        Source::RunUser => Some((false, BASE_RUN)),
+        Source::RunMachine => Some((true, BASE_RUN)),
+        Source::RunMachine32 => Some((true, BASE_RUN32)),
+        Source::FolderUser => Some((false, BASE_FOLDER)),
+        Source::FolderCommon => Some((true, BASE_FOLDER)),
         _ => None,
     }
 }
@@ -398,6 +438,9 @@ mod tests {
     fn shell_source_is_not_toggleable() {
         assert!(!Source::Shell.toggleable());
         assert!(Source::RunUser.toggleable());
+        assert!(Source::RunMachine32.toggleable());
+        assert!(!Source::RunOnceUser.toggleable());
+        assert!(!Source::RunOnceMachine.toggleable());
     }
 
     #[test]
@@ -405,12 +448,55 @@ mod tests {
         for s in [
             Source::RunUser,
             Source::RunMachine,
+            Source::RunMachine32,
+            Source::RunOnceUser,
+            Source::RunOnceMachine,
             Source::FolderUser,
+            Source::FolderCommon,
             Source::Task,
             Source::Service,
+            Source::Msix,
             Source::Shell,
         ] {
             assert_eq!(Source::parse(s.as_str()), Some(s));
         }
+    }
+
+    // StartupApproved tam, kde ho čtou Windows: 32bitové Run v Run32,
+    // společná složka v HKLM, RunOnce nikde.
+    #[test]
+    fn approved_key_matches_windows() {
+        let (m, k) = approved_key(Source::RunMachine32).unwrap();
+        assert!(m && k.ends_with(r"StartupApproved\Run32"));
+        let (m, k) = approved_key(Source::RunMachine).unwrap();
+        assert!(m && k.ends_with(r"StartupApproved\Run"));
+        let (m, k) = approved_key(Source::FolderCommon).unwrap();
+        assert!(m && k.ends_with(r"StartupApproved\StartupFolder"));
+        let (m, _) = approved_key(Source::FolderUser).unwrap();
+        assert!(!m);
+        assert!(approved_key(Source::RunOnceUser).is_none());
+        assert!(approved_key(Source::RunOnceMachine).is_none());
+    }
+
+    // Duplicitní id se ze seznamu vyřadí, první výskyt zůstane.
+    #[test]
+    fn duplicate_ids_are_dropped() {
+        let item = |id: &str, cmd: &str| BootItem {
+            id: id.into(),
+            name: "x".into(),
+            source: Source::RunMachine,
+            command: cmd.into(),
+            enabled: true,
+            running: None,
+            exe_path: None,
+        };
+        let mut v = vec![
+            item("run_machine|Java", "a"),
+            item("run_machine32|Java", "b"),
+            item("run_machine|Java", "c"),
+        ];
+        dedup_ids(&mut v);
+        let cmds: Vec<&str> = v.iter().map(|i| i.command.as_str()).collect();
+        assert_eq!(cmds, ["a", "b"]);
     }
 }

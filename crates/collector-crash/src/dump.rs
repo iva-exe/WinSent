@@ -377,6 +377,42 @@ mod tests {
         let t = describe_dump(Path::new(r"C:\neexistuje-xyz\zadny.dmp"));
         assert!(t.contains("nejde otevřít"), "{t}");
     }
+
+    // Cesta z pipe smí mířit jen do složek výpisů Windows.
+    #[test]
+    fn explicit_dump_path_is_confined() {
+        let sr = r"C:\Windows";
+        assert!(explicit_dump_allowed(
+            r"C:\Windows\Minidump\100124-1234-01.dmp",
+            sr
+        ));
+        assert!(explicit_dump_allowed(r"c:\windows\MINIDUMP\a.DMP", sr));
+        assert!(explicit_dump_allowed(r"C:\Windows\MEMORY.DMP", sr));
+        assert!(explicit_dump_allowed(
+            r"C:\Windows\Minidump\a.dmp",
+            r"C:\Windows\"
+        ));
+        for zle in [
+            r"\\10.0.0.5\s\a.dmp",
+            r"\\?\C:\Windows\Minidump\a.dmp",
+            r"\\.\C:\Windows\Minidump\a.dmp",
+            r"C:\Users\Jiny\AppData\Local\CrashDumps\x.dmp",
+            r"C:\Windows\Minidump\..\..\Users\Jiny\x.dmp",
+            r"C:\Windows\Minidump\.. \x.dmp",
+            r"C:\Windows\Minidump\sub\a.dmp",
+            r"C:\Windows\Minidump\a.dmp:proud",
+            r"C:/Windows/Minidump/a.dmp",
+            r"C:\Windows\Minidump\a.txt",
+            r"C:\Windows\Minidump\.dmp",
+            r"D:\Windows\Minidump\a.dmp",
+            r"C:\Windows.old\Minidump\a.dmp",
+        ] {
+            assert!(!explicit_dump_allowed(zle, sr), "{zle}");
+        }
+        // Odmítnutá cesta se nečte a odpověď to řekne.
+        let t = dumps_for("x", 0, Some(r"\\127.0.0.1\c$\a.dmp"), 0);
+        assert!(t.contains("nečte se"), "{t}");
+    }
 }
 
 /// Najde výpisy a hlášení, která patří k jednomu incidentu, a složí
@@ -403,8 +439,22 @@ pub fn dumps_for(app: &str, ts: i64, explicit: Option<&str>, window_s: i64) -> S
         .to_ascii_lowercase();
 
     // 1. Výpis, na který ukazuje samo hlášení.
+    //
+    // Cesta přichází z pipe a otevírá ji SYSTEM. Kdo smí pipe volat
+    // (každý přihlášený uživatel), mohl dřív poslat cokoli: UNC cestu,
+    // na kterou se služba přihlásí účtem počítače (NTLM relay), nebo
+    // soubor z cizího profilu, o kterém se z odpovědi dozvěděl, že
+    // existuje a jak je velký. Skutečná hlášení o modré obrazovce
+    // ukazují jen do %SystemRoot%\Minidump (sken v lib.rs), případně na
+    // MEMORY.DMP — nic jiného se nepřijme. Výpis z Minidump se navíc
+    // stejně najde v kroku 2 podle času.
     if let Some(p) = explicit.filter(|p| !p.is_empty()) {
-        if seen.insert(p.to_ascii_lowercase()) {
+        let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        if !explicit_dump_allowed(p, &sysroot) {
+            out.push_str(&section(
+                "Cesta k výpisu v požadavku neleží ve složce výpisů Windows — nečte se.",
+            ));
+        } else if seen.insert(p.to_ascii_lowercase()) {
             out.push_str(&section(&describe_dump(Path::new(p))));
         }
     }
@@ -422,6 +472,17 @@ pub fn dumps_for(app: &str, ts: i64, explicit: Option<&str>, window_s: i64) -> S
     // 3. Výpisy aplikací napříč profily uživatelů.
     for profile in user_profiles() {
         let dir = format!(r"{profile}\AppData\Local\CrashDumps");
+        // Složky pod profilem si jeho vlastník může nahradit odkazem do
+        // cizího profilu a služba (SYSTEM) by mu pak četla cizí výpisy.
+        let odkaz = [r"\AppData", r"\AppData\Local", r"\AppData\Local\CrashDumps"]
+            .iter()
+            .any(|s| {
+                std::fs::symlink_metadata(format!("{profile}{s}"))
+                    .is_ok_and(|m| m.file_type().is_symlink())
+            });
+        if odkaz {
+            continue;
+        }
         for p in files_in(&dir, "dmp") {
             let name = p.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
             // Jméno souboru začíná jménem aplikace; bez shody by se do
@@ -461,6 +522,40 @@ pub fn dumps_for(app: &str, ts: i64, explicit: Option<&str>, window_s: i64) -> S
         );
     }
     out
+}
+
+/// Smí služba otevřít výpis na téhle cestě z požadavku? Jen
+/// `<SystemRoot>\Minidump\<soubor>.dmp` (přímo ve složce) nebo
+/// `<SystemRoot>\MEMORY.DMP`, bez `.`/`..`, alternativních proudů,
+/// lomítek dopředu a UNC či zařízení. Obě místa smí zapisovat jen
+/// systém a správci, takže tam nikdo nepodstrčí odkaz jinam.
+fn explicit_dump_allowed(p: &str, sysroot: &str) -> bool {
+    let lc = p.to_ascii_lowercase();
+    let root = sysroot.trim_end_matches('\\').to_ascii_lowercase();
+    let b = lc.as_bytes();
+    // Jen „X:\…" — UNC (\\server) i cesty zařízení (\\?\, \\.\)
+    // začínají zpětným lomítkem a neprojdou.
+    if b.len() < 3 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\' {
+        return false;
+    }
+    if lc.contains('/') || lc[2..].contains(':') {
+        return false;
+    }
+    // Složka jen z teček a mezer: Windows koncové tečky a mezery
+    // zahazují, takže i „.. " je návrat o patro výš.
+    if lc[3..]
+        .split('\\')
+        .any(|k| k.is_empty() || k.trim_end_matches([' ', '.']).is_empty())
+    {
+        return false;
+    }
+    if lc == format!(r"{root}\memory.dmp") {
+        return true;
+    }
+    match lc.strip_prefix(&format!(r"{root}\minidump\")) {
+        Some(jmeno) => !jmeno.contains('\\') && jmeno.ends_with(".dmp") && jmeno.len() > 4,
+        None => false,
+    }
 }
 
 /// Oddělovač mezi jednotlivými výpisy.
@@ -503,8 +598,10 @@ fn user_profiles() -> Vec<String> {
     let Ok(rd) = std::fs::read_dir(&root) else {
         return Vec::new();
     };
+    // DirEntry::metadata odkaz nenásleduje: „All Users" (junction na
+    // ProgramData) a podobné tu nejsou profil.
     rd.flatten()
-        .filter(|e| e.path().is_dir())
+        .filter(|e| e.metadata().is_ok_and(|m| m.is_dir() && !m.is_symlink()))
         .map(|e| e.path().to_string_lossy().into_owned())
         .take(32)
         .collect()

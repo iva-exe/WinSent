@@ -7,6 +7,8 @@
 //!   4. udělá zástupce a záznam v Programech a funkcích
 //!
 //! `WinsentSetup.exe /uninstall` = odeber všechno.
+//! `WinsentSetup.exe /repair`    = (re)startuj službu z nainstalovaných
+//!                                 souborů, bez sítě (tlačítko v aplikaci).
 //! `WinsentSetup.exe /quiet`     = okno, které se spustí i zavře samo
 //!                                 (tudy jde aktualizace z aplikace).
 //! `WinsentSetup.exe /headless`  = bez okna, výpis do konzole (skripty).
@@ -50,6 +52,12 @@ const UNINSTALL_STEPS: &[&str] = &[
     "Odebírám službu",
     "Uklízím soubory a zástupce",
 ];
+
+const REPAIR_STEPS: &[&str] = &["Zastavuji službu", "Registruji a spouštím službu"];
+
+/// Odinstalace doběhla a po skončení procesu se má smazat i tahle
+/// binárka se složkou (viz `naplanuj_uklid`).
+static UKLID_PO_KONCI: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Hlášení průběhu. Okno i konzole dostávají totéž — jen to jinak
 /// ukazují, takže se logika instalace nemusí ptát, kde zrovna běží.
@@ -115,18 +123,35 @@ fn main() {
     // aktualizace z aplikace: uživatel klikl v aplikaci, takže se ho
     // nemá cenu ptát znovu — ale vidět, co se děje, chce.
     let quiet = has(&["/quiet", "--quiet", "/q", "/s", "/silent"]);
+    // Oprava z aplikace. Bez sítě jde jen tehdy, když jsou binárky na
+    // disku — jinak je stejně potřeba je stáhnout, a to umí instalace.
+    let repair = !uninstall
+        && has(&["/repair", "--repair"])
+        && FILES.iter().all(|n| install_dir().join(n).is_file());
 
     if headless {
         // Podsystém je „windows", takže vlastní konzoli nemáme —
         // připojíme se k té, ze které nás spustili.
         attach_console();
-        println!("  Winsent — {}", if uninstall { "odinstalace" } else { "instalace" });
+        println!(
+            "  Winsent — {}",
+            if uninstall {
+                "odinstalace"
+            } else if repair {
+                "oprava"
+            } else {
+                "instalace"
+            }
+        );
         let mut rep = ConsoleReport;
         let r = if uninstall {
             do_uninstall(&mut rep)
+        } else if repair {
+            do_repair(&mut rep)
         } else {
-            do_install(&mut rep)
+            do_install(&mut rep, quiet)
         };
+        naplanuj_uklid();
         match r {
             Ok(msg) => {
                 println!("\n  {msg}");
@@ -139,12 +164,21 @@ fn main() {
         }
     }
 
-    let (title, subtitle, steps, primary) = if uninstall {
+    let (title, subtitle, steps, primary, footer) = if uninstall {
         (
             "Odebrat Winsent",
             "monitor a správa Windows",
             UNINSTALL_STEPS,
             "Odebrat",
+            "Odebere službu, aplikaci i zástupce; nasbíraná data zůstanou.",
+        )
+    } else if repair {
+        (
+            "Opravit Winsent",
+            "monitor a správa Windows",
+            REPAIR_STEPS,
+            "Opravit",
+            "Znovu spustí službu z nainstalovaných souborů; nic nestahuje.",
         )
     } else {
         (
@@ -152,10 +186,11 @@ fn main() {
             "monitor a správa Windows",
             INSTALL_STEPS,
             "Nainstalovat",
+            "Nainstaluje se do Program Files a spustí jako služba.",
         )
     };
     let state: gui::Shared = Arc::new(Mutex::new(gui::State::new(
-        title, subtitle, steps, primary,
+        title, subtitle, steps, primary, footer,
     )));
 
     let action: gui::Action = Arc::new(move |st: gui::Shared, note: gui::Notifier| {
@@ -165,8 +200,10 @@ fn main() {
         };
         let r = if uninstall {
             do_uninstall(&mut rep)
+        } else if repair {
+            do_repair(&mut rep)
         } else {
-            do_install(&mut rep)
+            do_install(&mut rep, quiet)
         };
         if let Ok(mut s) = st.lock() {
             match r {
@@ -177,7 +214,48 @@ fn main() {
         note.tick();
     });
 
-    gui::run(state, action, quiet, quiet);
+    // Opravu spouští tlačítko v aplikaci a uživatel už potvrdil UAC —
+    // ptát se ho potřetí nemá smysl. Okno ale zůstane otevřené, ať je
+    // vidět, jak to dopadlo.
+    gui::run(state, action, quiet || repair, quiet);
+    naplanuj_uklid();
+}
+
+/// Po odinstalaci smaže tuhle binárku a složku instalace.
+///
+/// Odinstalace přes Programy a funkce běží právě z kopie
+/// `Program Files\Winsent\WinsentSetup.exe` a běžící .exe smazat nejde.
+/// Dřív tu stál jen komentář „smaže se po restartu", ale nic to
+/// nezařídilo — soubor i složka zůstávaly natrvalo. Úklid proto dělá
+/// samostatný `cmd.exe`, který chvíli počká, až tenhle proces skončí.
+///
+/// Ne `MoveFileEx(…DELAY_UNTIL_REBOOT)`: kdo by před restartem znovu
+/// nainstaloval, tomu by boot smazal čerstvou kopii instalátoru a s ní
+/// i funkční odinstalaci.
+fn naplanuj_uklid() {
+    use std::os::windows::process::CommandExt;
+    if !UKLID_PO_KONCI.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let dir = install_dir();
+    let setup = dir.join("WinsentSetup.exe");
+    // Uvozovky jen kolem cest, ne kolem celé řádky: `cmd /c` s řádkou,
+    // která nezačíná uvozovkou, nic neodstraňuje. Proto raw_arg —
+    // `arg` by uvozovkami obalil celý příkaz.
+    let prikaz = format!(
+        "/d /c ping -n 4 127.0.0.1 >nul & del /f /q \"{}\" & rmdir \"{}\"",
+        setup.display(),
+        dir.display()
+    );
+    // Jen CREATE_NO_WINDOW, ne DETACHED_PROCESS: odpojený cmd by neměl
+    // konzoli a `ping` by si pak otevřel vlastní okno. Pracovní složka
+    // mimo instalaci, jinak by ji cmd držel a `rmdir` by neprošel.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = std::process::Command::new("cmd.exe")
+        .raw_arg(prikaz)
+        .current_dir(std::env::temp_dir())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
 }
 
 /// Připojí konzoli rodiče, aby měl headless výpis kam jít.
@@ -241,24 +319,56 @@ fn mb(bytes: usize) -> String {
     format!("{:.1} MB", bytes as f64 / 1e6)
 }
 
-fn do_install(rep: &mut dyn Report) -> Result<String, String> {
+/// `aktualizace` = spuštěno z aplikace (`/quiet`): okno se po úspěchu
+/// zavře samo, takže co není úspěch, musí skončit chybou.
+fn do_install(rep: &mut dyn Report, aktualizace: bool) -> Result<String, String> {
     let dir = install_dir();
 
     // ── 1. Jaká verze je v repu ────────────────────────────────────
     rep.step(0, "ptám se GitHubu na nejnovější verzi…");
-    let sha = latest_commit()?;
-    let base = format!("/{REPO}/{sha}/release");
-    let version =
-        http::get(RAW_HOST, &format!("{base}/version.txt"), |_| {}).map_err(|e| format!("{e}"))?;
-    let version = String::from_utf8_lossy(&version).trim().to_string();
-    if version.is_empty() {
-        return Err("server vrátil prázdnou verzi".into());
-    }
-
     // Shodná verze sama o sobě neznamená, že aplikace funguje: binárky
     // mohly zmizet, služba mohla zůstat zastavená. Za „nainstalováno"
     // se považuje až verze + obě binárky na disku.
     let files_ok = FILES.iter().all(|n| dir.join(n).is_file());
+    let zjisti = || -> Result<(String, String), String> {
+        let sha = latest_commit()?;
+        let base = format!("/{REPO}/{sha}/release");
+        let version = http::get(RAW_HOST, &format!("{base}/version.txt"), |_| {})
+            .map_err(|e| format!("{e}"))?;
+        let version = String::from_utf8_lossy(&version).trim().to_string();
+        if version.is_empty() {
+            return Err("server vrátil prázdnou verzi".into());
+        }
+        Ok((base, version))
+    };
+    let (base, version) = match zjisti() {
+        Ok(v) => v,
+        // Bez GitHubu (offline, firewall, vyčerpaný limit API) se dřív
+        // skončilo tady — a zastavená služba zůstala stát, přestože
+        // binárky na disku byly v pořádku a stačilo ji nastartovat.
+        // Když je čím, nastartuje se aspoň nainstalovaná verze.
+        Err(e) if files_ok => {
+            rep.step(4, "GitHub nedostupný — kontroluji nainstalovanou službu…");
+            service::install(&dir.join("syswatch.exe"))?;
+            service::start_and_wait()?;
+            launch_ui(&dir);
+            // Z aplikace jde o aktualizaci a ta neproběhla. `Ok` by tiché
+            // okno zavřelo: uživatel klikl „Aktualizovat", okno bliklo
+            // a zůstala stará verze bez jediného slova proč. Chyba okno
+            // nechá otevřené.
+            if aktualizace {
+                return Err(format!(
+                    "Aktualizace neproběhla: kontrola verze nevyšla ({e}).\n\
+                     Služba běží s nainstalovanou verzí; zkus to za chvíli znovu."
+                ));
+            }
+            return Ok(format!(
+                "Kontrola verze nevyšla ({e}).\n\
+                 Služba běží s nainstalovanou verzí; aktualizaci zkus později."
+            ));
+        }
+        Err(e) => return Err(e),
+    };
     match installed_version() {
         Some(v) if v == version && files_ok => {
             // Nic se nestahuje, ale služba se prověří a v případě
@@ -424,6 +534,26 @@ fn launch_ui(dir: &std::path::Path) {
         .spawn();
 }
 
+/// Oprava z aplikace (`/repair`): srovná registraci služby a nastartuje
+/// ji znovu z nainstalovaných souborů. Síť nepoužívá vůbec.
+///
+/// Službu napřed zastaví, i když běží: tudy chodí i „restart služby"
+/// z Nastavení (přesun databáze se provede až při jejím startu)
+/// a `start_and_wait` by běžící službu nechal, jak je.
+fn do_repair(rep: &mut dyn Report) -> Result<String, String> {
+    let dir = install_dir();
+    rep.step(0, "zastavuji službu…");
+    rep.progress(None);
+    service::stop_and_wait()?;
+    rep.step(1, "registruji a spouštím službu…");
+    service::install(&dir.join("syswatch.exe"))?;
+    service::start_and_wait()?;
+    Ok(match installed_version() {
+        Some(v) if !v.is_empty() => format!("Služba běží (Winsent {v})."),
+        _ => "Služba běží.".into(),
+    })
+}
+
 fn do_uninstall(rep: &mut dyn Report) -> Result<String, String> {
     rep.step(0, "zavírám aplikaci a zastavuji službu…");
     let _ = std::process::Command::new("taskkill.exe")
@@ -447,13 +577,26 @@ fn do_uninstall(rep: &mut dyn Report) -> Result<String, String> {
     rep.progress(Some(0.8));
     let _ = std::fs::remove_file(start_menu_lnk());
     shell::unregister_uninstall();
-
-    // Vlastní .exe smazat nejde, dokud běží — smaže se po restartu.
     let dir = install_dir();
-    for name in FILES.iter().chain(["version.txt"].iter()) {
+    shell::remove_autostart(&dir);
+    // Značka „výchozí spouštění už nastaveno" (autostart.rs v UI). Bez
+    // ní se nová instalace zachová jako první — položka Run se právě
+    // smazala a jinak by se už nikdy sama nezapnula. Jen pro uživatele,
+    // pod kterým instalátor běží; jiné profily z elevovaného procesu
+    // spolehlivě nenajdeme.
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let _ = std::fs::remove_file(PathBuf::from(appdata).join("Winsent").join("autostart-init"));
+    }
+
+    for name in FILES.iter().chain(["version.txt", "WinsentSetup.exe"].iter()) {
         let _ = std::fs::remove_file(dir.join(name));
     }
     let _ = std::fs::remove_dir(&dir);
+    // Kopie instalátoru v Program Files smazat nejde, když odinstalace
+    // běží právě z ní (Programy a funkce). Dosmaže ji úklid po skončení.
+    if dir.exists() {
+        UKLID_PO_KONCI.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 
     let data = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into());
     let data = PathBuf::from(data).join("syswatch");

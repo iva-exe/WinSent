@@ -99,11 +99,18 @@ pub struct State {
     /// Popisek hlavního tlačítka; prázdný = tlačítko není.
     pub primary: String,
     pub secondary: String,
+    /// Poznámka v patičce, dokud se nezačalo; prázdná = žádná.
+    ///
+    /// Předává ji `main` podle režimu. Dřív byla v kreslení napevno
+    /// a okno odinstalace s tlačítkem „Odebrat" pod ním slibovalo
+    /// „Nainstaluje se do Program Files a spustí jako služba."
+    pub footer: String,
 }
 
 impl State {
-    pub fn new(title: &str, subtitle: &str, steps: &[&str], primary: &str) -> Self {
+    pub fn new(title: &str, subtitle: &str, steps: &[&str], primary: &str, footer: &str) -> Self {
         State {
+            footer: footer.into(),
             phase: Phase::Ready,
             title: title.into(),
             subtitle: subtitle.into(),
@@ -844,7 +851,7 @@ fn draw(hdc: HDC, rc: &RECT, win: &mut Win) {
     }
 
     // Patička s poznámkou o tom, co se stane — jen dokud se nezačalo.
-    if st.phase == Phase::Ready {
+    if st.phase == Phase::Ready && !st.footer.is_empty() {
         text(
             hdc,
             RECT {
@@ -853,7 +860,7 @@ fn draw(hdc: HDC, rc: &RECT, win: &mut Win) {
                 right: rc.right - s(290),
                 bottom: by + bh,
             },
-            "Nainstaluje se do Program Files a spustí jako služba.",
+            &st.footer,
             win.font_small,
             TEXT_FAINT,
             DT_LEFT | DT_WORDBREAK,

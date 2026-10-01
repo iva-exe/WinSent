@@ -36,6 +36,17 @@ pub enum Error {
          Winsent sám nerozhoduje, která z nich je ta pravá"
     )]
     MoveBlocked { path: PathBuf },
+    #[error("databázi se nepodařilo přesunout z {from} do {to}: {source}")]
+    Move {
+        from: PathBuf,
+        to: PathBuf,
+        source: std::io::Error,
+    },
+    #[error(
+        "databázi {path} se před přesunem nepodařilo uzavřít (WAL s posledními \
+         zápisy nejde zapsat do hlavního souboru): {detail}"
+    )]
+    MoveWal { path: PathBuf, detail: String },
     #[error("proměnná prostředí ProgramData není dostupná")]
     NoProgramData,
 }
@@ -134,6 +145,14 @@ pub fn move_db(from: &Path, to: &Path) -> Result<(), Error> {
     if from == to || !from.exists() {
         return Ok(());
     }
+    // Tentýž soubor zapsaný jinak — jiná velikost písmen ve složce
+    // („d:\data" proti stopě „D:\Data"), junction typu C:\Users\All Users.
+    // Porovnání PathBuf je citlivé na velikost písmen, takže dřív padlo
+    // MoveBlocked na ŽIVOU databázi a rada „smaž ji ručně" vedla ke
+    // smazání jediné kopie historie. Není co stěhovat.
+    if to.exists() && same_file(from, to) {
+        return Ok(());
+    }
     // Na cíli něco leží — dál se nejde.
     //
     // Rozhodovat podle velikosti, která z těch dvou databází je „ta
@@ -152,27 +171,115 @@ pub fn move_db(from: &Path, to: &Path) -> Result<(), Error> {
             source,
         })?;
     }
-    // Nejdřív samotná databáze; WAL a shm jsou odvozené soubory, které
-    // SQLite umí dopočítat znovu, takže na jejich selhání se nepadá.
-    std::fs::rename(from, to)
-        .or_else(|_| {
-            // Přes hranici svazku `rename` nefunguje — pak kopie a smazání.
-            std::fs::copy(from, to).and_then(|_| std::fs::remove_file(from))
-        })
-        .map_err(|source| Error::CreateDir {
-            path: to.to_path_buf(),
-            source,
-        })?;
+    // Osiřelý WAL na cíli (hlavní soubor tam není) by SQLite po přesunu
+    // přehrál jako „horký" WAL přes NAŠI databázi — hlavička WAL s obsahem
+    // databáze svázaná není, takže by vrátil cizí stránky. Bez hlavního
+    // souboru nikomu nepatří; když nejde smazat, radši se nestěhuje.
     for pripona in ["-wal", "-shm"] {
-        let a = PathBuf::from(format!("{}{pripona}", from.display()));
-        let b = PathBuf::from(format!("{}{pripona}", to.display()));
-        if a.exists() {
-            let _ = std::fs::rename(&a, &b).or_else(|_| {
-                std::fs::copy(&a, &b).and_then(|_| std::fs::remove_file(&a))
+        let b = side_file(to, pripona);
+        if b.exists() {
+            std::fs::remove_file(&b).map_err(|source| Error::Move {
+                from: from.to_path_buf(),
+                to: b.clone(),
+                source,
+            })?;
+        }
+    }
+    // WAL NENÍ odvozený soubor: po nečistém konci (pád, výpadek proudu)
+    // nese commitnuté transakce, které ještě nejsou v hlavním souboru.
+    // Dřív se stěhoval zvlášť a jeho selhání se mlčky zahodilo — databáze
+    // na novém místě se pak otevřela bez posledních minut historie.
+    // Proto se nejdřív všechno zapíše do hlavního souboru a stěhuje se
+    // jediný soubor.
+    close_wal(from)?;
+    if let Err(prvni) = std::fs::rename(from, to) {
+        // Přes hranici svazku `rename` nefunguje — pak kopie a smazání.
+        // (Na stejném svazku selže, když soubor drží cizí handle bez
+        // sdílení mazání — zálohovač, antivir, prohlížeč DB.)
+        let presun = std::fs::copy(from, to).and_then(|_| std::fs::remove_file(from));
+        if let Err(source) = presun {
+            // Dřív kopie na cíli zůstala ležet: služba jela dál na starém
+            // místě, historie rostla tam, a každý další start hlásil
+            // MoveBlocked na zastaralou kopii. Cíl před přesunem neexistoval
+            // (kontrola výše), takže se maže jen to, co jsme sami vytvořili
+            // — a jen dokud zdroj pořád leží na svém místě.
+            if from.exists() {
+                let _ = std::fs::remove_file(to);
+            }
+            tracing::debug!(error = %prvni, "rename databáze selhal, zkoušela se kopie");
+            return Err(Error::Move {
+                from: from.to_path_buf(),
+                to: to.to_path_buf(),
+                source,
             });
         }
     }
     Ok(())
+}
+
+/// Soubor vedle databáze (`-wal`, `-shm`).
+fn side_file(db: &Path, pripona: &str) -> PathBuf {
+    PathBuf::from(format!("{}{pripona}", db.display()))
+}
+
+/// Ukazují obě cesty na tentýž soubor? Kanonizace na Windows rozbalí
+/// junctiony a vrátí velikost písmen podle disku. Když selže, bere se
+/// to jako dva různé soubory — pak zasáhne opatrné MoveBlocked.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Zapíše WAL do hlavního souboru a přepne databázi z WAL, takže SQLite
+/// sám smaže `-wal` i `-shm`. Při dalším otevření je `open` zase přepne
+/// na WAL. Selhání (poškozená databáze, drží ji jiný proces) přesun
+/// odmítne — data jsou přednější než přání.
+fn close_wal(db: &Path) -> Result<(), Error> {
+    let chyba = |detail: String| Error::MoveWal {
+        path: db.to_path_buf(),
+        detail,
+    };
+    // Bez SQLITE_OPEN_CREATE: zdroj musí existovat, nic se nezakládá.
+    let c = Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|e| chyba(e.to_string()))?;
+    let busy: i64 = c
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
+        .map_err(|e| chyba(e.to_string()))?;
+    if busy != 0 {
+        return Err(chyba("databázi má otevřenou jiný proces".into()));
+    }
+    c.pragma_update(None, "journal_mode", "DELETE")
+        .map_err(|e| chyba(e.to_string()))?;
+    c.close().map_err(|(_, e)| chyba(e.to_string()))?;
+    // Pojistka: neprázdný WAL po uzavření znamená, že v něm pořád něco
+    // je — stěhovat bez něj by bylo tiché zahození dat.
+    let wal = side_file(db, "-wal");
+    if let Ok(m) = std::fs::metadata(&wal) {
+        if m.len() > 0 {
+            return Err(chyba("WAL po uzavření pořád leží vedle databáze".into()));
+        }
+        let _ = std::fs::remove_file(&wal);
+    }
+    // -shm je jen index WAL; SQLite si ho kdykoli postaví znovu.
+    let _ = std::fs::remove_file(side_file(db, "-shm"));
+    Ok(())
+}
+
+/// Vrátí zapisovací spojení z rozpracované transakce, pokud v ní zůstalo.
+///
+/// Pojistka pro zapisovací smyčku služby: kdyby jakýkoli zápis skončil
+/// chybou uprostřed ručně otevřené transakce, spojení by v ní zůstalo
+/// a každý další `transaction()` by padal na „cannot start a transaction
+/// within a transaction" — do restartu by se nezapsal jediný vzorek.
+/// Vrací `true`, když se něco vracelo.
+pub fn rollback_if_open(conn: &Connection) -> bool {
+    if conn.is_autocommit() {
+        return false;
+    }
+    let _ = conn.execute_batch("ROLLBACK");
+    true
 }
 
 /// Read-only spojení pro dotazy historie z IPC handleru — WAL dovolí
@@ -225,22 +332,114 @@ mod stehovani {
         std::fs::write(p, vec![7u8; bajtu]).expect("zápis");
     }
 
-    // Přesun vezme databázi i její WAL.
+    /// Skutečná SQLite databáze s `radku` řádky, čistě zavřená.
+    fn databaze(p: &Path, radku: i64) {
+        let c = Connection::open(p).expect("databáze");
+        c.execute_batch("CREATE TABLE t (x INTEGER);").unwrap();
+        for i in 0..radku {
+            c.execute("INSERT INTO t (x) VALUES (?1)", [i]).unwrap();
+        }
+    }
+
+    fn radku(p: &Path) -> i64 {
+        let c = Connection::open(p).expect("databáze");
+        c.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))
+            .expect("tabulka")
+    }
+
+    // Stav po pádu služby: databáze plus WAL s commitnutými, ale ještě
+    // nezapsanými transakcemi. Přesun o ně nesmí přijít.
     #[test]
-    fn presun_vezme_i_wal() {
+    fn presun_nezahodi_obsah_walu() {
+        let zdroj = temp("presun-pad");
         let a = temp("presun-z");
         let b = temp("presun-na");
+        let zive = zdroj.join(DB_FILE);
+        {
+            let c = Connection::open(&zive).unwrap();
+            c.execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
+                 CREATE TABLE t (x INTEGER);",
+            )
+            .unwrap();
+            for i in 0..500 {
+                c.execute("INSERT INTO t (x) VALUES (?1)", [i]).unwrap();
+            }
+            // Snímek souborů za běhu = to, co zůstane po pádu.
+            let z = a.join(DB_FILE);
+            std::fs::copy(&zive, &z).unwrap();
+            std::fs::copy(side_file(&zive, "-wal"), side_file(&z, "-wal")).unwrap();
+        }
         let z = a.join(DB_FILE);
-        naplnit(&z, 200_000);
-        naplnit(&PathBuf::from(format!("{}-wal", z.display())), 1024);
+        assert!(
+            std::fs::metadata(side_file(&z, "-wal")).unwrap().len() > 0,
+            "test nemá neprázdný WAL"
+        );
         let na = b.join(DB_FILE);
         move_db(&z, &na).expect("přesun");
-        assert!(na.exists(), "databáze na cíli chybí");
         assert!(!z.exists(), "databáze zůstala na původním místě");
         assert!(
-            PathBuf::from(format!("{}-wal", na.display())).exists(),
-            "WAL se nepřestěhoval"
+            !side_file(&z, "-wal").exists(),
+            "WAL zůstal na původním místě"
         );
+        assert_eq!(radku(&na), 500, "přesun ztratil řádky z WAL");
+    }
+
+    // Osiřelý WAL na cíli se nesmí přehrát přes přestěhovanou databázi.
+    #[test]
+    fn osirely_wal_na_cili_se_neprehraje() {
+        let a = temp("sirotek-z");
+        let b = temp("sirotek-na");
+        let z = a.join(DB_FILE);
+        let na = b.join(DB_FILE);
+        databaze(&z, 3);
+        naplnit(&side_file(&na, "-wal"), 4096);
+        move_db(&z, &na).expect("přesun");
+        assert!(
+            !side_file(&na, "-wal").exists(),
+            "cizí WAL zůstal u databáze"
+        );
+        assert_eq!(radku(&na), 3);
+    }
+
+    // Tentýž soubor zapsaný jinou velikostí písmen není „databáze na
+    // cíli" — dřív to hlásilo MoveBlocked na živou databázi.
+    #[test]
+    fn stejna_cesta_jinak_zapsana_neni_kolize() {
+        let a = temp("velikost-pismen");
+        let z = a.join(DB_FILE);
+        databaze(&z, 1);
+        let jinak = PathBuf::from(a.to_string_lossy().to_uppercase()).join(DB_FILE);
+        assert_ne!(z, jinak);
+        move_db(&z, &jinak).expect("tentýž soubor není kolize");
+        assert_eq!(radku(&z), 1, "databáze utrpěla");
+    }
+
+    // Když se zdroj po kopii nepodaří smazat (drží ho cizí proces), kopie
+    // na cíli nesmí zůstat — jinak by každý další start hlásil MoveBlocked
+    // na zastaralou kopii, zatímco historie dál roste ve zdroji.
+    #[cfg(windows)]
+    #[test]
+    fn nepovedeny_presun_neneha_kopii_na_cili() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let a = temp("zamek-z");
+        let b = temp("zamek-na");
+        let z = a.join(DB_FILE);
+        let na = b.join(DB_FILE);
+        databaze(&z, 2);
+        {
+            // Čtenář bez FILE_SHARE_DELETE: rename i smazání zdroje selžou.
+            let _drzi = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0x1 | 0x2)
+                .open(&z)
+                .expect("cizí handle");
+            assert!(move_db(&z, &na).is_err(), "přesun prošel přes zámek");
+            assert!(z.exists(), "zdroj zmizel");
+            assert!(!na.exists(), "na cíli zůstala kopie");
+        }
+        move_db(&z, &na).expect("po uvolnění má přesun projít");
+        assert_eq!(radku(&na), 2);
     }
 
     // Plnou databázi na cíli nesmí nic přepsat.
@@ -284,7 +483,7 @@ mod stehovani {
         let b = temp("tam-na");
         let z = a.join(DB_FILE);
         let na = b.join(DB_FILE);
-        naplnit(&z, 200_000);
+        databaze(&z, 10);
         move_db(&z, &na).expect("tam");
         move_db(&na, &z).expect("zpátky");
         assert!(z.exists(), "databáze se nevrátila");

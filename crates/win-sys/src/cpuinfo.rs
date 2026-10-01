@@ -27,9 +27,7 @@ pub struct CpuStatic {
 /// prázdné hodnoty — nikdy neshodí start služby.
 pub fn cpu_static() -> CpuStatic {
     let mut out = CpuStatic {
-        logical_cores: std::thread::available_parallelism()
-            .map(|n| n.get() as u32)
-            .unwrap_or(1),
+        logical_cores: logical_count(),
         ..Default::default()
     };
 
@@ -83,6 +81,25 @@ pub fn cpu_static() -> CpuStatic {
         }
     }
     out
+}
+
+/// Počet logických procesorů ve VŠECH procesorových skupinách.
+///
+/// `available_parallelism()` na Windows vrací jen procesory aktuální
+/// skupiny (max 64; std čte GetSystemInfo). Na Threadripperu se 128
+/// vlákny tak vycházelo „64 jader / 64 vláken", zatímco fyzická jádra
+/// se počítají přes všechny skupiny. Fallback jen pro případ, že API
+/// selže (vrací 0).
+pub fn logical_count() -> u32 {
+    use windows::Win32::System::Threading::{GetActiveProcessorCount, ALL_PROCESSOR_GROUPS};
+    // SAFETY: čistý dotaz bez ukazatelů.
+    let n = unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) };
+    if n > 0 {
+        return n;
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1)
 }
 
 /// REG_SZ hodnota z HKLM.

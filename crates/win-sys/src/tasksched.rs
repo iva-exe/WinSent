@@ -7,8 +7,8 @@
 use windows::core::{Interface, BSTR};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::TaskScheduler::{
-    IExecAction, IRegisteredTask, ITaskFolder, ITaskService, TaskScheduler, TASK_TRIGGER_BOOT,
-    TASK_TRIGGER_LOGON,
+    IExecAction, IRegisteredTask, ITaskFolder, ITaskService, TaskScheduler, TASK_ENUM_HIDDEN,
+    TASK_TRIGGER_BOOT, TASK_TRIGGER_LOGON,
 };
 use windows::Win32::System::Variant::{VARIANT, VT_I4};
 
@@ -79,7 +79,11 @@ pub fn startup_tasks() -> Result<Vec<StartupTask>, Error> {
         })?;
         let mut stack: Vec<(ITaskFolder, u8)> = vec![(root, 0)];
         while let Some((folder, depth)) = stack.pop() {
-            if let Ok(tasks) = folder.GetTasks(0) {
+            // TASK_ENUM_HIDDEN: s flagem 0 plánovač vrací jen viditelné
+            // úlohy a <Hidden>true</Hidden> s logon triggerem — přesně
+            // to, čím se software chce schovat — v Po spuštění chyběla.
+            // Skryté úlohy Windows dál chrání validace (\Microsoft\Windows\).
+            if let Ok(tasks) = folder.GetTasks(TASK_ENUM_HIDDEN.0) {
                 let count = tasks.Count().unwrap_or(0);
                 for i in 1..=count {
                     let Ok(task) = tasks.get_Item(&variant_i4(i)) else {

@@ -1277,6 +1277,7 @@ dependencies = [
  "core-types",
  "thiserror 2.0.18",
  "win-sys",
+ "windows",
 ]
 
 [[package]]

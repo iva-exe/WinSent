@@ -212,6 +212,52 @@ const MIGRATIONS: &[&str] = &[
     // hlásila 720 hodin mikrofonu za třicetidenní okno. Konec se bere
     // z posledního pozorování, ne z aktuálního času.
     "ALTER TABLE perm_use ADD COLUMN seen_ts INTEGER;",
+    // → jména procesů po INSTANCÍCH, ne po PID.
+    //
+    // proc_names držela pro každý pid jediný řádek s posledním jménem.
+    // Windows PID recyklují (po restartu všechny), takže náhled minulosti
+    // připisoval týdny staré vzorky — CPU, paměť, ikonu i vydavatele —
+    // procesu, který ten PID nesl až dnes. Instance = (pid, create_time);
+    // first_ts je unixový čas jejího vzniku a dotaz bere poslední
+    // instanci, která začala nejpozději v čase vzorku.
+    //
+    // Staré řádky přejdou s first_ts = 0: kdy jejich proces vznikl, se
+    // nikdy neukládalo, takže starší historii opravit nejde. proc_names
+    // zůstává — starší verze služby (návrat k předchozímu vydání) do ní
+    // zapisuje a bez ní by jí padal každý zápis vzorků.
+    //
+    // Index na last_ts kvůli retenci: maže se po ní každou minutu a bez
+    // indexu by to byl průchod celou tabulkou (řádek za každé spuštění
+    // procesu po celý rok) uvnitř zápisové transakce, tedy zdržení
+    // zápisu vzorků.
+    "CREATE TABLE proc_names_v (
+        pid          INTEGER NOT NULL,
+        first_ts     INTEGER NOT NULL,
+        create_time  INTEGER,
+        name         TEXT NOT NULL,
+        last_ts      INTEGER NOT NULL,
+        identity_key TEXT,
+        app_name     TEXT,
+        publisher    TEXT,
+        PRIMARY KEY (pid, first_ts)
+    ) WITHOUT ROWID;
+    CREATE INDEX proc_names_v_last ON proc_names_v(last_ts);
+    INSERT INTO proc_names_v
+        (pid, first_ts, create_time, name, last_ts, identity_key, app_name, publisher)
+    SELECT pid, 0, NULL, name, last_ts, identity_key, app_name, publisher
+    FROM proc_names;",
+    // → úklid falešných záseků ze spánku.
+    //
+    // Detektor záseků měřil čas hodinami, které běží i během uspání,
+    // takže každé probuzení PC založilo „zásek" dlouhý jako celý spánek
+    // (v reálné DB 21 h a 7,3 h) s viníkem podle toho, co běželo po
+    // probuzení. Detektor je opravený; tyhle záznamy by ale v sekci
+    // Incidents a v exportech strašily dál. Zásek přes deset minut se ve
+    // skutečnosti nestane — tak dlouho zamrzlý systém skončí resetem.
+    "DELETE FROM incident
+        WHERE kind = 'stall' AND CAST(json_extract(detail, '$.lag_ms') AS INTEGER) > 600000;
+    DELETE FROM event
+        WHERE kind = 'stall' AND CAST(json_extract(detail, '$.lag_ms') AS INTEGER) > 600000;",
 ];
 
 /// Aplikuje všechny dosud neaplikované migrace. Bezpečné volat při
@@ -246,5 +292,42 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
         assert_eq!(v as usize, MIGRATIONS.len());
+    }
+}
+
+#[cfg(test)]
+mod uklid_tests {
+    use super::*;
+
+    /// Falešné záseky ze spánku zmizí, skutečné zůstanou.
+    #[test]
+    fn migrace_uklidi_zaseky_ze_spanku() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Stav před úklidem: všechno kromě poslední migrace.
+        for sql in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch(
+            r#"INSERT INTO incident (ts, kind, detail) VALUES
+                 (1, 'stall', '{"lag_ms":75803755,"cause":"paging"}'),
+                 (2, 'stall', '{"lag_ms":475}'),
+                 (3, 'app_crash', '{"lag_ms":99999999}');
+               INSERT INTO event (ts, kind, detail) VALUES
+                 (1, 'stall', '{"lag_ms":26326048}'),
+                 (2, 'stall', '{"lag_ms":1200}');"#,
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", MIGRATIONS.len() as u32 - 1).unwrap();
+        run(&conn).unwrap();
+        let inc: Vec<i64> = conn
+            .prepare("SELECT ts FROM incident ORDER BY ts")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(inc, vec![2, 3]);
+        let ev: i64 = conn.query_row("SELECT COUNT(*) FROM event", [], |r| r.get(0)).unwrap();
+        assert_eq!(ev, 1);
     }
 }

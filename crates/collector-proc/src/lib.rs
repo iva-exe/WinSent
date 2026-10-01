@@ -73,7 +73,11 @@ pub struct State {
     prev_cpu: HashMap<(u32, i64), PrevProc>,
     prev_tick: Instant,
     prev_sys: win_sys::sysinfo::SystemTimes,
-    prev_net: win_sys::net::NetTotals,
+    prev_net: win_sys::net::NetMeter,
+    /// Kdy se síťové čítače naposledy povedlo přečíst. Když čtení pár
+    /// ticků selhává, NetMeter si drží starý stav a příští delta nese
+    /// bajty za celou tu dobu — dělit ji jedním tickem by dalo špičku.
+    prev_net_at: Instant,
     prev_cores: Vec<win_sys::sysinfo::CoreTimes>,
     /// NVML kontext; None = GPU metrika nedostupná (bez NVIDIA).
     gpu: Option<win_sys::gpu::Nvml>,
@@ -110,9 +114,10 @@ pub fn static_info(state: &State) -> StaticInfo {
 
 /// Inicializace sampleru.
 pub fn init(_cfg: &Config) -> Result<State, Error> {
-    let n_cpus = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1) as f64;
+    // Všechna logická jádra přes všechny procesorové skupiny.
+    // available_parallelism() vrací jen jednu skupinu (max 64), takže na
+    // strojích s víc vlákny vycházelo CPU % procesů dvojnásobné.
+    let n_cpus = win_sys::cpuinfo::logical_count().max(1) as f64;
     let gpu = win_sys::gpu::Nvml::init();
     if gpu.is_none() {
         tracing::info!("NVML nedostupné — GPU pojede z PDH/registry fallbacku (vendor-neutrální)");
@@ -171,7 +176,8 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
         prev_cpu: HashMap::new(),
         prev_tick: Instant::now(),
         prev_sys: win_sys::sysinfo::system_times()?,
-        prev_net: win_sys::net::net_totals()?,
+        prev_net: win_sys::net::NetMeter::new()?,
+        prev_net_at: Instant::now(),
         prev_cores: win_sys::sysinfo::core_times(n_cpus as usize)?,
         gpu,
         disks,
@@ -319,13 +325,16 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
         }
     };
 
-    // Síť: delta kumulativních bajtů / delta stěny → B/s.
-    let (net_rx_bps, net_tx_bps) = match win_sys::net::net_totals() {
-        Ok(net) => {
-            let rx = (net.rx_bytes.saturating_sub(state.prev_net.rx_bytes) as f64 / wall_s) as u64;
-            let tx = (net.tx_bytes.saturating_sub(state.prev_net.tx_bytes) as f64 / wall_s) as u64;
-            state.prev_net = net;
-            (rx, tx)
+    // Síť: delta bajtů (po rozhraních, viz NetMeter) / delta stěny → B/s.
+    //      Dělí se dobou od posledního ÚSPĚŠNÉHO čtení, ne délkou ticku.
+    let (net_rx_bps, net_tx_bps) = match state.prev_net.delta() {
+        Ok(d) => {
+            let net_s = now.duration_since(state.prev_net_at).as_secs_f64().max(wall_s);
+            state.prev_net_at = now;
+            (
+                (d.rx_bytes as f64 / net_s) as u64,
+                (d.tx_bytes as f64 / net_s) as u64,
+            )
         }
         Err(e) => {
             state.degraded.warn_once("net_totals", &e);
@@ -505,6 +514,8 @@ fn reparent_hosts(rows: &mut [ProcRow]) {
     for pid in hosts {
         let Some(&idx) = by_pid.get(&pid) else { continue };
         let mut cur = rows[idx].parent_pid;
+        // Čas vzniku článku, ze kterého se právě jde k rodiči.
+        let mut child_ct = rows[idx].create_time;
         let mut seen = 0u8;
         let mut visited: Vec<u32> = vec![pid];
         while seen < 8 {
@@ -519,10 +530,16 @@ fn reparent_hosts(rows: &mut [ProcRow]) {
             // pak ukazuje na proces, který vznikl až potom a s WebView2
             // nemá nic společného. Bez téhle kontroly by si hostitel
             // vypůjčil identitu náhodné aplikace.
-            if rows[pidx].create_time > rows[idx].create_time {
+            //
+            // Porovnává se s POTOMKEM v řetězci, ne s původním
+            // hostitelem: recyklovaný rodič mezilehlého WebView2, který
+            // vznikl po něm, ale před původním hostitelem, jinak prošel
+            // a renderer dostal identitu cizí hry.
+            if rows[pidx].create_time > child_ct {
                 break;
             }
             if is_generic_host(&rows[pidx].name) {
+                child_ct = rows[pidx].create_time;
                 cur = rows[pidx].parent_pid;
                 continue;
             }
@@ -540,5 +557,50 @@ fn reparent_hosts(rows: &mut [ProcRow]) {
         rows[idx].identity_key = key;
         rows[idx].app_name = app;
         rows[idx].publisher = publisher;
+    }
+}
+
+#[cfg(test)]
+mod reparent_tests {
+    use super::*;
+
+    fn row(pid: u32, parent: u32, ct: i64, name: &str, key: &str) -> ProcRow {
+        ProcRow {
+            pid,
+            parent_pid: parent,
+            create_time: ct,
+            name: name.into(),
+            identity_key: key.into(),
+            app_name: key.into(),
+            ..Default::default()
+        }
+    }
+
+    // W1 (t=50) má rodiče PID 1234, který skončil a dostal ho pozdější
+    // hra X (t=70). Renderer W2 (t=100) pod W1 nesmí přes W1 dojít
+    // k X — X vznikl až po W1, takže jeho rodičem není.
+    #[test]
+    fn recycled_parent_of_intermediate_host_is_rejected() {
+        let mut rows = vec![
+            row(200, 1234, 50, "msedgewebview2.exe", "sig:microsoft"),
+            row(1234, 4, 70, "game.exe", "app:game"),
+            row(300, 200, 100, "msedgewebview2.exe", "sig:microsoft"),
+        ];
+        reparent_hosts(&mut rows);
+        assert_eq!(rows[0].identity_key, "sig:microsoft");
+        assert_eq!(rows[2].identity_key, "sig:microsoft");
+    }
+
+    // Poctivý řetězec hostitel → WebView2 → renderer dál projde.
+    #[test]
+    fn genuine_chain_takes_owner_identity() {
+        let mut rows = vec![
+            row(100, 4, 10, "app.exe", "app:app"),
+            row(200, 100, 50, "msedgewebview2.exe", "sig:microsoft"),
+            row(300, 200, 100, "msedgewebview2.exe", "sig:microsoft"),
+        ];
+        reparent_hosts(&mut rows);
+        assert_eq!(rows[1].identity_key, "app:app");
+        assert_eq!(rows[2].identity_key, "app:app");
     }
 }

@@ -117,8 +117,8 @@ pub fn validate(action: &Action, ctx: &mut LiveContext) -> Verdict {
                 "shell" => Verdict::deny(
                     "položky Winlogon (Userinit/Shell) se nepřepínají — jsou jen k náhledu",
                 ),
-                "run_user" | "run_machine" => {
-                    if startup_run_exists(name, source == "run_machine") {
+                "run_user" | "run_machine" | "run_machine32" => {
+                    if startup_run_exists(name, source) {
                         Verdict::Allow
                     } else {
                         Verdict::deny(format!("položka „{name}“ v Run klíči neexistuje"))
@@ -365,24 +365,35 @@ fn is_critical_name(name: &str) -> bool {
 /// Existuje hodnota v Run klíči? (čerstvě, obě architektury)
 /// Uživatelské položky se hledají v HKU\<SID>, ne v HKEY_CURRENT_USER —
 /// démon běží jako LocalSystem, takže by to byla hive SYSTEMu.
-fn startup_run_exists(name: &str, machine: bool) -> bool {
-    run_value(name, machine).is_some()
+fn startup_run_exists(name: &str, source: &str) -> bool {
+    run_value(name, source).is_some()
 }
 
 /// Existuje soubor ve Startup složce?
+///
+/// Uživatelská složka se bere z profilu přihlášeného uživatele, stejně
+/// jako ji čte kolektor. Dřív tu bylo `%APPDATA%` — jenže služba běží
+/// jako SYSTEM a to se jí rozbalí do vlastního profilu (systemprofile).
+/// Soubor tam nikdy nebyl, takže validace přepnutí každé položky
+/// z uživatelské složky Po spuštění zamítla jako „neexistuje".
 fn startup_folder_exists(name: &str, common: bool) -> bool {
+    // Jméno je jen jméno souboru — žádná cesta ven ze složky.
+    if name.is_empty() || name.contains(['\\', '/']) || name.contains("..") {
+        return false;
+    }
     let base = if common {
-        std::env::var("ProgramData").ok()
+        std::env::var("ProgramData")
+            .ok()
+            .map(|p| format!(r"{p}\Microsoft\Windows\Start Menu\Programs\Startup"))
     } else {
-        std::env::var("APPDATA").ok()
+        win_sys::consent::user_hives()
+            .into_iter()
+            .next()
+            .and_then(|sid| win_sys::consent::profile_path(&sid))
+            .map(|p| format!(r"{p}\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"))
     };
-    base.map(|b| {
-        std::path::Path::new(&format!(
-            r"{b}\Microsoft\Windows\Start Menu\Programs\Startup\{name}"
-        ))
-        .exists()
-    })
-    .unwrap_or(false)
+    base.map(|b| std::path::Path::new(&b).join(name).exists())
+        .unwrap_or(false)
 }
 
 /// Start typ služby z registru (2 = auto, 3 = ruční, 4 = zakázáno).
@@ -479,10 +490,12 @@ pub fn system_startup_reason(
 
         // Run klíče. Windows tu svoje věci prakticky nemá, takže riziko
         // je opačné — schovat něco cizího.
-        "run_user" | "run_machine" => {
+        // Každý Run klíč má vlastní zdroj (collector-boot), jinak by
+        // stejné jméno ve dvou klíčích dalo dvě položky se stejným id.
+        "run_user" | "run_machine" | "run_machine32" | "run_once_user" | "run_once_machine" => {
             let cmd = match command {
                 Some(c) => c.to_string(),
-                None => run_value(name, source == "run_machine")?,
+                None => run_value(name, source)?,
             };
             if per_user_command(&cmd) {
                 return None;
@@ -711,22 +724,31 @@ fn payload_of_command(cmd: &str) -> Option<String> {
 /// démon běží jako LocalSystem, takže by to byla hive SYSTEMu, ne
 /// přihlášeného uživatele — uživatelské položky se hledají v HKU\<SID>,
 /// stejně jako v `uninstall_command`.
-fn run_value(name: &str, machine: bool) -> Option<String> {
+///
+/// Hledá se jen v klíči, ze kterého položka podle zdroje pochází — dřív
+/// u `run_machine` prošly všechny čtyři klíče a validace tak schválila
+/// a posoudila i 32bitovou položku stejného jména.
+fn run_value(name: &str, source: &str) -> Option<String> {
     use win_sys::registry::{enum_values, RegKey, HKEY_LOCAL_MACHINE, HKEY_USERS};
-    const SUBS: &[&str] = &[
-        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
-        r"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
-        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
-        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce",
-    ];
+    const RUN: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+    const RUN_ONCE: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce";
+    const RUN_32: &str = r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run";
+    let (machine, subs): (bool, &[&str]) = match source {
+        "run_machine" => (true, &[RUN]),
+        "run_machine32" => (true, &[RUN_32]),
+        "run_once_machine" => (true, &[RUN_ONCE]),
+        "run_user" => (false, &[RUN]),
+        "run_once_user" => (false, &[RUN_ONCE]),
+        _ => return None,
+    };
     let mut roots: Vec<(RegKey, String)> = Vec::new();
     if machine {
-        for s in SUBS {
+        for s in subs {
             roots.push((HKEY_LOCAL_MACHINE, (*s).to_string()));
         }
     } else {
         for sid in win_sys::consent::user_hives() {
-            for s in SUBS {
+            for s in subs {
                 roots.push((HKEY_USERS, format!(r"{sid}\{s}")));
             }
         }

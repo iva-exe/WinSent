@@ -101,6 +101,13 @@ pub fn extract_ico(path: &str) -> Option<IconRgba> {
     }
 }
 
+/// Jméno skupiny ikon z EnumResourceNamesW: číselné (MAKEINTRESOURCE)
+/// nebo vlastní kopie řetězce s koncovou nulou.
+enum GroupName {
+    Id(u16),
+    Str(Vec<u16>),
+}
+
 /// Ikona přímo z PE resource binárky (RT_GROUP_ICON → nejlepší
 /// velikost → RT_ICON → HICON). Funguje i v session 0 (služba),
 /// protože nesahá na shell ani na ikonové cache.
@@ -123,23 +130,37 @@ pub fn extract_pe(path: &str) -> Option<IconRgba> {
         .collect();
 
     // Callback pro EnumResourceNamesW — vezme PRVNÍ group icon
-    // (u .exe je to ikona aplikace) a uloží její id do kontextu.
+    // (u .exe je to ikona aplikace) a uloží její jméno do kontextu.
+    //
+    // Řetězcové jméno (Inno/Delphi `MAINICON`, Qt `IDI_ICON1`) se musí
+    // zkopírovat TADY. Systém ho pro callback skládá do dočasného bufferu
+    // na heapu (v PE leží s délkou, bez koncové nuly) a po skončení
+    // enumerace ho uvolní. Dřív se ukládal jen ukazatel a FindResourceW
+    // pak četl uvolněnou paměť — ve službě, kde ostatní vlákna souběžně
+    // alokují, to znamenalo občas cizí jméno a generickou ikonu.
     unsafe extern "system" fn first_name(
         _module: windows::Win32::Foundation::HMODULE,
         _ty: PCWSTR,
         name: PCWSTR,
         param: isize,
     ) -> windows::core::BOOL {
-        let slot = param as *mut usize;
+        let slot = param as *mut Option<GroupName>;
         if !slot.is_null() {
-            *slot = name.0 as usize;
+            *slot = Some(if (name.0 as usize) >> 16 == 0 {
+                GroupName::Id(name.0 as usize as u16)
+            } else {
+                let mut v = name.as_wide().to_vec();
+                v.push(0);
+                GroupName::Str(v)
+            });
         }
         // false = přestat enumerovat (máme první).
         false.into()
     }
 
     // SAFETY: modul se načítá jen jako data (nespouští se žádný kód),
-    // handle se vždy uvolní; resource ukazatele žijí po dobu modulu.
+    // handle se vždy uvolní; ukazatele z LockResource žijí po dobu
+    // modulu (jméno z enumerace ne — to si kopírujeme, viz výš).
     unsafe {
         let module = LoadLibraryExW(
             PCWSTR(wide.as_ptr()),
@@ -148,25 +169,27 @@ pub fn extract_pe(path: &str) -> Option<IconRgba> {
         )
         .ok()?;
 
-        let mut group_name: usize = 0;
+        let mut group_name: Option<GroupName> = None;
         let _ = EnumResourceNamesW(
             Some(module),
             RT_GROUP_ICON,
             Some(first_name),
-            &mut group_name as *mut usize as isize,
+            &mut group_name as *mut Option<GroupName> as isize,
         );
-        if group_name == 0 {
+        let Some(group_name) = group_name else {
             let _ = FreeLibrary(module);
             return None;
-        }
+        };
+        // Číslo jako MAKEINTRESOURCE, řetězec z vlastní kopie — ta žije
+        // do konce funkce, tedy i přes volání FindResourceW.
+        let group_ptr = match &group_name {
+            GroupName::Id(id) => PCWSTR(*id as usize as *const u16),
+            GroupName::Str(v) => PCWSTR(v.as_ptr()),
+        };
 
         let result = (|| {
             // Group icon direktář → id nejlepší varianty pro 32×32.
-            let group = FindResourceW(
-                Some(module),
-                PCWSTR(group_name as *const u16),
-                RT_GROUP_ICON,
-            );
+            let group = FindResourceW(Some(module), group_ptr, RT_GROUP_ICON);
             if group.is_invalid() {
                 return None;
             }

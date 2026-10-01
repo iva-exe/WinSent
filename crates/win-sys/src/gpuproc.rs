@@ -5,9 +5,11 @@
 //! instance nese `pid_<PID>_..._engtype_<typ>`.
 //!
 //! Per-proces i celkové % se počítají STEJNĚ: hodnoty se sečtou uvnitř
-//! jednoho typu enginu a přes typy se bere MAXIMUM. Enginy běží
-//! souběžně — 3D, Copy a VideoDecode jsou oddělené jednotky téhož
-//! čipu a jejich součet neodpovídá tomu, „kolik GPU zabírá".
+//! jednoho fyzického enginu (luid adaptéru + eng_N) a přes enginy
+//! i adaptéry se bere MAXIMUM. Enginy běží souběžně — 3D, Copy
+//! a VideoDecode jsou oddělené jednotky, adaptér jich téhož typu mívá
+//! několik a hybridní notebook má dvě GPU; jejich součet neodpovídá
+//! tomu, „kolik GPU zabírá".
 //!
 //! Změřeno na Discordu: součet přes enginy 17,2 %, maximum 9,0 %,
 //! Správce úloh u téhož procesu ve stejnou chvíli 6,8 % (Video
@@ -32,9 +34,9 @@ use windows::Win32::System::Performance::{
 /// Jeden vzorek GPU čítačů.
 #[derive(Debug, Default)]
 pub struct GpuSample {
-    /// PID → GPU % (maximum přes typy enginů procesu).
+    /// PID → GPU % (maximum přes enginy, které proces používá).
     pub per_pid: HashMap<u32, f32>,
-    /// Celkové GPU % (max přes engine typy). None dokud není primed.
+    /// Celkové GPU % (max přes enginy). None dokud není primed.
     pub total_pct: Option<f32>,
     /// Obsazená dedikovaná VRAM největšího adaptéru v MB.
     pub vram_used_mb: Option<u64>,
@@ -116,28 +118,9 @@ impl GpuPerProc {
                 return out; // rate ještě není platný
             }
 
-            // Uvnitř typu enginu se sčítá (proces má běžně několik
-            // instancí téhož typu), přes typy se bere maximum.
-            let mut by_engtype: HashMap<String, f64> = HashMap::new();
-            let mut per_pid_eng: HashMap<(u32, String), f64> = HashMap::new();
-            for (name, val) in read_counter_array(self.counter) {
-                let eng = engtype_from_instance(&name).unwrap_or("").to_string();
-                if let Some(pid) = pid_from_instance(&name) {
-                    *per_pid_eng.entry((pid, eng.clone())).or_insert(0.0) += val;
-                }
-                *by_engtype.entry(eng).or_insert(0.0) += val;
-            }
-            for ((pid, _), v) in per_pid_eng {
-                let e = out.per_pid.entry(pid).or_insert(0.0);
-                *e = e.max(v as f32);
-            }
-            out.total_pct = by_engtype
-                .values()
-                .copied()
-                .fold(None, |acc: Option<f64>, v| {
-                    Some(acc.map_or(v, |a| a.max(v)))
-                })
-                .map(|v| (v as f32).clamp(0.0, 100.0));
+            let (per_pid, total_pct) = aggregate(read_counter_array(self.counter));
+            out.per_pid = per_pid;
+            out.total_pct = total_pct;
 
             // VRAM: max přes adaptéry (diskrétní GPU má největší).
             if let Some(mem) = self.mem_counter {
@@ -196,7 +179,109 @@ fn pid_from_instance(name: &str) -> Option<u32> {
     rest[..end].parse().ok()
 }
 
-/// Vyparsuje engine typ („3D", „Copy", …) z názvu instance.
-fn engtype_from_instance(name: &str) -> Option<&str> {
-    name.rsplit_once("engtype_").map(|(_, t)| t)
+/// Identita fyzického enginu z názvu instance: úsek od `luid_` po
+/// `_engtype_`, např. „luid_0x00000000_0x0000CECA_phys_0_eng_13".
+///
+/// Dřív se klíčovalo jen typem enginu. Jeden adaptér ale má několik
+/// nezávislých enginů téhož typu (NVIDIA tu má 7× Copy) a druhý adaptér
+/// (iGPU hybridního notebooku) vlastní 3D — sčítalo se tak přes různé
+/// jednotky i různé GPU a hra 90 % + DWM na iGPU 25 % dalo clamp 100 %.
+/// Neznámý formát spadne na jméno bez `pid_N_`, aby se nesouvisející
+/// instance nesloučily.
+fn engine_key_from_instance(name: &str) -> &str {
+    if let (Some(start), Some(end)) = (name.find("luid_"), name.rfind("_engtype_")) {
+        if start < end {
+            return &name[start..end];
+        }
+    }
+    match name.strip_prefix("pid_") {
+        Some(rest) => rest.split_once('_').map_or(rest, |(_, r)| r),
+        None => name,
+    }
+}
+
+/// Instance → (PID → %, celkové %). Uvnitř jednoho fyzického enginu
+/// (luid + eng_N) se sčítá — procesy se o engine dělí, proces může mít
+/// i víc instancí téhož enginu — a přes enginy i adaptéry se bere
+/// maximum. Stejně počítá Správce úloh.
+fn aggregate(
+    items: impl IntoIterator<Item = (String, f64)>,
+) -> (HashMap<u32, f32>, Option<f32>) {
+    let mut by_engine: HashMap<String, f64> = HashMap::new();
+    let mut per_pid_engine: HashMap<(u32, String), f64> = HashMap::new();
+    for (name, val) in items {
+        let eng = engine_key_from_instance(&name).to_string();
+        if let Some(pid) = pid_from_instance(&name) {
+            *per_pid_engine.entry((pid, eng.clone())).or_insert(0.0) += val;
+        }
+        *by_engine.entry(eng).or_insert(0.0) += val;
+    }
+    let mut per_pid: HashMap<u32, f32> = HashMap::new();
+    for ((pid, _), v) in per_pid_engine {
+        let e = per_pid.entry(pid).or_insert(0.0);
+        *e = e.max(v as f32);
+    }
+    let total = by_engine
+        .values()
+        .copied()
+        .fold(None, |acc: Option<f64>, v| Some(acc.map_or(v, |a| a.max(v))))
+        .map(|v| (v as f32).clamp(0.0, 100.0));
+    (per_pid, total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inst(pid: u32, luid: &str, eng: u32, ty: &str, v: f64) -> (String, f64) {
+        (
+            format!("pid_{pid}_luid_0x00000000_0x0000{luid}_phys_0_eng_{eng}_engtype_{ty}"),
+            v,
+        )
+    }
+
+    // Dva různé Copy enginy téhož adaptéru jsou nezávislé jednotky.
+    #[test]
+    fn engines_of_same_type_do_not_add_up() {
+        let (per_pid, total) = aggregate([
+            inst(10, "CECA", 4, "Copy", 30.0),
+            inst(10, "CECA", 5, "Copy", 30.0),
+        ]);
+        assert_eq!(total, Some(30.0));
+        assert_eq!(per_pid[&10], 30.0);
+    }
+
+    // 3D na dvou adaptérech (iGPU + dGPU) se nesčítá.
+    #[test]
+    fn adapters_do_not_add_up() {
+        let (per_pid, total) = aggregate([
+            inst(1, "DCE1", 0, "3D", 25.0),
+            inst(2, "CECA", 0, "3D", 90.0),
+        ]);
+        assert_eq!(total, Some(90.0));
+        assert_eq!(per_pid[&1], 25.0);
+        assert_eq!(per_pid[&2], 90.0);
+    }
+
+    // Procesy na stejném enginu se o něj dělí — tam se sčítá.
+    #[test]
+    fn processes_on_one_engine_add_up() {
+        let (per_pid, total) = aggregate([
+            inst(1, "CECA", 0, "3D", 20.0),
+            inst(2, "CECA", 0, "3D", 30.0),
+        ]);
+        assert_eq!(total, Some(50.0));
+        assert_eq!(per_pid[&1], 20.0);
+        assert_eq!(per_pid[&2], 30.0);
+    }
+
+    #[test]
+    fn engine_key_parsing() {
+        assert_eq!(
+            engine_key_from_instance("pid_7_luid_0x0_0x1_phys_0_eng_13_engtype_Copy"),
+            "luid_0x0_0x1_phys_0_eng_13"
+        );
+        assert_eq!(engine_key_from_instance("pid_7_neco_jineho"), "neco_jineho");
+        assert_eq!(pid_from_instance("pid_1234_luid_x"), Some(1234));
+    }
 }

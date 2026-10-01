@@ -68,19 +68,30 @@ pub fn snapshot() -> Vec<Conn> {
     out
 }
 
-/// Dvoufázové čtení tabulky dle kontraktu GetExtended*Table:
-/// nejdřív velikost, pak data. Vrací syrový buffer.
+/// Čtení tabulky dle kontraktu GetExtended*Table: nejdřív velikost,
+/// pak data. Vrací syrový buffer.
+///
+/// Tabulka se mezi oběma voláními může zvětšit (prohlížeč otevírá
+/// desítky spojení za sekundu) a druhé volání pak vrátí
+/// ERROR_INSUFFICIENT_BUFFER. Dřív to znamenalo None a celá rodina
+/// (třeba všechna IPv4 TCP spojení) v sekci Síť na jedno obnovení
+/// zmizela. Proto rezerva navíc a pár pokusů s nově hlášenou velikostí.
+/// Buffer je z u32, aby byl zarovnaný pro struktury MIB_* (vyžadují 4).
 macro_rules! read_table {
     ($fn:ident, $family:expr, $class:expr) => {{
         let mut size = 0u32;
-        // SAFETY: dvoufázové volání dle dokumentace; buffer má velikost,
-        // kterou API samo ohlásilo.
+        let mut out = None;
+        // SAFETY: volání dle dokumentace; API dostává skutečnou velikost
+        // bufferu v bajtech (≥ size, které samo ohlásilo).
         unsafe {
             let _ = $fn(None, &mut size, false, $family.0 as u32, $class, 0);
-            if size == 0 {
-                None
-            } else {
-                let mut buf = vec![0u8; size as usize];
+            for _ in 0..4 {
+                if size == 0 {
+                    break;
+                }
+                let words = (size.saturating_add(size / 8 + 1024) as usize).div_ceil(4);
+                let mut buf = vec![0u32; words];
+                size = (words * 4) as u32;
                 let r = $fn(
                     Some(buf.as_mut_ptr() as *mut _),
                     &mut size,
@@ -89,9 +100,17 @@ macro_rules! read_table {
                     $class,
                     0,
                 );
-                (r == 0).then_some(buf)
+                if r == 0 {
+                    out = Some(buf);
+                    break;
+                }
+                if r != windows::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER.0 {
+                    break;
+                }
+                // size teď nese novou potřebnou velikost → další kolo.
             }
         }
+        out
     }};
 }
 

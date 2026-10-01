@@ -15,7 +15,7 @@
 //! INSERT OR IGNORE zahodil. core_1s se neagreguje (per-jádro detail
 //! má smysl jen čerstvý), jen maže.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 /// Retence surových 1s vzorků: 1 hodina.
 const KEEP_1S_S: i64 = 3600;
@@ -24,15 +24,42 @@ const KEEP_10S_S: i64 = 7 * 86_400;
 /// Retence 1m agregátů: 1 rok.
 const KEEP_1M_S: i64 = 366 * 86_400;
 
+/// Jména instancí procesů (`proc_names_v`) se drží o hodinu déle než
+/// poslední 1m vzorky — řádek instance se obnovuje jen jednou za pět
+/// minut, takže vzorek bývá o kus novější než jeho `last_ts`.
+const KEEP_NAMES_SLACK_S: i64 = 3600;
+
+/// Provede dávku SQL v jedné transakci, která se při chybě VRÁTÍ.
+///
+/// Dřív kroky posílaly holé `BEGIN; … COMMIT;` přes `execute_batch`.
+/// Když příkaz uprostřed selhal (typicky SQLITE_BUSY, protože cizí
+/// nástroj nad databází držel zápisový zámek déle než busy_timeout),
+/// dávka skončila chybou dřív, než došla ke COMMIT — a zapisovací
+/// spojení zůstalo navždy uvnitř transakce. Každý další insert_tick
+/// pak padal na „cannot start a transaction within a transaction"
+/// a do restartu služby se nezapsal jediný vzorek; události zapsané
+/// mimo transakci se při ukončení zahodily rollbackem. `Transaction`
+/// při dropu bez commitu pošle ROLLBACK sám.
+///
+/// IMMEDIATE bere zápisový zámek hned na BEGIN: busy handler pak čeká
+/// korektně, místo aby deferred transakce narazila na zámek až při
+/// povýšení čtení na zápis (tam WAL vrací BUSY bez čekání).
+fn in_tx(conn: &Connection, sql: &str) -> Result<(), rusqlite::Error> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    tx.execute_batch(sql)?;
+    tx.commit()
+}
+
 /// Jeden krok retenční kaskády.
 pub fn tick(conn: &Connection) -> Result<(), rusqlite::Error> {
     let now = chrono_now_unix();
 
     // ── 1s → 10s (zarovnáno na 10 s) ──
     let cut = (now - KEEP_1S_S) / 10 * 10;
-    conn.execute_batch(&format!(
-        "BEGIN;
-        INSERT OR IGNORE INTO system_10s
+    in_tx(
+        conn,
+        &format!(
+            "INSERT OR IGNORE INTO system_10s
             (ts, cpu_pct, cpu_pct_max, mem_used_mb, net_rx_bps, net_tx_bps,
              gpu_pct, gpu_pct_max, gpu_temp_c, cpu_clock_mhz)
         SELECT (ts/10)*10, AVG(cpu_pct), MAX(cpu_pct),
@@ -55,16 +82,17 @@ pub fn tick(conn: &Connection) -> Result<(), rusqlite::Error> {
         DELETE FROM system_1s WHERE ts < {cut};
         DELETE FROM sample_1s WHERE ts < {cut};
         DELETE FROM disk_1s   WHERE ts < {cut};
-        DELETE FROM core_1s   WHERE ts < {cut};
-        COMMIT;"
-    ))?;
+        DELETE FROM core_1s   WHERE ts < {cut};"
+        ),
+    )?;
 
     // ── 10s → 1m (zarovnáno na 60 s); avg z avg je OK — buckety mají
     // stejnou váhu, max se přenáší jako max z max ──
     let cut = (now - KEEP_10S_S) / 60 * 60;
-    conn.execute_batch(&format!(
-        "BEGIN;
-        INSERT OR IGNORE INTO system_1m
+    in_tx(
+        conn,
+        &format!(
+            "INSERT OR IGNORE INTO system_1m
             (ts, cpu_pct, cpu_pct_max, mem_used_mb, net_rx_bps, net_tx_bps,
              gpu_pct, gpu_pct_max, gpu_temp_c, cpu_clock_mhz)
         SELECT (ts/60)*60, AVG(cpu_pct), MAX(cpu_pct_max),
@@ -86,19 +114,25 @@ pub fn tick(conn: &Connection) -> Result<(), rusqlite::Error> {
         FROM disk_10s WHERE ts < {cut} GROUP BY ts/60, disk;
         DELETE FROM system_10s WHERE ts < {cut};
         DELETE FROM sample_10s WHERE ts < {cut};
-        DELETE FROM disk_10s   WHERE ts < {cut};
-        COMMIT;"
-    ))?;
+        DELETE FROM disk_10s   WHERE ts < {cut};"
+        ),
+    )?;
 
     // ── 1m → po roce pryč ──
+    // Spolu se vzorky odchází i jména instancí, na které už žádný
+    // vzorek neukazuje — instance procesů přibývají s každým spuštěním,
+    // takže bez řezu by tabulka rostla do nekonečna.
     let cut = now - KEEP_1M_S;
-    conn.execute_batch(&format!(
-        "BEGIN;
-        DELETE FROM system_1m WHERE ts < {cut};
+    let names_cut = cut - KEEP_NAMES_SLACK_S;
+    in_tx(
+        conn,
+        &format!(
+            "DELETE FROM system_1m WHERE ts < {cut};
         DELETE FROM sample_1m WHERE ts < {cut};
         DELETE FROM disk_1m   WHERE ts < {cut};
-        COMMIT;"
-    ))?;
+        DELETE FROM proc_names_v WHERE last_ts < {names_cut};"
+        ),
+    )?;
 
     Ok(())
 }
@@ -160,5 +194,69 @@ mod tests {
             .unwrap();
         assert_eq!(pm, 200);
         assert_eq!(pm_max, 300);
+    }
+
+    // Krok, který selže uprostřed dávky, nesmí nechat spojení viset
+    // v transakci — jinak by se do restartu služby nezapsal žádný vzorek.
+    #[test]
+    fn selhany_krok_vrati_transakci() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::migrations::run(&conn).unwrap();
+        let old = chrono_now_unix() - KEEP_1S_S - 100;
+        conn.execute(
+            "INSERT INTO system_1s (ts, cpu_pct, mem_used_mb) VALUES (?1, 5.0, 1000)",
+            params![old],
+        )
+        .unwrap();
+        // Chybějící tabulka shodí třetí příkaz dávky, první dva už proběhly.
+        conn.execute_batch("DROP TABLE disk_10s;").unwrap();
+        assert!(tick(&conn).is_err(), "krok měl selhat");
+        assert!(conn.is_autocommit(), "spojení zůstalo v transakci");
+        let n10: i64 = conn
+            .query_row("SELECT COUNT(*) FROM system_10s", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n10, 0, "napůl provedený krok se nevrátil");
+        // Zápis vzorků (insert_tick) musí jít dál.
+        conn.transaction()
+            .expect("nová transakce")
+            .commit()
+            .unwrap();
+    }
+
+    // Mazání jmen instancí běží každou minutu v zápisové transakci —
+    // musí jít přes index, ne průchodem celé (roční) tabulky.
+    #[test]
+    fn mazani_jmen_jde_pres_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::migrations::run(&conn).unwrap();
+        let plan: Vec<String> = conn
+            .prepare("EXPLAIN QUERY PLAN DELETE FROM proc_names_v WHERE last_ts < 100")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            plan.iter().any(|d| d.contains("proc_names_v_last")),
+            "plán nepoužívá index: {plan:?}"
+        );
+    }
+
+    // Cizí zapisovatel držící zámek: krok skončí BUSY, ale spojení se
+    // z toho vzpamatuje a další krok po uvolnění zámku projde.
+    #[test]
+    fn zamek_ciziho_zapisovatele_nezablokuje_spojeni() {
+        let dir = std::env::temp_dir().join("winsent-test-retence-busy");
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = dir.join("s.db");
+        let conn = crate::open(&db).unwrap();
+        conn.busy_timeout(std::time::Duration::from_millis(50))
+            .unwrap();
+        let cizi = Connection::open(&db).unwrap();
+        cizi.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        assert!(tick(&conn).is_err(), "krok měl narazit na zámek");
+        assert!(conn.is_autocommit(), "spojení zůstalo v transakci");
+        cizi.execute_batch("COMMIT;").unwrap();
+        tick(&conn).expect("po uvolnění zámku má krok projít");
     }
 }

@@ -87,6 +87,23 @@ pub fn soubor(letter: char) -> Option<PathBuf> {
     Some(adresar()?.join(format!("{}.idx", letter.to_ascii_uppercase())))
 }
 
+/// Soubor pro jeden svazek, ale jen v adresáři, který prošel kontrolou
+/// (skutečný adresář, ne odkaz, vlastněný SYSTEM nebo správci).
+///
+/// Kontrolu dřív dělalo jen ukládání. Načtení a mazání šly přes holou
+/// cestu — a když si běžný uživatel adresář `index` předem založil jako
+/// junction do své složky (rodič je pro Users zapisovatelný), služba
+/// jako SYSTEM četla index, který jí podstrčil, a `zahod` mazal soubory
+/// tam, kam junction mířila. Uložení kontrolu odmítlo, ale čtení
+/// a mazání ne — takže junction zůstávala napořád.
+fn overeny_soubor(letter: char) -> Option<PathBuf> {
+    if !letter.is_ascii_alphabetic() {
+        return None;
+    }
+    let dir = zabezpeceny_adresar().ok()?;
+    Some(dir.join(format!("{}.idx", letter.to_ascii_uppercase())))
+}
+
 /// Sekundy od epochy. Razítko v hlavičce, ne čas souboru: kopírování
 /// nebo obnova ze zálohy by čas souboru změnily, obsah ne.
 fn ted_s() -> u64 {
@@ -158,18 +175,33 @@ pub fn zapis(idx: &VolumeIndex, w: &mut impl Write) -> std::io::Result<()> {
 pub fn uloz(idx: &VolumeIndex) -> std::io::Result<PathBuf> {
     let cil = soubor(idx.letter)
         .ok_or_else(|| std::io::Error::other("neznámé umístění pro uložený index"))?;
-    if let Some(d) = cil.parent() {
-        std::fs::create_dir_all(d)?;
+    zabezpeceny_adresar()?;
+    // Adresář zvenku zamčený je až od téhle verze. Kdo si do něj dřív
+    // stihl založit podadresář nebo junction se jménem cílového
+    // souboru, zablokoval by přejmenování napořád — `zahod` maže jen
+    // soubory. Prázdný adresář nebo samotný odkaz se odstraní (cíl
+    // odkazu ne; remove_dir na junction maže jen junction).
+    if std::fs::symlink_metadata(&cil).is_ok_and(|m| !m.is_file()) {
+        let _ = std::fs::remove_dir(&cil);
     }
     // Píše se vedle a přejmenovává až hotové. Kdyby služba spadla
     // uprostřed zápisu, zůstal by jinak useknutý soubor, který by se
     // příště sice zahodil, ale mezitím by vypadal jako platný.
-    // Pevné jméno by šlo obsadit: adresář je zapisovatelný pro
-    // běžného uživatele, takže by si tam mohl předem založit soubor
-    // (nebo adresář) toho jména a ukládání by od té chvíle mlčky
-    // selhávalo napořád. Náhodná přípona a `create_new` to vylučují —
-    // a zároveň se tím nesrazí dva souběžné zápisy.
-    let docasny = cil.with_extension(format!("idx.{}.tmp", ted_s() ^ (idx.nodes.len() as u64)));
+    // `create_new` a přípona z nanosekund a PID brání srážce dvou
+    // souběžných zápisů; před cizím obsazením jména chrání DACL
+    // adresáře (viz `zabezpeceny_adresar`).
+    // Čítač navíc: hodiny Windows tikají po 100 ns a dvě vlákna téhož
+    // procesu (auto-index a obnova na pozadí) dokončila podle logu tentýž
+    // svazek ve stejné milisekundě — create_new pak selhal na „soubor
+    // existuje" (os error 80).
+    static CITAC: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let pripona = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+        ^ ((std::process::id() as u64) << 32)
+        ^ CITAC.fetch_add(1, std::sync::atomic::Ordering::Relaxed).rotate_left(48);
+    let docasny = cil.with_extension(format!("idx.{pripona:x}.tmp"));
     {
         let f = std::fs::OpenOptions::new()
             .write(true)
@@ -190,7 +222,7 @@ pub fn uloz(idx: &VolumeIndex) -> std::io::Result<PathBuf> {
 /// Načte uložený index svazku. `None` = není, nesedí, nebo je vadný;
 /// v každém z těch případů je odpověď stejná — postavit ho znovu.
 pub fn nacti(letter: char) -> Option<(VolumeIndex, u64)> {
-    let cil = soubor(letter)?;
+    let cil = overeny_soubor(letter)?;
     let f = std::fs::File::open(&cil).ok()?;
     // Strop se dává na ČTENÍ, ne až na velikost z metadat: soubor může
     // mezi zjištěním velikosti a čtením vyrůst a řídkému souboru
@@ -219,7 +251,7 @@ pub fn stari_s(letter: char) -> Option<u64> {
 }
 
 fn precti_hlavicku(letter: char) -> Option<Vec<u8>> {
-    let f = std::fs::File::open(soubor(letter)?).ok()?;
+    let f = std::fs::File::open(overeny_soubor(letter)?).ok()?;
     let mut hlava = Vec::new();
     std::io::Read::take(f, HLAVICKA as u64)
         .read_to_end(&mut hlava)
@@ -315,21 +347,171 @@ fn rozbal(letter: char, data: &[u8]) -> Option<(VolumeIndex, u64)> {
 ///
 /// Zůstávají po pádu uprostřed zápisu. Samy o sobě nevadí, ale nikdo
 /// jiný je neuklidí — `zahod` sahá jen na hotový index.
+///
+/// Maže jako SYSTEM, takže jen v adresáři, který prošel kontrolou
+/// `zabezpeceny_adresar`, a jen obyčejné soubory. Dřív se mazalo
+/// v čemkoli, co se jmenovalo `index`: běžný uživatel si před prvním
+/// uložením mohl adresář založit jako junction kamkoli a služba by mu
+/// při každém startu smazala všechny `*.tmp` v cílovém adresáři.
 pub fn uklid_rozpracovane() {
-    let Some(dir) = adresar() else { return };
+    let Ok(dir) = zabezpeceny_adresar() else {
+        return;
+    };
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
     for e in rd.flatten() {
-        if e.file_name().to_string_lossy().ends_with(".tmp") {
+        // file_type() z výčtu adresáře odkaz nenásleduje.
+        let obycejny = e.file_type().is_ok_and(|t| t.is_file());
+        if obycejny && e.file_name().to_string_lossy().ends_with(".tmp") {
             let _ = std::fs::remove_file(e.path());
         }
     }
 }
 
+/// Připraví adresář pro uložené indexy tak, aby do něj nikdo kromě
+/// služby a správců nemohl zasahovat, a vrátí jeho cestu.
+///
+/// `%ProgramData%\syswatch` dědí ACL, ve kterém smí běžní uživatelé
+/// zakládat soubory i podadresáře. Dokud `index` neexistoval, mohl si
+/// ho kdokoli založit jako junction do cizího adresáře a služba (SYSTEM)
+/// by pak zapisovala, přejmenovávala a mazala tam. Proto:
+/// * žádná složka cesty nesmí být reparse point,
+/// * vlastníkem musí být SYSTEM nebo Administrators (adresář založený
+///   uživatelem by si ten uživatel mohl kdykoli vyměnit pod rukama),
+/// * `index` dostane chráněnou DACL bez dědění: plný přístup SYSTEM
+///   a správci, ostatní jen čtení — nic nového tam nezaloží.
+///
+/// Kontroly jdou přes otevřený handle (bez následování odkazů), takže
+/// mezi kontrolou a nastavením DACL nejde adresář podstrčit.
+pub fn zabezpeceny_adresar() -> std::io::Result<PathBuf> {
+    let dir = adresar().ok_or_else(|| std::io::Error::other("ProgramData není nastavené"))?;
+    let rodic = dir
+        .parent()
+        .ok_or_else(|| std::io::Error::other("adresář indexu nemá rodiče"))?;
+    std::fs::create_dir_all(rodic)?;
+    acl::over_slozku(rodic, false)?;
+    match std::fs::create_dir(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    acl::over_slozku(&dir, true)?;
+    Ok(dir)
+}
+
+/// Kontrola vlastníka a DACL adresáře přes Win32.
+mod acl {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+    use std::path::Path;
+
+    use windows::core::w;
+    use windows::Win32::Foundation::{LocalFree, HANDLE, HLOCAL};
+    use windows::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SetSecurityInfo,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows::Win32::Security::{
+        GetSecurityDescriptorDacl, IsWellKnownSid, WinBuiltinAdministratorsSid, WinLocalSystemSid,
+        ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    };
+
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    const READ_CONTROL: u32 = 0x0002_0000;
+    const WRITE_DAC: u32 = 0x0004_0000;
+
+    /// SYSTEM a správci vše, Users čtení a průchod; dědí se na soubory
+    /// i podadresáře, „P" vypíná dědění z `%ProgramData%\syswatch`.
+    const DACL: windows::core::PCWSTR = w!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FRFX;;;BU)");
+
+    fn chyba(co: &str) -> std::io::Error {
+        std::io::Error::other(format!("adresář indexu: {co}"))
+    }
+
+    /// Ověří, že `cesta` je skutečný adresář (ne odkaz) vlastněný
+    /// SYSTEM nebo správci; s `zamknout` mu navíc nastaví `DACL`.
+    pub(super) fn over_slozku(cesta: &Path, zamknout: bool) -> std::io::Result<()> {
+        let pristup = READ_CONTROL | FILE_READ_ATTRIBUTES | if zamknout { WRITE_DAC } else { 0 };
+        let f = std::fs::OpenOptions::new()
+            .access_mode(pristup)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(cesta)?;
+        let m = f.metadata()?;
+        if !m.is_dir() || m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(chyba("není obyčejný adresář"));
+        }
+        let h = HANDLE(f.as_raw_handle());
+
+        // SAFETY: handle patří otevřenému `f`; deskriptor vrácený
+        // GetSecurityInfo i ConvertString… se uvolňuje LocalFree
+        // a ukazatele do něj (vlastník, DACL) se po uvolnění nepoužijí.
+        unsafe {
+            let mut vlastnik = PSID::default();
+            let mut sd = PSECURITY_DESCRIPTOR::default();
+            let e = GetSecurityInfo(
+                h,
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                Some(&mut vlastnik),
+                None,
+                None,
+                None,
+                Some(&mut sd),
+            );
+            if e.is_err() {
+                return Err(chyba("vlastníka nejde přečíst"));
+            }
+            let duveryhodny = IsWellKnownSid(vlastnik, WinLocalSystemSid).as_bool()
+                || IsWellKnownSid(vlastnik, WinBuiltinAdministratorsSid).as_bool();
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            if !duveryhodny {
+                return Err(chyba("vlastníkem není SYSTEM ani správci"));
+            }
+
+            if zamknout {
+                let mut sd = PSECURITY_DESCRIPTOR::default();
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    DACL,
+                    SDDL_REVISION_1,
+                    &mut sd,
+                    None,
+                )
+                .map_err(|_| chyba("DACL nejde sestavit"))?;
+                let mut je = windows::core::BOOL::default();
+                let mut vychozi = windows::core::BOOL::default();
+                let mut dacl: *mut ACL = std::ptr::null_mut();
+                let ok = GetSecurityDescriptorDacl(sd, &mut je, &mut dacl, &mut vychozi).is_ok();
+                let e = if ok {
+                    SetSecurityInfo(
+                        h,
+                        SE_FILE_OBJECT,
+                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                        None,
+                        None,
+                        Some(dacl),
+                        None,
+                    )
+                } else {
+                    windows::Win32::Foundation::ERROR_INVALID_SECURITY_DESCR
+                };
+                let _ = LocalFree(Some(HLOCAL(sd.0)));
+                if e.is_err() {
+                    return Err(chyba("DACL nejde nastavit"));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Smaže uložený index svazku (po nepovedeném načtení nemá co dělat).
 pub fn zahod(letter: char) {
-    if let Some(p) = soubor(letter) {
+    if let Some(p) = overeny_soubor(letter) {
         let _ = std::fs::remove_file(p);
     }
 }
@@ -441,6 +623,27 @@ mod tests {
         let (_, kdy) = rozbal('C', &buf).expect("platný soubor");
         let ted = ted_s();
         assert!(kdy <= ted && ted - kdy < 5, "kdy={kdy} ted={ted}");
+    }
+
+    /// Junction místo adresáře indexu se musí odmítnout, ať míří
+    /// kamkoli — přes něj by služba psala a mazala v cizím adresáři.
+    #[test]
+    fn junction_se_neuzna_za_adresar_indexu() {
+        let zaklad = std::env::temp_dir().join(format!("wsidx-junction-{}", std::process::id()));
+        let cil = zaklad.join("cil");
+        let odkaz = zaklad.join("index");
+        std::fs::create_dir_all(&cil).unwrap();
+        let ok = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&odkaz)
+            .arg(&cil)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if ok {
+            assert!(acl::over_slozku(&odkaz, false).is_err());
+        }
+        let _ = std::fs::remove_dir(&odkaz);
+        let _ = std::fs::remove_dir_all(&zaklad);
     }
 
     #[test]

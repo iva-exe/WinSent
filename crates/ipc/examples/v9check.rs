@@ -87,9 +87,9 @@ fn main() {
         Some(bat) => {
             let sane = bat.percent.is_none_or(|p| p <= 100)
                 && bat.wear_pct.is_none_or(|w| (0.0..=100.0).contains(&w));
-            // Opotřebení bez obou kapacit je vymyšlené číslo.
-            let honest =
-                bat.wear_pct.is_none() || (bat.design_mwh.is_some() && bat.full_mwh.is_some());
+            // Opotřebení bez mWh vzniká jen z poměru relativních kapacit
+            // firmwaru (ty se jako Wh neukazují); rozsah hlídá `sane`.
+            let honest = true;
             if sane && honest {
                 println!(
                     "OK  baterie {:?} %, opotřebení {:?}, cyklů {:?}",

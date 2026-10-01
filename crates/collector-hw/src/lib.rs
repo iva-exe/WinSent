@@ -340,8 +340,10 @@ mod tests {
     #[test]
     fn battery_wear_only_with_capacities() {
         if let Some(b) = battery() {
-            if b.design_mwh.is_none() || b.full_mwh.is_none() {
-                assert!(b.wear_pct.is_none());
+            // Bez mWh smí opotřebení vzniknout jen z poměru relativních
+            // kapacit firmwaru — pak je ale v rozsahu 0–100 %.
+            if let Some(w) = b.wear_pct {
+                assert!((0.0..=100.0).contains(&w), "opotřebení {w} %");
             }
         }
     }

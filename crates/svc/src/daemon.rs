@@ -121,7 +121,15 @@ fn zajisti_index(
         }
         match fs_index::snapshot::nacti(letter) {
             Some((idx, ulozeno)) => {
-                let stari = (unix_now() as u64).saturating_sub(ulozeno);
+                // Čerstvost podle posledního OVĚŘENÍ, ne jen uložení —
+                // viz OVERENO.
+                let overeno = OVERENO
+                    .lock()
+                    .expect("overeno lock")
+                    .get(&letter)
+                    .copied()
+                    .unwrap_or(0);
+                let stari = (unix_now() as u64).saturating_sub(ulozeno.max(overeno));
                 (idx, "uložený", false, stari > fs_index::snapshot::CERSTVOST_S)
             }
             None => {
@@ -158,10 +166,30 @@ fn zajisti_index(
         uloz_index(&idx, letter);
     }
     if zastaraly {
-        obnov_na_pozadi(fs_idx, stavba, cleanup, obnovovane, letter);
+        obnov_na_pozadi(fs_idx, cleanup, obnovovane, letter);
     }
     Ok(idx)
 }
+
+/// Kdy obnova z MFT naposledy potvrdila, že uložený snímek svazku
+/// odpovídá disku (unix s), i když se kvůli tomu neukládal.
+///
+/// Snímek starší než CERSTVOST_S (15 min) spouští obnovu, ale uloží se
+/// beze změny nejvýš jednou za hodinu (rozpočet zápisů). Razítko
+/// v souboru tak mezi 15. a 60. minutou zůstávalo staré a každé načtení
+/// po uvolnění janitorem pustilo novou plnou stavbu z MFT — sekundy
+/// I/O a stovky MB paměti za nic, přesně to, čemu hodinové uložení
+/// mělo zabránit. Paměť stačí: po restartu služby jedna obnova navíc
+/// nevadí.
+static OVERENO: std::sync::Mutex<std::collections::BTreeMap<char, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Obnovy na pozadí běží po jedné — každá čte celou MFT a drží
+/// stovky MB. Vlastní zámek, ne zámek stavby: ten bere i hledání při
+/// načítání uloženého snímku, takže obnova jednoho svazku (8 s, na
+/// BELOW_NORMAL pod hrou i déle) dřív zdržela hledání na všech
+/// ostatních svazcích, které janitor mezitím uvolnil.
+static OBNOVA: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Uloží index, ale jen když se od toho uloženého liší.
 ///
@@ -171,16 +199,53 @@ fn zajisti_index(
 /// procenta záznamů. Zapisovat to pokaždé znamená stovky megabajtů
 /// denně za nic; rozpočet nástroje je přitom 250 MB/den na všechno.
 ///
-/// Jednou za hodinu se uloží i beze změny, ať razítko čerstvosti
-/// nezůstane viset a nespouští přestavbu při každém otevření lišty.
+/// Jenže „liší se“ znamenalo „liší se v počtu záznamů o jediný“ — a na
+/// systémovém svazku se počet mění pořád (temp, prohlížeč, logy). Každá
+/// přestavba tak přepsala celých ~140 MB snímku C: a log ukázal až
+/// 2,3 GB zápisu za den jen na tohle. Snímek přitom slouží jen k tomu,
+/// aby hledání po startu fungovalo hned; po načtení se stejně hned
+/// obnoví z MFT. Stačí, když je „zhruba aktuální“: přepisuje se při
+/// změně nad 1 % záznamů (instalace hry, smazání velké složky) nebo
+/// jednou za 12 hodin. Mezitím se jen zapamatuje, že ho přestavba
+/// ověřila (OVERENO), aby každé otevření lišty nespouštělo další.
 fn uloz_pokud_se_zmenil(idx: &fs_index::VolumeIndex, letter: char) {
-    let stejny = fs_index::snapshot::pocet_v_souboru(letter) == Some(idx.len() as u64);
-    let cerstvy = fs_index::snapshot::stari_s(letter).is_some_and(|s| s < 3600);
-    if stejny && cerstvy {
-        tracing::debug!(volume = %letter, "index beze změny, neukládá se");
+    let v_souboru = fs_index::snapshot::pocet_v_souboru(letter);
+    if !snimek_je_zastaraly(v_souboru, idx.len() as u64, fs_index::snapshot::stari_s(letter)) {
+        tracing::debug!(volume = %letter, "index se změnil málo, neukládá se");
+        // Za ověřený (= obsahově aktuální) se snímek smí prohlásit jen
+        // při shodném počtu záznamů. Při drobném rozdílu je starší než
+        // to, co přestavba právě viděla: kdyby se označil, janitor by
+        // čerstvý index z paměti uvolnil a další hledání by běželo nad
+        // starým snímkem bez obnovy (soubor stažený před hodinou by se
+        // nenašel). Neoznačený snímek se při načtení prostě znovu obnoví
+        // z MFT — to je čtení, ne zápis.
+        if v_souboru == Some(idx.len() as u64) {
+            OVERENO
+                .lock()
+                .expect("overeno lock")
+                .insert(letter, unix_now() as u64);
+        }
         return;
     }
     uloz_index(idx, letter);
+}
+
+/// Nejdéle, co smí uložený snímek indexu zůstat nepřepsaný.
+const SNIMEK_MAX_STARI_S: u64 = 12 * 3600;
+/// Jaká část záznamů se musí změnit, aby se snímek přepsal dřív.
+const SNIMEK_ZMENA: f64 = 0.01;
+
+/// Má se snímek přepsat? `v_souboru`/`stari_s` = None znamená, že žádný
+/// použitelný není — pak vždy.
+fn snimek_je_zastaraly(v_souboru: Option<u64>, ted: u64, stari_s: Option<u64>) -> bool {
+    let (Some(n), Some(stari)) = (v_souboru, stari_s) else {
+        return true;
+    };
+    if stari >= SNIMEK_MAX_STARI_S {
+        return true;
+    }
+    let rozdil = n.abs_diff(ted) as f64;
+    rozdil > n.max(1) as f64 * SNIMEK_ZMENA
 }
 
 /// Uloží index a případné selhání jen ohlásí — bez uloženého indexu
@@ -204,7 +269,6 @@ fn uloz_index(idx: &fs_index::VolumeIndex, letter: char) {
 /// každé hledání, dokud by ta první nedoběhla.
 fn obnov_na_pozadi(
     fs_idx: &FsIndexes,
-    stavba: &Arc<std::sync::Mutex<()>>,
     cleanup: &CleanupShared,
     obnovovane: &Obnovovane,
     letter: char,
@@ -216,7 +280,6 @@ fn obnov_na_pozadi(
         }
     }
     let fs_idx = Arc::clone(fs_idx);
-    let stavba = Arc::clone(stavba);
     let cleanup = Arc::clone(cleanup);
     let obnovovane = Arc::clone(obnovovane);
     let _ = std::thread::Builder::new()
@@ -224,7 +287,7 @@ fn obnov_na_pozadi(
         .spawn(move || {
             let _ = win_sys::threading::set_current_thread_below_normal();
             let postaveny = {
-                let _drzim = stavba.lock().expect("fs build lock");
+                let _drzim = OBNOVA.lock().expect("obnova lock");
                 fs_index::VolumeIndex::build(letter)
             };
             match postaveny {
@@ -373,12 +436,15 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     // Klon pro sledování oprávnění (v9D) — vlákno spí na registru.
     let perm_tx = sample_tx.clone();
 
+    // Žádost auditu akcí o uvolnění zámku DB (viz Davka::zadost).
+    let uvolni_zapis = Arc::new(AtomicBool::new(false));
     let store_handle = {
         let stop = Arc::clone(&stop);
         let cfg = Arc::clone(&cfg);
+        let uvolni = Arc::clone(&uvolni_zapis);
         std::thread::Builder::new()
             .name("store-writer".into())
-            .spawn(move || store_loop(conn, cfg, stop, sample_rx))?
+            .spawn(move || store_loop(conn, cfg, stop, sample_rx, uvolni))?
     };
 
     // Sampler procesů (v1, SPEC kap. 3.1): 1 Hz vlákno plní sdílený
@@ -506,6 +572,24 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                                     if hit.ts - last_stall_ts < 10 {
                                         continue; // pokračování téhož záseku
                                     }
+                                    // Hit, který ležel v kanálu přes uspání.
+                                    // Těsně před spánkem systém vlákna
+                                    // přibrzdí (naměřeno 475 ms), heartbeat
+                                    // to ohlásí, a sampler si hit vybere
+                                    // až po probuzení — o hodiny později.
+                                    // Klasifikace podle metrik PO probuzení
+                                    // by mu přišila nesmyslnou příčinu
+                                    // i viníka. Sampler kanál vybírá nejvýš
+                                    // po sekundě, takže skutečný hit nikdy
+                                    // není starší než pár sekund.
+                                    if ts - hit.ts > 60 {
+                                        tracing::info!(
+                                            lag_ms = hit.lag_ms,
+                                            stari_s = ts - hit.ts,
+                                            "zásek před uspáním — nezapisuje se"
+                                        );
+                                        continue;
+                                    }
                                     last_stall_ts = hit.ts;
                                     burst_until = Instant::now() + Duration::from_secs(10);
                                     let v = classify_stall(&system, &procs);
@@ -547,7 +631,10 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                                         culprit: v.culprit.as_ref().map(|c| c.1.clone()),
                                         detail,
                                         etl_path: etl_path.clone(),
-                                        window_from: hit.ts - 10 - (hit.lag_ms / 1000) as i64,
+                                        // Strop pojistkou: kdyby se do lagu
+                                        // přece jen dostal spánek, okno se
+                                        // nesmí roztáhnout přes celou noc.
+                                        window_from: hit.ts - 10 - (hit.lag_ms / 1000).min(300) as i64,
                                         window_to: hit.ts + 10,
                                     });
                                 }
@@ -847,10 +934,31 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 // pak čtou hive všechny — na stroji s víc účty se změny
                 // těch ostatních zachytí při nejbližší události, nejpozději
                 // při pravidelném potvrzení (viz REFRESH níž).
-                let watched = win_sys::consent::user_hives()
-                    .into_iter()
-                    .next()
-                    .map(|sid| format!(r"{sid}\{STORE_KEY}"));
+                //
+                // Hive se vybírá znovu, kdykoli sledovaný chybí: služba
+                // startuje souběžně s přihlášením a hive uživatele často
+                // ještě není načtený, po odhlášení zase zmizí. Dřív se
+                // vybral jen jednou při startu — po bootu pak sledování
+                // změn nikdy nenaběhlo (krátká použití mezi minutovými
+                // čteními se ztrácela) a po odhlášení se vlákno točilo
+                // na 100 % jádra nad klíčem, který nejde otevřít.
+                // Přednost má hive, ve kterém ConsentStore opravdu je
+                // (hive naplánované úlohy jiného účtu ho mít nemusí).
+                let dostupny = |k: &str| {
+                    !win_sys::registry::enum_subkeys(win_sys::registry::HKEY_USERS, k).is_empty()
+                };
+                let vyber = || {
+                    let klice: Vec<String> = win_sys::consent::user_hives()
+                        .into_iter()
+                        .map(|sid| format!(r"{sid}\{STORE_KEY}"))
+                        .collect();
+                    klice
+                        .iter()
+                        .find(|k| dostupny(k.as_str()))
+                        .or(klice.first())
+                        .cloned()
+                };
+                let mut watched = vyber();
 
                 // Poprvé se čte hned: první průchod po startu zachytí
                 // i to, co běželo, než jsme se začali dívat.
@@ -908,6 +1016,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                                         stop_ts: konec,
                                         app: c.app,
                                         capability: c.capability,
+                                        in_use: c.in_use,
                                     })
                                 })
                                 .collect();
@@ -933,17 +1042,30 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         // čekání by z událostního sledování udělalo
                         // dotazování dvakrát za sekundu.
                         Some(key) => {
+                            let t = Instant::now();
                             due = win_sys::registry::wait_for_change(
                                 win_sys::registry::HKEY_USERS,
                                 key,
                                 true,
                                 2_000,
                             );
+                            // `false` dřív než za timeout znamená, že klíč
+                            // nejde otevřít nebo hlídat (hive se uvolnil) —
+                            // wait_for_change v tom případě vrací hned,
+                            // bez čekání. Pak počkat a vybrat hive znovu.
+                            if !due && t.elapsed() < Duration::from_millis(1_500) {
+                                wait_or_stop(&stop, Duration::from_secs(2));
+                                watched = vyber();
+                                due = watched.as_deref().is_some_and(dostupny);
+                            }
                         }
-                        // Ještě se nikdo nepřihlásil — není co sledovat.
+                        // Ještě se nikdo nepřihlásil — počkat a zkusit
+                        // to znovu. Jakmile se hive objeví, přečte se
+                        // hned: zachytí se i to, co začalo před navázáním.
                         None => {
-                            due = false;
                             wait_or_stop(&stop, Duration::from_secs(2));
+                            watched = vyber();
+                            due = watched.as_deref().is_some_and(dostupny);
                         }
                     }
                 }
@@ -982,11 +1104,18 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                         // v seznamu skoro minutu po tom, co zmizela.
                         let scan: Vec<store::apps::ScanApp> =
                             apps.iter().cloned().map(to_scan_app).collect();
-                        if tx
-                            .try_send(crate::incidents::StoreMsg::Inventory(scan))
-                            .is_err()
-                        {
-                            tracing::warn!("zápis inventáře se nevešel do kanálu");
+                        match tx.try_send(crate::incidents::StoreMsg::Inventory(scan)) {
+                            Ok(()) => {}
+                            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                                tracing::warn!("zápis inventáře se nevešel do kanálu");
+                            }
+                            // Zapisovací vlákno už skončilo: služba se
+                            // vypíná a sken doběhl až po něm. Nic se
+                            // neztratilo, příští start skenuje znovu —
+                            // dřív se to v logu tvářilo jako plný kanál.
+                            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                                tracing::debug!("sken inventáře doběhl po zastavení zápisu");
+                            }
                         }
                         // Sken skončil tady — ikony se doplňují dál, ale
                         // seznam aplikací už je hotový a UI na něj čeká.
@@ -1043,7 +1172,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     let orch = {
         let conn = store::open(&db_path)?;
         let _ = conn.busy_timeout(std::time::Duration::from_millis(2000));
-        Arc::new(crate::actions::Orchestrator::new(conn))
+        Arc::new(crate::actions::Orchestrator::new(conn, Arc::clone(&uvolni_zapis)))
     };
 
     // IPC server: navázání na pipe je synchronní — kolize s jinou
@@ -1110,7 +1239,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                     }
                 })?;
         }
-        let handler: ipc::server::Handler = Arc::new(move |req| match req {
+        let handler: ipc::server::Handler = Arc::new(move |req, klient: &_| match req {
             Request::QuerySysInfo => Response::SysInfo(statics.clone()),
             Request::QueryIcon { identity_key } => {
                 // Ikona z cache identity workeru; když ještě není hotová,
@@ -1227,6 +1356,19 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             // databáze je otevřená a hýbat s ní pod rukama by znamenalo
             // přijít o rozepsaný WAL. Zapíše se přání a přesun udělá
             // start služby, kdy ji nikdo nedrží.
+            //
+            // Jen pro elevovaného správce. Služba tu jako SYSTEM zakládá
+            // adresář a zapisuje do cesty, kterou určil klient, a po
+            // restartu tam přestěhuje databázi — pipe přitom smí otevřít
+            // každý interaktivní uživatel. Bez téhle kontroly si běžný
+            // účet (nebo malware v jeho relaci) mohl nechat službou
+            // zapisovat tam, kam sám nesmí, a držet její databázi
+            // v adresáři, který ovládá.
+            Request::SetDbDir { .. } if !klient.is_elevated_admin() => Response::Error {
+                message: "Přesun databáze smí jen správce — spusť Winsent jako správce \
+                          (pravým tlačítkem → Spustit jako správce)."
+                    .into(),
+            },
             Request::SetDbDir { dir } => {
                 match crate::config::set_db_dir(&cfg_path_ipc, &dir) {
                     Ok(()) => {
@@ -1926,6 +2068,23 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                                  historii i incidenty."
                                     .to_string()
                             })
+                        })
+                        .or_else(|| {
+                            // RunOnce nemá přepínač, protože ho Windows
+                            // nečtou ze StartupApproved. Bez vlastního
+                            // důvodu UI sáhlo po obecném „systémová
+                            // položka" a aktualizátor třetí strany se
+                            // tvářil jako součást Windows.
+                            matches!(
+                                it.source,
+                                collector_boot::Source::RunOnceUser
+                                    | collector_boot::Source::RunOnceMachine
+                            )
+                            .then(|| {
+                                "Spustí se jen jednou při příštím přihlášení. Windows \
+                                 u položek RunOnce vypnutí nepodporují."
+                                    .to_string()
+                            })
                         });
                         core_types::proc::StartupRow {
                             id: it.id,
@@ -1980,8 +2139,39 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
         std::thread::Builder::new()
             .name("ipc-server".into())
             .spawn(move || {
-                if let Err(e) = ipc::server::run(ipc_bound, handler, stop) {
-                    tracing::error!(error = %e, "IPC server spadl");
+                // Záchranná síť: přechodné chyby si akceptační smyčka
+                // řeší sama, ale kdyby přesto skončila chybou, server se
+                // naváže znovu. Dřív se jen zalogovalo „IPC server spadl"
+                // a služba dál sbírala data bez rozhraní až do ručního
+                // restartu — SCM recovery nezabere, proces přece běží.
+                // Ukončit proces s chybou by nepomohlo: služba nemá
+                // nastavené recovery i pro čisté zastavení s chybovým
+                // kódem, takže by zůstala stát úplně.
+                let mut bound = Some(ipc_bound);
+                while !stop.load(Ordering::SeqCst) {
+                    let b = match bound.take() {
+                        Some(b) => b,
+                        None => match ipc::server::bind() {
+                            Ok(b) => b,
+                            Err(e) => {
+                                // Typicky ještě dobíhají spojení staré
+                                // smyčky a drží jméno pipe.
+                                tracing::warn!(
+                                    error = %e,
+                                    "IPC server se zatím nedá znovu navázat"
+                                );
+                                wait_or_stop(&stop, Duration::from_secs(2));
+                                continue;
+                            }
+                        },
+                    };
+                    match ipc::server::run(b, Arc::clone(&handler), Arc::clone(&stop)) {
+                        Ok(()) => break,
+                        Err(e) => {
+                            tracing::error!(error = %e, "IPC server spadl, navazuji znovu");
+                            wait_or_stop(&stop, Duration::from_secs(1));
+                        }
+                    }
                 }
             })?
     };
@@ -2038,6 +2228,7 @@ fn store_loop(
     cfg: Arc<RwLock<Config>>,
     stop: Arc<AtomicBool>,
     rx: std::sync::mpsc::Receiver<crate::incidents::StoreMsg>,
+    uvolni: Arc<AtomicBool>,
 ) {
     use std::sync::mpsc::RecvTimeoutError;
 
@@ -2048,17 +2239,21 @@ fn store_loop(
     let mut last_retention = Instant::now();
     // Jména procesů se přepisovala každou sekundu, přestože se nemění.
     let mut names = store::samples::NameCache::default();
+    let mut davka = Davka { zadost: uvolni, ..Davka::default() };
     loop {
-        match rx.recv_timeout(Duration::from_millis(250)) {
-            Ok(msg) => {
-                if let Err(e) = store_msg(&mut conn, msg, &mut names) {
-                    // Chyba zápisu nesmí shodit službu (SPEC kap. 22).
-                    tracing::error!(error = %e, "zápis do store selhal");
-                }
-            }
+        // Krátký timeout kvůli žádosti o uvolnění zámku (Davka::zadost):
+        // audit na zámek čeká jen dvě sekundy.
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(msg) => zpracuj(&mut conn, msg, &mut names, &mut davka),
             Err(RecvTimeoutError::Timeout) => {}
             // Sampler skončil a kanál je prázdný → konec.
             Err(RecvTimeoutError::Disconnected) => break,
+        }
+        davka.vyrid_zadost(&conn, &mut names);
+        // Vzorek nesmí v otevřené transakci čekat donekonečna — když
+        // sampler na chvíli ztichne, dávka se dopíše i nedoplněná.
+        if davka.zacatek.is_some_and(|z| z.elapsed() >= MAX_CEKANI_DAVKY) {
+            davka.commit(&conn, &mut names);
         }
 
         let interval = {
@@ -2067,24 +2262,156 @@ fn store_loop(
         };
         if last_retention.elapsed() >= interval {
             last_retention = Instant::now();
+            // Retence si otevírá vlastní transakci — dávka musí být
+            // zapsaná dřív, jinak by BEGIN uvnitř BEGIN selhal.
+            davka.commit(&conn, &mut names);
             if let Err(e) = store::retention::tick(&conn) {
                 tracing::error!(error = %e, "retenční krok selhal");
+            }
+            if store::rollback_if_open(&conn) {
+                tracing::warn!("retence nechala otevřenou transakci — vráceno");
             }
         }
 
         if stop.load(Ordering::SeqCst) {
             // Doprázdnit kanál, ať poslední vzorky nezmizí, pak konec.
             while let Ok(msg) = rx.try_recv() {
-                if let Err(e) = store_msg(&mut conn, msg, &mut names) {
-                    tracing::error!(error = %e, "zápis při ukončení selhal");
-                }
+                zpracuj(&mut conn, msg, &mut names, &mut davka);
             }
             break;
         }
     }
+    davka.commit(&conn, &mut names);
+    if store::rollback_if_open(&conn) {
+        tracing::warn!("zapisovací spojení zůstalo v transakci — vráceno");
+    }
     // Čisté ukončení — příští start pozná, že minule nešlo o pád.
     if let Err(e) = store::meta_set(&conn, "clean_shutdown", "1") {
         tracing::warn!(error = %e, "zápis clean_shutdown selhal");
+    }
+}
+
+/// Kolik ticků sampleru se zapíše jednou transakcí.
+///
+/// Commit každou sekundu přepisoval do WAL stránky, které příští sekunda
+/// dopíše a přepíše znovu. Běhová kontrola naměřila u služby v klidu
+/// ~100 KB/s zápisu (~9 GB/den) při rozpočtu 250 MB/den; na skutečném
+/// schématu dělá dávka po 10 tickách 2,5× méně. Cenou je, že při
+/// výpadku proudu zmizí nejvýš deset posledních sekund vzorků a historie
+/// v UI je o tolik pozadu — živé hodnoty se berou z paměti, ne z DB.
+const TICKU_NA_DAVKU: u32 = 10;
+/// Nejdéle, co smí vzorek čekat v otevřené transakci.
+const MAX_CEKANI_DAVKY: Duration = Duration::from_secs(15);
+
+// Žádost jiného zapisovatele (audit akcí), ať zapisovací vlákno pustí
+// zámek databáze — pole Davka::zadost, sdílené s Orchestrator.
+//
+// Otevřená dávka drží zápisový zámek WAL od prvního vzorku až do
+// commitu, tedy skoro celých deset sekund z každých deseti. Audit akcí
+// zapisuje vlastním spojením a čeká na zámek nejvýš dvě sekundy — bez
+// téhle žádosti většinou nedočkal, akce (ukončení procesu, odinstalace)
+// proběhla a v historii zásahů po ní nic nezůstalo. Zapisovací vlákno
+// žádost vidí do ~100 ms, dávku zapíše a na chvíli dávkování vypne,
+// aby mu ji další vzorek hned zase nevzal.
+/// Jak dlouho po žádosti se vzorky zapisují po jednom.
+const PAUZA_DAVEK: Duration = Duration::from_secs(3);
+
+/// Otevřená transakce s vzorky, které ještě nejsou zapsané.
+#[derive(Default)]
+struct Davka {
+    zacatek: Option<Instant>,
+    ticku: u32,
+    /// Do kdy se nedávkuje (po žádosti jiného zapisovatele).
+    pauza_do: Option<Instant>,
+    /// Žádost jiného zapisovatele o uvolnění zámku. Sdílí ji Orchestrator.
+    zadost: Arc<AtomicBool>,
+}
+
+impl Davka {
+    /// Vyřídí žádost jiného zapisovatele: dopíše dávku a dávkování na
+    /// chvíli vypne.
+    fn vyrid_zadost(&mut self, conn: &store::Connection, names: &mut store::samples::NameCache) {
+        if self.zadost.swap(false, Ordering::SeqCst) {
+            self.commit(conn, names);
+            self.pauza_do = Some(Instant::now() + PAUZA_DAVEK);
+        }
+    }
+
+    fn davkuje_se(&self) -> bool {
+        self.pauza_do.is_none_or(|t| Instant::now() >= t)
+    }
+}
+
+impl Davka {
+    /// Zapíše otevřenou dávku. Po chybě ji vrátí a zahodí cache jmen —
+    /// ta by jinak věřila řádkům, které rollback smazal.
+    fn commit(&mut self, conn: &store::Connection, names: &mut store::samples::NameCache) {
+        if self.zacatek.take().is_none() {
+            return;
+        }
+        self.ticku = 0;
+        if let Err(e) = conn.execute_batch("COMMIT") {
+            tracing::error!(error = %e, "zápis dávky vzorků selhal");
+            store::rollback_if_open(conn);
+            *names = store::samples::NameCache::default();
+        }
+    }
+}
+
+/// Jedna zpráva ze sampleru: vzorky do dávky, všechno ostatní hned.
+fn zpracuj(
+    conn: &mut store::Connection,
+    msg: crate::incidents::StoreMsg,
+    names: &mut store::samples::NameCache,
+    davka: &mut Davka,
+) {
+    use crate::incidents::StoreMsg;
+    davka.vyrid_zadost(conn, names);
+    match msg {
+        // Někdo jiný chce zapisovat: vzorek jde samostatně a zámek se
+        // drží jen milisekundy.
+        StoreMsg::Tick(ts, procs, sys) if !davka.davkuje_se() => {
+            if let Err(e) = store::samples::insert_tick(conn, ts, &sys, &procs, names) {
+                tracing::error!(error = %e, "zápis vzorku selhal");
+                store::rollback_if_open(conn);
+                *names = store::samples::NameCache::default();
+            }
+        }
+        StoreMsg::Tick(ts, procs, sys) => {
+            if davka.zacatek.is_none() {
+                if let Err(e) = conn.execute_batch("BEGIN") {
+                    tracing::error!(error = %e, "nelze začít dávku vzorků");
+                    return;
+                }
+                davka.zacatek = Some(Instant::now());
+            }
+            if let Err(e) = store::samples::insert_tick_in(conn, ts, &sys, &procs, names) {
+                // Chyba zápisu nesmí shodit službu (SPEC kap. 22). Vrací
+                // se celá dávka: rozepsaný tick by v ní zůstal napůl.
+                tracing::error!(error = %e, "zápis vzorku selhal");
+                store::rollback_if_open(conn);
+                *names = store::samples::NameCache::default();
+                davka.zacatek = None;
+                davka.ticku = 0;
+                return;
+            }
+            davka.ticku += 1;
+            if davka.ticku >= TICKU_NA_DAVKU {
+                davka.commit(conn, names);
+            }
+        }
+        // Události, incidenty, inventář… jsou vzácné a důležité: zapíšou
+        // se hned ve vlastní transakci. Rozepsaná dávka se dopíše předem,
+        // jinak by vnořený BEGIN selhal.
+        jina => {
+            davka.commit(conn, names);
+            if let Err(e) = store_msg(conn, jina, names) {
+                tracing::error!(error = %e, "zápis do store selhal");
+            }
+            if store::rollback_if_open(conn) {
+                tracing::warn!("zápis nechal otevřenou transakci — vráceno");
+            }
+        }
     }
 }
 
@@ -2102,8 +2429,9 @@ fn store_msg(
             // zápisů by zbytečně mlelo diskem.
             let tx = conn.transaction()?;
             // Okamžik pozorování je pro celou dávku stejný — je to čas,
-            // kdy jsme registr přečetli.
-            let seen = unix_now();
+            // kdy jsme registr přečetli. Dostanou ho ale jen živé relace
+            // (viz PermUseEntry::seen_ts).
+            let now = unix_now();
             for e in &entries {
                 if let Err(err) = store::permuse::record(
                     &tx,
@@ -2111,7 +2439,7 @@ fn store_msg(
                     &e.capability,
                     e.start_ts,
                     e.stop_ts,
-                    seen,
+                    e.seen_ts(now),
                 ) {
                     tracing::warn!(app = %e.app, error = %err, "zápis použití oprávnění");
                 }
@@ -2685,4 +3013,123 @@ fn wait_or_stop(stop: &AtomicBool, total: Duration) {
 fn log_dir_for_health() -> String {
     let data = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into());
     format!(r"{data}\syswatch\logs\svc.log")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::incidents::StoreMsg;
+
+    fn docasna_db(jmeno: &str) -> (store::Connection, std::path::PathBuf) {
+        let p = std::env::temp_dir().join(format!("winsent-test-{jmeno}-{}.db", std::process::id()));
+        for s in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", p.display(), s));
+        }
+        (store::open(&p).expect("testovací DB"), p)
+    }
+
+    fn pocet_vzorku(conn: &store::Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM system_1s", [], |r| r.get(0)).unwrap()
+    }
+
+    /// Dávkování nesmí nic ztratit ani nechat viset: rozepsaná dávka se
+    /// dopíše před každou jinou zprávou a plná se zapíše sama.
+    #[test]
+    fn vzorky_se_zapisuji_po_davkach_a_nic_se_neztrati() {
+        let (mut conn, p) = docasna_db("davka");
+        let mut names = store::samples::NameCache::default();
+        let mut davka = Davka::default();
+        let sys = SystemSnapshot::default();
+        let n = TICKU_NA_DAVKU as i64;
+
+        for ts in 0..n - 1 {
+            zpracuj(&mut conn, StoreMsg::Tick(1000 + ts, Vec::new(), sys.clone()), &mut names, &mut davka);
+        }
+        // Čtenář (IPC) vidí jen zapsané — dávka ještě není plná.
+        let ctenar = store::open_readonly(&p).unwrap();
+        assert_eq!(pocet_vzorku(&ctenar), 0);
+        assert!(!conn.is_autocommit());
+
+        // Událost dopíše rozepsanou dávku a zapíše se sama.
+        zpracuj(
+            &mut conn,
+            StoreMsg::Event { ts: 2000, kind: "test", pid: None, detail: "{}".into() },
+            &mut names,
+            &mut davka,
+        );
+        assert_eq!(pocet_vzorku(&ctenar), n - 1);
+        assert!(conn.is_autocommit());
+        let udalosti: i64 = ctenar.query_row("SELECT COUNT(*) FROM event", [], |r| r.get(0)).unwrap();
+        assert_eq!(udalosti, 1);
+
+        // Plná dávka se zapíše sama, bez další zprávy.
+        for ts in 0..n {
+            zpracuj(&mut conn, StoreMsg::Tick(3000 + ts, Vec::new(), sys.clone()), &mut names, &mut davka);
+        }
+        assert_eq!(pocet_vzorku(&ctenar), 2 * n - 1);
+        assert!(conn.is_autocommit());
+
+        drop(ctenar);
+        drop(conn);
+        for s in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", p.display(), s));
+        }
+    }
+
+    /// Žádost auditu o zámek: dávka se hned dopíše a další vzorky jdou
+    /// po jednom, takže auditní spojení se dočká.
+    #[test]
+    fn zadost_o_zamek_dopise_davku_a_vypne_davkovani() {
+        let (mut conn, p) = docasna_db("zadost");
+        let mut names = store::samples::NameCache::default();
+        let mut davka = Davka::default();
+        let sys = SystemSnapshot::default();
+        for ts in 0..3 {
+            zpracuj(&mut conn, StoreMsg::Tick(1000 + ts, Vec::new(), sys.clone()), &mut names, &mut davka);
+        }
+        assert!(!conn.is_autocommit(), "dávka má být otevřená");
+
+        davka.zadost.store(true, Ordering::SeqCst);
+        davka.vyrid_zadost(&conn, &mut names);
+        assert!(conn.is_autocommit(), "po žádosti nesmí zůstat zámek");
+
+        // Během pauzy se vzorek zapíše hned a zámek se nedrží.
+        zpracuj(&mut conn, StoreMsg::Tick(2000, Vec::new(), sys.clone()), &mut names, &mut davka);
+        assert!(conn.is_autocommit());
+        let ctenar = store::open_readonly(&p).unwrap();
+        assert_eq!(pocet_vzorku(&ctenar), 4);
+
+        // Druhé zapisovací spojení (jako audit) zapíše bez čekání.
+        let audit = store::open(&p).unwrap();
+        audit.busy_timeout(Duration::from_millis(50)).unwrap();
+        audit.execute("INSERT INTO event (ts, kind) VALUES (1, 'audit-test')", []).unwrap();
+
+        drop(audit);
+        drop(ctenar);
+        drop(conn);
+        for s in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", p.display(), s));
+        }
+    }
+}
+
+#[cfg(test)]
+mod snimek_tests {
+    use super::*;
+
+    #[test]
+    fn snimek_se_neprepisuje_kvuli_drobnym_zmenam() {
+        // Systémový svazek: 2,17 mil. záznamů, mezi stavbami pár tisíc
+        // souborů v tempu — to se nepřepisuje (dřív 140 MB pokaždé).
+        assert!(!snimek_je_zastaraly(Some(2_170_000), 2_172_500, Some(1800)));
+        // Instalace hry: desítky tisíc souborů navíc → přepsat.
+        assert!(snimek_je_zastaraly(Some(2_170_000), 2_240_000, Some(1800)));
+        // Po 12 hodinách i beze změny.
+        assert!(snimek_je_zastaraly(Some(2_170_000), 2_170_000, Some(SNIMEK_MAX_STARI_S)));
+        // Žádný použitelný snímek → uložit.
+        assert!(snimek_je_zastaraly(None, 10, Some(5)));
+        assert!(snimek_je_zastaraly(Some(10), 10, None));
+        // Prázdný snímek a nový obsah: dělení nulou nesmí nastat.
+        assert!(snimek_je_zastaraly(Some(0), 5, Some(5)));
+    }
 }

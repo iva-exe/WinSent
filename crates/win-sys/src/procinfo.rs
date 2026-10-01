@@ -50,6 +50,24 @@ extern "system" {
 
 const PROCESS_BREAK_ON_TERMINATION: u32 = 29;
 const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;
+/// ProcessProtectionInformation → PS_PROTECTION (1 bajt: Type:3, Audit:1,
+/// Signer:4). Přímá odpověď na „je to PP/PPL?“; extended basic info je
+/// jen záloha pro případ, že by třída 61 selhala.
+const PROCESS_PROTECTION_INFORMATION: u32 = 61;
+/// PROCESS_EXTENDED_BASIC_INFORMATION.Flags: bit 0 = IsProtectedProcess.
+/// Bit 1 (0x2) je IsWow64Process — dřív se testoval omylem ten, takže
+/// každá 32bitová aplikace vyšla jako PPL a validace jí zakázala kill.
+const EXT_FLAG_PROTECTED: u32 = 0x1;
+
+/// Rozhodnutí o PPL z dostupných odpovědí OS. `ps_protection` = bajt
+/// PS_PROTECTION, když se ho podařilo přečíst (má přednost),
+/// `ext_flags` = Flags z extended basic info jako záloha.
+fn is_protected(ps_protection: Option<u8>, ext_flags: Option<u32>) -> bool {
+    match ps_protection {
+        Some(level) => level != 0,
+        None => ext_flags.is_some_and(|f| f & EXT_FLAG_PROTECTED != 0),
+    }
+}
 
 /// PROCESS_EXTENDED_BASIC_INFORMATION (výřez: hlavička + flags).
 #[repr(C)]
@@ -177,20 +195,42 @@ pub fn protection(pid: u32, name: &str) -> Protection {
             return Protection::Critical;
         }
 
-        // Protected (PPL): flags bit 1 v extended basic info.
-        let mut ext = ExtendedBasicInfo {
-            size: std::mem::size_of::<ExtendedBasicInfo>(),
-            ..Default::default()
-        };
-        if NtQueryInformationProcess(
+        // Protected (PP/PPL): primárně PS_PROTECTION, záložně bit 0
+        // z extended basic info (ne bit 1 — to je WoW64).
+        let mut level = 0u8;
+        let ps = if NtQueryInformationProcess(
             h.0,
-            PROCESS_BASIC_INFORMATION_CLASS,
-            &mut ext as *mut _ as *mut c_void,
-            std::mem::size_of::<ExtendedBasicInfo>() as u32,
+            PROCESS_PROTECTION_INFORMATION,
+            &mut level as *mut _ as *mut c_void,
+            1,
             &mut ret,
         ) == 0
-            && ext.flags & 0x2 != 0
         {
+            Some(level)
+        } else {
+            None
+        };
+        let ext_flags = if ps.is_none() {
+            let mut ext = ExtendedBasicInfo {
+                size: std::mem::size_of::<ExtendedBasicInfo>(),
+                ..Default::default()
+            };
+            if NtQueryInformationProcess(
+                h.0,
+                PROCESS_BASIC_INFORMATION_CLASS,
+                &mut ext as *mut _ as *mut c_void,
+                std::mem::size_of::<ExtendedBasicInfo>() as u32,
+                &mut ret,
+            ) == 0
+            {
+                Some(ext.flags)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if is_protected(ps, ext_flags) {
             return Protection::Protected;
         }
 
@@ -235,5 +275,44 @@ fn is_service_token(process: HANDLE) -> bool {
             sid_str.0 as _,
         )));
         matches!(sid.as_str(), "S-1-5-18" | "S-1-5-19" | "S-1-5-20")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wow64_bit_neni_ppl() {
+        // Flags 0x2 (IsWow64Process) i 0xA (WoW64 + cross-session) dřív
+        // vycházely jako Protected; ochranu znamená jen bit 0.
+        assert!(!is_protected(None, Some(0x2)));
+        assert!(!is_protected(None, Some(0xA)));
+        assert!(is_protected(None, Some(0x1)));
+        assert!(!is_protected(None, None));
+        // PS_PROTECTION má přednost před záložními flagy.
+        assert!(!is_protected(Some(0), Some(0x1)));
+        assert!(is_protected(Some(0x31), None)); // PPL, signer Antimalware
+    }
+
+    #[test]
+    fn bezny_32bitovy_proces_neni_chraneny() {
+        // Vlastní dítě testu z SysWOW64; na stroji bez WoW64 se přeskočí.
+        let windir = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let exe = std::path::Path::new(&windir).join(r"SysWOW64\cmd.exe");
+        if !exe.exists() {
+            return;
+        }
+        let Ok(mut child) = std::process::Command::new(&exe)
+            .args(["/c", "ping", "-n", "3", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+        else {
+            return;
+        };
+        let p = protection(child.id(), "cmd.exe");
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_ne!(p, Protection::Protected);
     }
 }

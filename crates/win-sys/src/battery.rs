@@ -44,13 +44,20 @@ pub struct Battery {
     pub full_mwh: Option<u32>,
     /// Počet nabíjecích cyklů, když ho firmware hlásí.
     pub cycles: Option<u32>,
+    /// Kapacity v relativních jednotkách firmwaru (návrhová, plná), když
+    /// je nehlásí v mWh. Jako energie nic neznamenají, ale jejich poměr
+    /// dá opotřebení stejně dobře jako mWh.
+    pub rel_capacity: Option<(u32, u32)>,
 }
 
 impl Battery {
     /// Opotřebení v procentech (0 = jako nová). `None`, když chybí
     /// některá kapacita — dopočítávat z ničeho nebudeme.
     pub fn wear_pct(&self) -> Option<f32> {
-        let (design, full) = (self.design_mwh?, self.full_mwh?);
+        let (design, full) = match (self.design_mwh, self.full_mwh) {
+            (Some(d), Some(f)) => (d, f),
+            _ => self.rel_capacity?,
+        };
         if design == 0 {
             return None;
         }
@@ -79,21 +86,57 @@ pub fn battery() -> Option<Battery> {
     let mut b = Battery {
         percent: (st.BatteryLifePercent <= 100).then_some(st.BatteryLifePercent),
         ac_online: st.ACLineStatus == 1,
-        // Bit 3 = nabíjí se.
-        charging: st.BatteryFlag & 8 != 0,
+        charging: charging_from_flag(st.BatteryFlag),
         remaining_s: (st.BatteryLifeTime != u32::MAX).then_some(st.BatteryLifeTime),
         ..Default::default()
     };
-    if let Some((design, full, cycles)) = wear() {
-        b.design_mwh = (design > 0).then_some(design);
-        b.full_mwh = (full > 0).then_some(full);
-        b.cycles = (cycles > 0).then_some(cycles);
+    if let Some(cap) = wear() {
+        apply_capacity(&mut b, cap);
     }
     Some(b)
 }
 
-/// Kapacity a cykly z prvního battery zařízení: (návrhová, plná, cykly).
-fn wear() -> Option<(u32, u32, u32)> {
+/// Bit 3 BatteryFlag = nabíjí se. 255 znamená „stav nejde přečíst"
+/// a má nastavené všechny bity — dřív z toho vyšlo „nabíjí se".
+fn charging_from_flag(flag: u8) -> bool {
+    flag != 255 && flag & 8 != 0
+}
+
+/// BATTERY_INFORMATION.Capabilities: kapacity nejsou v mWh, ale
+/// v jednotkách, které si zvolil firmware (poměr platí, jednotka ne).
+const BATTERY_CAPACITY_RELATIVE: u32 = 0x4000_0000;
+
+/// Syrové údaje z BATTERY_INFORMATION.
+#[derive(Debug, Clone, Copy)]
+struct Capacity {
+    design: u32,
+    full: u32,
+    cycles: u32,
+    relative: bool,
+}
+
+/// Přenese kapacity do `Battery` tak, aby se nikdy nehlásilo číslo,
+/// které neznamená mWh.
+///
+/// 0 i 0xFFFFFFFF (BATTERY_UNKNOWN_CAPACITY, ACPI „neznámé") znamenají
+/// „nevím" — dřív 0xFFFFFFFF prošlo testem `> 0` a jako plná kapacita
+/// dalo „opotřebení 0 %" a 4 294 967 Wh. Relativní kapacity (např.
+/// 100 / 92) by se v UI ukázaly jako 0,1 Wh; místo nich raději nic —
+/// ale jejich poměr se zachová, opotřebení z něj vyjde správně (dřív
+/// se u takových baterií neukazovalo vůbec).
+fn apply_capacity(b: &mut Battery, cap: Capacity) {
+    let known = |v: u32| (v > 0 && v != u32::MAX).then_some(v);
+    if cap.relative {
+        b.rel_capacity = known(cap.design).zip(known(cap.full));
+    } else {
+        b.design_mwh = known(cap.design);
+        b.full_mwh = known(cap.full);
+    }
+    b.cycles = known(cap.cycles);
+}
+
+/// Kapacity a cykly z prvního battery zařízení.
+fn wear() -> Option<Capacity> {
     // SAFETY: každý handle se zavírá; buffery mají hlášené velikosti.
     unsafe {
         let devs: HDEVINFO = SetupDiGetClassDevsW(
@@ -133,7 +176,7 @@ fn wear() -> Option<(u32, u32, u32)> {
 /// Dotaz na jedno battery zařízení: nejdřív tag, pak informace.
 /// # Safety
 /// `path` musí ukazovat na platnou nulou ukončenou cestu k zařízení.
-unsafe fn query_battery(path: PCWSTR) -> Option<(u32, u32, u32)> {
+unsafe fn query_battery(path: PCWSTR) -> Option<Capacity> {
     let h: HANDLE = CreateFileW(
         path,
         (FILE_GENERIC_READ | FILE_GENERIC_WRITE).0,
@@ -180,11 +223,12 @@ unsafe fn query_battery(path: PCWSTR) -> Option<(u32, u32, u32)> {
         )
         .is_ok()
         {
-            out = Some((
-                info.DesignedCapacity,
-                info.FullChargedCapacity,
-                info.CycleCount,
-            ));
+            out = Some(Capacity {
+                design: info.DesignedCapacity,
+                full: info.FullChargedCapacity,
+                cycles: info.CycleCount,
+                relative: info.Capabilities & BATTERY_CAPACITY_RELATIVE != 0,
+            });
         }
     }
     let _ = CloseHandle(h);
@@ -211,6 +255,45 @@ mod tests {
         b.design_mwh = Some(0);
         b.full_mwh = Some(0);
         assert!(b.wear_pct().is_none());
+    }
+
+    // 255 = stav nejde přečíst; nesmí se z něj stát „nabíjí se".
+    #[test]
+    fn unknown_flag_is_not_charging() {
+        assert!(!charging_from_flag(255));
+        assert!(charging_from_flag(8 | 1));
+        assert!(!charging_from_flag(1));
+    }
+
+    // Neznámá (0xFFFFFFFF) nebo relativní kapacita se nehlásí jako mWh.
+    #[test]
+    fn unknown_or_relative_capacity_is_none() {
+        let mut b = Battery::default();
+        apply_capacity(
+            &mut b,
+            Capacity { design: 50_000, full: u32::MAX, cycles: u32::MAX, relative: false },
+        );
+        assert_eq!(b.design_mwh, Some(50_000));
+        assert_eq!(b.full_mwh, None);
+        assert_eq!(b.cycles, None);
+        assert!(b.wear_pct().is_none());
+
+        let mut b = Battery::default();
+        apply_capacity(
+            &mut b,
+            Capacity { design: 100, full: 92, cycles: 300, relative: true },
+        );
+        assert_eq!((b.design_mwh, b.full_mwh), (None, None));
+        assert_eq!(b.cycles, Some(300));
+        // Poměr relativních kapacit dá opotřebení i bez mWh.
+        assert!((b.wear_pct().expect("relativní opotřebení") - 8.0).abs() < 0.01);
+
+        let mut b = Battery::default();
+        apply_capacity(
+            &mut b,
+            Capacity { design: 50_000, full: 45_000, cycles: 0, relative: false },
+        );
+        assert_eq!((b.design_mwh, b.full_mwh, b.cycles), (Some(50_000), Some(45_000), None));
     }
 
     // Na desktopu None, na notebooku rozumné hodnoty — ani jedno není
