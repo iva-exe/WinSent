@@ -344,11 +344,23 @@ pub struct DiskRate {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RamModuleInfo {
     pub size_mb: u64,
+    /// Co modul umí, v MT/s.
     pub speed_mts: u32,
+    /// Na čem modul běží, v MT/s — už přepočtené, i když ho deska
+    /// hlásila jako takt (viz `configured_was_clock`).
     pub configured_mts: u32,
     pub slot: String,
     pub manufacturer: String,
     pub part_number: String,
+    /// Typ paměti („DDR4"); prázdný, když ho deska nehlásí.
+    pub mem_type: String,
+    /// Skutečný takt v MHz (u DDR polovina MT/s). 0 = neznámo.
+    pub clock_mhz: u32,
+    /// Deska do pole rychlosti zapsala takt v MHz místo MT/s (starší
+    /// tabulky SMBIOS to tak mají ve specifikaci). Jiné nástroje pak
+    /// ukazují poloviční číslo a radí zapnout XMP, které zapnuté je —
+    /// proto se to nese až do UI a do záznamu o počítači.
+    pub configured_was_clock: bool,
 }
 
 /// Popis fyzického disku.

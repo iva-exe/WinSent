@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// `HardwareReport` přečte razítko času z bajtu příznaku `Option`,
 /// takže vyjde rok 1970 a nikde se nic nezhroutí. Tichý nesmysl je
 /// horší než chybová hláška, protože ho nikdo nenahlásí.
-pub const PROTOCOL_VERSION: u32 = 48;
+pub const PROTOCOL_VERSION: u32 = 49;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

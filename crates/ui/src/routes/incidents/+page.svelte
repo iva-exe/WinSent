@@ -485,7 +485,12 @@
 			L.push(`CPU:  ${s.cpu_name ?? '—'}  (${s.physical_cores ?? '?'} jader / ${s.logical_cores ?? '?'} vláken, ${s.cpu_base_mhz ?? '?'} MHz)`);
 			L.push(`GPU:  ${s.gpu_name ?? '—'}`);
 			for (const m of s.ram_modules ?? []) {
-				L.push(`RAM:  ${m.size_mb} MB @ ${m.speed_mts ?? '?'} MT/s  slot ${m.slot ?? '?'}  ${m.manufacturer ?? ''} ${m.part_number ?? ''}`);
+				// Na čem modul běží, ne co umí — u incidentu je důležitý
+				// skutečný stav. Takt se píše zvlášť, ať se „1600" z jiného
+				// nástroje nedá splést s polovičním výkonem.
+				const typ = m.mem_type ? ` ${m.mem_type}` : '';
+				const takt = m.clock_mhz ? ` (takt ${m.clock_mhz} MHz)` : '';
+				L.push(`RAM:  ${m.size_mb} MB${typ} @ ${m.configured_mts || m.speed_mts || '?'} MT/s${takt}  slot ${m.slot ?? '?'}  ${m.manufacturer ?? ''} ${m.part_number ?? ''}`);
 			}
 			for (const d of s.disks ?? []) L.push(`Disk: [${d.index}] ${d.model}`);
 		}

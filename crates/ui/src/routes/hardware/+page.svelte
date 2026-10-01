@@ -639,9 +639,15 @@
 									<div>
 										<dt>{m.slot || `Modul ${i + 1}`}</dt>
 										<dd>
-											{(m.size_mb / 1024).toFixed(0)} GB @ {m.configured_mts || '—'} MT/s
+											{(m.size_mb / 1024).toFixed(0)} GB{m.mem_type ? ` ${m.mem_type}` : ''} @ {m.configured_mts || '—'} MT/s
+											<!-- MT/s jsou přenosy, takt je jejich polovina (DDR =
+											     dva přenosy za takt). Ukazují se obě čísla, protože
+											     jiné nástroje ukazují jedno nebo druhé a „1600"
+											     vedle „3200" pak vypadá jako vypnuté XMP. -->
 											<span class="note-v">
-												umí {m.speed_mts || '—'}{m.part_number ? ` · ${m.part_number}` : ''}
+												{#if m.clock_mhz}takt {m.clock_mhz} MHz · {/if}umí {m.speed_mts || '—'}{m.part_number
+													? ` · ${m.part_number}`
+													: ''}
 											</span>
 										</dd>
 									</div>

@@ -222,7 +222,8 @@
 		if (!mods.length) return '';
 		const totalGb = mods.reduce((a, m) => a + m.size_mb, 0) / 1024;
 		const speed = mods[0]?.configured_mts || mods[0]?.speed_mts || 0;
-		return `${totalGb.toFixed(0)} GB (${mods.length}×) @ ${speed} MT/s`;
+		const typ = mods[0]?.mem_type ? ` ${mods[0].mem_type}` : '';
+		return `${totalGb.toFixed(0)} GB${typ} (${mods.length}×) @ ${speed} MT/s`;
 	});
 	const detailName = $derived(
 		mode === 'cpu'
@@ -1242,6 +1243,7 @@
 								<span class="tile-val value-mono">{(m.size_mb / 1024).toFixed(0)} GB</span>
 								<span class="mod-sub label-tech">
 									{m.configured_mts || m.speed_mts || '?'} MT/s
+									{m.clock_mhz ? ` · ${m.clock_mhz} MHz` : ''}
 									{m.manufacturer ? ` · ${m.manufacturer}` : ''}
 								</span>
 							</div>

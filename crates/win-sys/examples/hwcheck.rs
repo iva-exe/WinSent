@@ -34,8 +34,16 @@ fn main() {
     println!("RAM        {} modulů v {slots} slotech", mods.len());
     for m in &mods {
         println!(
-            "           {} — {} MB @ {} MT/s (modul umí {}) ({} {})",
-            m.slot, m.size_mb, m.configured_mts, m.speed_mts, m.manufacturer, m.part_number
+            "           {} — {} MB {} @ {} MT/s, takt {} MHz{} (modul umí {}) ({} {})",
+            m.slot,
+            m.size_mb,
+            m.mem_type,
+            m.configured_mts,
+            m.clock_mhz,
+            if m.configured_was_clock { ", deska hlásila takt" } else { "" },
+            m.speed_mts,
+            m.manufacturer,
+            m.part_number
         );
     }
 

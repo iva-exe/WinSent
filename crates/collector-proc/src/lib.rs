@@ -147,6 +147,9 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
                 slot: m.slot,
                 manufacturer: m.manufacturer,
                 part_number: m.part_number,
+                mem_type: m.mem_type,
+                clock_mhz: m.clock_mhz,
+                configured_was_clock: m.configured_was_clock,
             })
             .collect(),
         ram_slots,

@@ -108,7 +108,9 @@
 					<span class="w-name">{m.slot}</span>
 					<span class="w-sub">{m.manufacturer}</span>
 					<span class="w-mono">{(m.size_mb / 1024).toFixed(0)} GB</span>
-					<span class="w-mono w-dim">{m.configured_mts || m.speed_mts} MT/s</span>
+					<span class="w-mono w-dim" title={m.clock_mhz ? `takt ${m.clock_mhz} MHz` : ''}>
+						{m.mem_type ? `${m.mem_type} ` : ''}{m.configured_mts || m.speed_mts} MT/s
+					</span>
 				</li>
 			{/each}
 		</ul>

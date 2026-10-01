@@ -436,8 +436,10 @@ export function reportText(d) {
 		const mods = s.ram_modules ?? [];
 		L.push(`RAM:   ${mods.length} modulů ze ${s.ram_slots ?? '?'} slotů`);
 		for (const m of mods) {
+			const typ = m.mem_type ? ` ${m.mem_type}` : '';
+			const takt = m.clock_mhz ? `takt ${m.clock_mhz} MHz, ` : '';
 			L.push(
-				`       ${m.size_mb} MB @ ${m.configured_mts ?? '?'} MT/s (umí ${m.speed_mts ?? '?'})  slot ${m.slot ?? '?'}  ${m.manufacturer ?? ''} ${m.part_number ?? ''}`
+				`       ${m.size_mb} MB${typ} @ ${m.configured_mts ?? '?'} MT/s (${takt}umí ${m.speed_mts ?? '?'})  slot ${m.slot ?? '?'}  ${m.manufacturer ?? ''} ${m.part_number ?? ''}`
 			);
 		}
 		// Jeden modul ve víceslotové desce = jednokanálový režim, tedy
@@ -446,14 +448,25 @@ export function reportText(d) {
 		if (mods.length === 1 && (s.ram_slots ?? 0) > 1) {
 			L.push('       → jeden modul: paměť běží jednokanálově (poloviční propustnost)');
 		}
-		// Nakonfigurovaná rychlost přesně poloviční proti štítkové:
-		// buď na desce není zapnuté XMP/DOCP, nebo firmware do pole
-		// „MT/s" plete takt v MHz (3200 MT/s = 1600 MHz). Z dat se to
-		// rozhodnout nedá, tak se to nerozhoduje.
+		// Rychlost paměti ve vztahu k tomu, co modul umí.
+		//
+		// Dřív tu stála věta „buď je vypnuté XMP, nebo deska hlásí takt"
+		// u každého modulu, který běžel na polovině štítku — s tím, že se
+		// to z dat rozhodnout nedá. Rozhodnout se to dá: starší tabulky
+		// SMBIOS mají to pole podle specifikace v MHz a služba ho podle
+		// verze přepočítá (`configured_was_clock`). Ta nejistá věta
+		// navíc dělala škodu: tenhle záznam čtou lidé i AI, a ti si
+		// z ní vybrali první možnost a radili zapnout XMP, které zapnuté
+		// bylo. Proto se tu teď píše jasně, co platí.
 		for (const m of mods) {
-			if (m.speed_mts && m.configured_mts && m.speed_mts === m.configured_mts * 2) {
+			const kde = m.slot ?? 'modul';
+			if (m.configured_was_clock) {
 				L.push(
-					`       → ${m.slot ?? 'modul'}: běží na polovině štítkové rychlosti — buď je vypnuté XMP/DOCP, nebo deska hlásí takt v MHz místo MT/s`
+					`       → ${kde}: deska hlásí v poli rychlosti takt ${m.clock_mhz} MHz, ne přenosy. Skutečná rychlost je ${m.configured_mts} MT/s (DDR = dva přenosy za takt). Nástroje, které to pole čtou doslova, ukazují ${m.clock_mhz} — to NENÍ vypnuté XMP.`
+				);
+			} else if (m.speed_mts && m.configured_mts && m.configured_mts < m.speed_mts) {
+				L.push(
+					`       → ${kde}: běží na ${m.configured_mts} z ${m.speed_mts} MT/s, které modul podle desky umí — nejspíš je vypnuté XMP/DOCP, nebo je rychlost nastavená ručně níž`
 				);
 			}
 		}
