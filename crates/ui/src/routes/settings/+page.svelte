@@ -105,7 +105,7 @@
 
 	import { updater, checkUpdate, runUpdate } from '$lib/updater.svelte.js';
 	import { gatherAll, reportText } from '$lib/pcreport.js';
-	import { Download, FolderOpen, RefreshCw, ShieldCheck } from 'lucide-svelte';
+	import { Download, ExternalLink, FolderOpen, RefreshCw, ShieldCheck } from 'lucide-svelte';
 	// Kdy naposledy. Přesný čas nikoho nezajímá, „před chvílí" ano.
 
 	// ── Záznam o celém počítači ──
@@ -374,6 +374,70 @@
 		dbBusy = false;
 	}
 
+	// ── Zdroje senzorů ──
+	// Cizí open-source nástroje, ze kterých služba umí číst. Nic z toho
+	// Winsent neinstaluje; tady je jen vidět, co v počítači je, jestli se
+	// to opravdu používá, a kde nástroj najít. Seznam drží jen ověřené
+	// otevřené projekty s bezpečným ovladačem — uzavřený software ani
+	// monitory na zranitelném ovladači WinRing0 Winsent nečte.
+	// Odkazy otevírá hostitel podle id ze svého seznamu — URL z UI nebere.
+	const ZDROJE = [
+		{
+			id: 'pawnio',
+			jmeno: 'PawnIO',
+			proc: 'Otevřený ovladač, přes který služba čte teplotu přímo z čidla procesoru. Instaluje se zvlášť (nabídne ho i LibreHardwareMonitor); z jeho podepsaných modulů Winsent volá jen čtení.',
+			zdroj: 'PawnIO',
+			odkazy: [
+				{ id: 'pawnio', text: 'GitHub' },
+				{ id: 'pawnio-moduly', text: 'moduly · LGPL-2.1' }
+			]
+		}
+	];
+	let zdroje = $state(null);
+	// Zdroj, ze kterého teplota CPU právě opravdu jde (z kaskády služby).
+	let zdrojTeploty = $state(null);
+	let zdrojeChyba = $state('');
+
+	// Přítomnost PawnIO je levná (jedno CreateFileW a registr) a ptá se
+	// na ni interval. Jestli se teplota opravdu čte, prozradí jen celý
+	// hardwarový přehled — ten služba při každém dotazu po 5 s skládá
+	// znovu (SMBIOS, zařízení, SMART…), takže se bere jen při otevření
+	// stránky, po návratu do okna a když se PawnIO objeví nebo zmizí.
+	async function nactiZdroje(celkem = true) {
+		if (document.hidden) return;
+		const predtim = zdroje?.pawnio_installed;
+		try {
+			zdroje = await invoke('query_sensor_sources');
+			zdrojeChyba = '';
+		} catch (e) {
+			zdrojeChyba = String(e);
+		}
+		if (!celkem && zdroje?.pawnio_installed === predtim) return;
+		try {
+			zdrojTeploty = (await invoke('query_hardware'))?.cpu_thermal?.temp_source ?? null;
+		} catch {
+			// Služba neběží — přítomnost nástrojů se ukáže i tak.
+			zdrojTeploty = null;
+		}
+	}
+	const obnovZdroje = () => nactiZdroje(false);
+	const priNavratu = () => nactiZdroje(true);
+
+	function stavZdroje(z) {
+		if (!zdroje) return '—';
+		const verze = zdroje.pawnio_version ? ` · ${zdroje.pawnio_version}` : '';
+		if (zdrojTeploty === z.zdroj) return `používá se${verze}`;
+		return zdroje.pawnio_installed ? `nainstalováno${verze}` : 'nenainstalováno';
+	}
+
+	async function otevriProjekt(id) {
+		try {
+			await invoke('open_project_page', { id });
+		} catch (e) {
+			zdrojeChyba = String(e);
+		}
+	}
+
 	let usage = $state(null);
 	let error = $state('');
 
@@ -403,9 +467,16 @@
 		// Vlastní tikot pro 'naposledy zjištěno' — bez něj by text
 		// zamrzl na hodnotě z posledního překreslení.
 		const tik = setInterval(() => (ted = Date.now()), 1000);
+		// Zdroje senzorů se mění jen instalací nebo spuštěním nástroje —
+		// stačí jednou za deset sekund a po návratu do okna.
+		nactiZdroje();
+		const tz = setInterval(obnovZdroje, 10_000);
+		document.addEventListener('visibilitychange', priNavratu);
 		return () => {
 			clearInterval(t);
 			clearInterval(tik);
+			clearInterval(tz);
+			document.removeEventListener('visibilitychange', priNavratu);
 			// Odchod ze stránky uprostřed snímání: posluchač visí na
 			// window, které je společné celému oknu, takže by přežil
 			// stránku, polykal klávesy v ostatních sekcích a první
@@ -688,6 +759,32 @@
 			</div>
 		{:else if dbMsg}
 			<p class="row-ok">{dbMsg}</p>
+		{/if}
+	</section>
+
+	<section class="card">
+		<header class="card-head"><span class="label-tech">// zdroje senzorů</span></header>
+
+		{#each ZDROJE as z (z.id)}
+			<div class="row">
+				<span class="row-main">
+					<span class="row-name">{z.jmeno}</span>
+					<span class="row-why">{z.proc}</span>
+				</span>
+				<span class="row-act">
+					<span class="value-mono zdroj-stav" class:aktivni={zdrojTeploty === z.zdroj}>
+						{stavZdroje(z)}
+					</span>
+					{#each z.odkazy as o (o.id)}
+						<button class="v-btn" onclick={() => otevriProjekt(o.id)}>
+							<ExternalLink size={14} /> {o.text}
+						</button>
+					{/each}
+				</span>
+			</div>
+		{/each}
+		{#if zdrojeChyba}
+			<p class="row-err">{zdrojeChyba}</p>
 		{/if}
 	</section>
 
@@ -1009,6 +1106,13 @@
 		color: var(--text-faint);
 	}
 	.ver-new {
+		color: var(--ok);
+	}
+	.zdroj-stav {
+		font-size: var(--fs-sm);
+		color: var(--text-dim);
+	}
+	.zdroj-stav.aktivni {
 		color: var(--ok);
 	}
 	/* Krátké bliknutí po dokončení kontroly.

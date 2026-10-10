@@ -124,6 +124,11 @@ pub enum Confidence {
 
 /// Doplňkové údaje GPU (NVML) pro detail sekci — jen živý pohled,
 /// do historie se neukládá (senzory naostro přijdou ve v3).
+///
+/// Pole za `clock_mhz` jsou vendor-neutrální (D3DKMT + PDH, stejné
+/// zdroje jako Správce úloh) a jen živá — do historie nejdou, při
+/// zámku času jsou None. Přidávat se smí JEN NA KONEC: postcard nemá
+/// jména polí a vložené pole by posunulo čtení všeho za ním.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub struct GpuInfo {
     pub temp_c: Option<f32>,
@@ -131,6 +136,35 @@ pub struct GpuInfo {
     pub vram_total_mb: Option<u64>,
     pub power_w: Option<f32>,
     pub clock_mhz: Option<u32>,
+    /// Otáčky ventilátoru. Some(0) = karta stojí (zero-fan režim);
+    /// None = ovladač ventilátor nehlásí (typicky notebook).
+    pub fan_rpm: Option<u32>,
+    /// Otáčky v % maxima, které hlásí ovladač.
+    pub fan_pct: Option<f32>,
+    /// Příkon v % limitu desky — D3DKMT ho dává u každého vendora,
+    /// i tam, kde watty nejsou.
+    pub power_pct: Option<f32>,
+    /// Sdílená (systémová) paměť, kterou GPU právě drží, a její strop
+    /// (polovina RAM — stejné číslo ukazuje Správce úloh).
+    pub shared_used_mb: Option<u64>,
+    pub shared_total_mb: Option<u64>,
+    /// Vytížení enginů podle typu v % (nejvytíženější engine toho
+    /// typu). None = adaptér engine toho typu nemá.
+    pub eng_3d: Option<f32>,
+    pub eng_copy: Option<f32>,
+    pub eng_video_dec: Option<f32>,
+    pub eng_video_enc: Option<f32>,
+    pub eng_compute: Option<f32>,
+}
+
+/// Proces s největší obsazenou VRAM (rezidentní v lokální paměti
+/// adaptéru). Jen živě — do historie se neukládá.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct GpuMemUser {
+    pub pid: u32,
+    pub name: String,
+    pub app_name: String,
+    pub mb: u32,
 }
 
 /// Systémové metriky z téhož vzorku.
@@ -169,6 +203,8 @@ pub struct SystemSnapshot {
     pub disk_qlen: f32,
     pub disk_lat_ms: f32,
     pub thermal_throttle: bool,
+    /// Největší spotřebitelé VRAM hlavního GPU (max 5, sestupně).
+    pub gpu_top_mem: Vec<GpuMemUser>,
 }
 
 /// Událost na časové ose (zásek, pád procesu…) — markery v grafu.
@@ -452,7 +488,7 @@ pub struct BatteryInfo {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CpuThermalInfo {
     pub celsius: Option<f32>,
-    /// „HWiNFO" | „LibreHardwareMonitor" | „ACPI" | „nedostupné".
+    /// „PawnIO" | „ACPI" | „nedostupné".
     pub temp_source: String,
     pub clock_mhz: u32,
     pub max_mhz: u32,

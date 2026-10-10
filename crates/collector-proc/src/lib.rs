@@ -7,10 +7,10 @@
 //! do SQLite se na tenhle tvar napojí v dalším kroku v1.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use core_types::config::Config;
-use core_types::proc::{DiskDesc, DiskRate, ProcRow, StaticInfo, SystemSnapshot};
+use core_types::proc::{DiskDesc, DiskRate, GpuMemUser, ProcRow, StaticInfo, SystemSnapshot};
 
 pub mod stall;
 
@@ -45,6 +45,13 @@ impl Degraded {
                 error = %msg,
                 "část sběru nefunguje — zbytek jede dál"
             );
+        }
+    }
+
+    /// Zdroj zase funguje (např. adaptér po TDR) — z hlášení pryč.
+    pub fn clear(&mut self, what: &'static str) {
+        if self.failed.remove(what).is_some() {
+            tracing::info!(zdroj = what, "část sběru zase funguje");
         }
     }
 
@@ -90,6 +97,20 @@ pub struct State {
     gpu_proc: Option<win_sys::gpuproc::GpuPerProc>,
     /// Celková VRAM z registru (fallback pro detail bez NVML).
     gpu_vram_total_mb: Option<u64>,
+    /// Senzory hlavního GPU přes D3DKMT (teplota, ventilátor, příkon
+    /// v % limitu) od kteréhokoli vendora; None = adaptér nejde otevřít.
+    gpu_kmt: Option<win_sys::gpukmt::KmtAdapter>,
+    /// PCI sběrnice GPU z NVML — páruje D3DKMT s NVML i po znovuotevření.
+    gpu_pci_bus: Option<u32>,
+    /// Neúspěšná čtení senzorů D3DKMT v řadě (od pěti se adaptér
+    /// otevírá znovu), nejbližší pokus a pauza před dalším v sekundách.
+    gpu_kmt_fails: u32,
+    gpu_kmt_retry: Instant,
+    gpu_kmt_pauza_s: u64,
+    /// Poslední vzorek senzorů a kdy smí přijít další (viz `gpu_senzory`:
+    /// drahé čtení se zředí, mezitím platí poslední hodnota).
+    gpu_kmt_posledni: Option<win_sys::gpukmt::KmtPerf>,
+    gpu_kmt_dalsi: Instant,
     /// Hard faulty/s přes PDH (signál paging, SPEC 3.3); None = není.
     mem_faults: Option<win_sys::pdhq::MemFaults>,
     /// Statické info komponent — zjištěno jednou při init.
@@ -124,6 +145,18 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
     }
     // Registry fallback: název + celková VRAM pro jakéhokoliv vendora.
     let gpu_basic = win_sys::gpubasic::detect();
+    // Senzory D3DKMT: adaptér, který čte NVML (podle PCI sběrnice),
+    // jinak ten s největší VRAM. Enginy, sdílená paměť a VRAM per
+    // proces z PDH se berou z téhož adaptéru (LUID).
+    let gpu_pci_bus = gpu.as_ref().and_then(|g| g.pci_bus());
+    let gpu_kmt = win_sys::gpukmt::KmtAdapter::open_main(gpu_pci_bus);
+    if gpu_kmt.is_none() {
+        tracing::info!("D3DKMT adaptér nedostupný — ventilátor a příkon GPU v % nebudou");
+    }
+    let mut gpu_proc = win_sys::gpuproc::GpuPerProc::init();
+    if let Some(g) = gpu_proc.as_mut() {
+        g.set_main_luid(gpu_kmt.as_ref().map(|k| k.pdh_luid.clone()));
+    }
 
     // Disky: otevřít jednou, čítače se pak čtou 1×/s.
     let disks = win_sys::disk::open_disks();
@@ -182,8 +215,15 @@ pub fn init(_cfg: &Config) -> Result<State, Error> {
         gpu,
         disks,
         prev_disks,
-        gpu_proc: win_sys::gpuproc::GpuPerProc::init(),
+        gpu_proc,
         gpu_vram_total_mb: gpu_basic.vram_total_mb,
+        gpu_kmt,
+        gpu_pci_bus,
+        gpu_kmt_fails: 0,
+        gpu_kmt_retry: Instant::now(),
+        gpu_kmt_pauza_s: KMT_PAUZA_MIN_S,
+        gpu_kmt_posledni: None,
+        gpu_kmt_dalsi: Instant::now(),
         mem_faults: win_sys::pdhq::MemFaults::init(),
         statics,
         identity: identity::Engine::new(identity::load_tables()),
@@ -416,30 +456,86 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
     let handles_total: u32 = raw.iter().map(|p| p.handles).sum();
 
     // GPU detail: NVML dává vše (teplota, spotřeba, takt); bez NVML
-    // (AMD/Intel) poctivý PDH+registry fallback — VRAM ano, senzory „—“
-    // (ADLX/IGCL přijdou dle SPEC 15.2 později).
-    let gpu_detail = match state.gpu.as_ref() {
-        Some(g) => {
-            let d = g.details();
-            Some(core_types::proc::GpuInfo {
-                temp_c: d.temp_c,
-                vram_used_mb: d.vram_used_mb,
-                vram_total_mb: d.vram_total_mb,
-                power_w: d.power_w,
-                clock_mhz: d.clock_mhz,
-            })
-        }
-        None if gpu_pdh.total_pct.is_some() || state.gpu_vram_total_mb.is_some() => {
+    // (AMD/Intel) poctivý PDH+registry fallback — VRAM ano, watty a takt
+    // „—“. Teplotu, ventilátor a příkon v % limitu doplní D3DKMT
+    // u kteréhokoli vendora; enginy a sdílenou paměť PDH.
+    let nvml = state.gpu.as_ref().map(|g| g.details());
+    // Senzory D3DKMT čtené AŽ PO NVML: ovladač NVIDIA si naměřené
+    // hodnoty chvíli drží, takže dotaz hned po NVML stojí 3–6 µs.
+    // Samotný stál každý druhý tick 3–7 ms CPU — ovladač tehdy čte
+    // senzory z karty (změřeno na RTX 2070 SUPER).
+    let kmt = gpu_senzory(state, now);
+    let mut gpu_detail = match nvml {
+        Some(d) => Some(core_types::proc::GpuInfo {
+            temp_c: d.temp_c,
+            vram_used_mb: d.vram_used_mb,
+            vram_total_mb: d.vram_total_mb,
+            power_w: d.power_w,
+            clock_mhz: d.clock_mhz,
+            ..Default::default()
+        }),
+        None if gpu_pdh.total_pct.is_some()
+            || state.gpu_vram_total_mb.is_some()
+            || kmt.is_some() =>
+        {
             Some(core_types::proc::GpuInfo {
                 temp_c: None,
                 vram_used_mb: gpu_pdh.vram_used_mb,
                 vram_total_mb: state.gpu_vram_total_mb,
                 power_w: None,
                 clock_mhz: None,
+                ..Default::default()
             })
         }
         None => None,
     };
+    if let Some(g) = gpu_detail.as_mut() {
+        // NVML má přednost — na NVIDIA se žádné dnešní číslo nemění;
+        // D3DKMT jen doplní, co chybí (teplota na AMD/Intel).
+        if let Some(p) = kmt {
+            g.temp_c = g.temp_c.or(p.temp_c);
+            g.fan_rpm = p.fan_rpm;
+            g.fan_pct = p.fan_pct;
+            g.power_pct = p.power_pct;
+        }
+        g.shared_used_mb = gpu_pdh.shared_used_mb;
+        g.shared_total_mb = state
+            .gpu_kmt
+            .as_ref()
+            .map(|k| k.shared_limit_mb)
+            .filter(|&mb| mb > 0);
+        let e = gpu_pdh.engines;
+        g.eng_3d = e.d3;
+        g.eng_copy = e.copy;
+        g.eng_video_dec = e.video_dec;
+        g.eng_video_enc = e.video_enc;
+        g.eng_compute = e.compute;
+    }
+
+    // Největší spotřebitelé VRAM s názvy z řádků procesů (WebView2 už
+    // pod svou aplikací). Hodnota nad celkovou VRAM je rozbitý čítač,
+    // ne údaj — zahazuje se dřív, než se vybere pětice.
+    let vram_strop = state
+        .gpu_kmt
+        .as_ref()
+        .map(|k| k.dedicated_mb)
+        .filter(|&mb| mb > 0)
+        .or(gpu_detail.and_then(|g| g.vram_total_mb));
+    let gpu_top_mem: Vec<GpuMemUser> = gpu_pdh
+        .mem_by_pid
+        .iter()
+        .filter(|&&(_, mb)| vram_strop.is_none_or(|s| mb <= s))
+        .filter_map(|&(pid, mb)| {
+            let r = rows.iter().find(|r| r.pid == pid)?;
+            Some(GpuMemUser {
+                pid,
+                name: r.name.clone(),
+                app_name: r.app_name.clone(),
+                mb: mb as u32,
+            })
+        })
+        .take(5)
+        .collect();
 
     let snapshot = SystemSnapshot {
         cpu_pct: cpu_pct.clamp(0.0, 100.0),
@@ -471,8 +567,82 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
         thermal_throttle: cpu_clock_max_mhz > 0
             && cpu_clock_mhz < cpu_clock_max_mhz * 7 / 10
             && cpu_pct > 50.0,
+        gpu_top_mem,
     };
     Ok((rows, snapshot))
+}
+
+/// Nejkratší a nejdelší pauza před znovuotevřením adaptéru D3DKMT.
+const KMT_PAUZA_MIN_S: u64 = 60;
+const KMT_PAUZA_MAX_S: u64 = 3600;
+/// Kolik chyb v řadě znamená „senzory nejdou" (hlášení + znovuotevření).
+const KMT_CHYB_V_RADE: u32 = 5;
+/// Čtení dražší než tohle je ovladač, který jde pro hodnoty až na kartu.
+const KMT_DRAHE: Duration = Duration::from_millis(1);
+/// Po drahém čtení se další bere až po téhle době.
+const KMT_ZREDENI: Duration = Duration::from_secs(5);
+
+/// Jeden vzorek senzorů D3DKMT; None = adaptér není nebo čtení selhalo.
+///
+/// Po pěti chybách v řadě se adaptér otevře znovu: po TDR nebo
+/// aktualizaci ovladače přestane platit handle i LUID. Pauza mezi
+/// pokusy se zdvojuje až na hodinu, ať stroj, kde senzory nejdou
+/// vůbec, neprochází adaptéry pořád dokola. Když adaptér nebyl už při
+/// startu, nezkouší se znovu — stejně jako NVML.
+///
+/// Do „co nefunguje" jde výpadek až po stejných pěti chybách a jednou
+/// za řadu (ne formát a alokace každý tick); po zotavení zase zmizí.
+/// Jednotlivá chyba se nehlásí — jinak by občasné selhání střídavě
+/// zapisovalo a mazalo záznam a s ním plnilo log.
+///
+/// Cena čtení záleží na ovladači: hned po NVML jsou to mikrosekundy,
+/// samotné na RTX 2070 SUPER každé druhé 3–7 ms a na AMD/Intel to
+/// nikdo nezměřil. Proto se měří: čtení dražší než 1 ms posune další
+/// o 5 s a mezitím platí poslední hodnota. Teplota, ventilátor ani
+/// příkon se za pět sekund nijak podstatně nezmění, a služba tak nikde
+/// nezaplatí milisekundy každou sekundu.
+fn gpu_senzory(state: &mut State, now: Instant) -> Option<win_sys::gpukmt::KmtPerf> {
+    if state.gpu_kmt.is_some() && now < state.gpu_kmt_dalsi {
+        return state.gpu_kmt_posledni;
+    }
+    let t0 = Instant::now();
+    let vzorek = state.gpu_kmt.as_ref().map(|k| k.sample());
+    if t0.elapsed() > KMT_DRAHE {
+        state.gpu_kmt_dalsi = now + KMT_ZREDENI;
+    }
+    state.gpu_kmt_posledni = None;
+    match vzorek {
+        Some(Ok(p)) => {
+            if state.gpu_kmt_fails >= KMT_CHYB_V_RADE {
+                state.degraded.clear("d3dkmt_perfdata");
+            }
+            state.gpu_kmt_fails = 0;
+            state.gpu_kmt_pauza_s = KMT_PAUZA_MIN_S;
+            state.gpu_kmt_posledni = Some(p);
+            return Some(p);
+        }
+        Some(Err(st)) => {
+            state.gpu_kmt_fails = state.gpu_kmt_fails.saturating_add(1);
+            if state.gpu_kmt_fails == KMT_CHYB_V_RADE {
+                state.degraded.warn_once(
+                    "d3dkmt_perfdata",
+                    &format_args!("NTSTATUS 0x{:08X}", st as u32),
+                );
+            }
+        }
+        None => {}
+    }
+    if state.gpu_kmt_fails >= KMT_CHYB_V_RADE && now >= state.gpu_kmt_retry {
+        // Starý handle zavřít dřív, než se otevře nový.
+        state.gpu_kmt = None;
+        state.gpu_kmt = win_sys::gpukmt::KmtAdapter::open_main(state.gpu_pci_bus);
+        state.gpu_kmt_retry = now + Duration::from_secs(state.gpu_kmt_pauza_s);
+        state.gpu_kmt_pauza_s = (state.gpu_kmt_pauza_s * 2).min(KMT_PAUZA_MAX_S);
+        if let Some(g) = state.gpu_proc.as_mut() {
+            g.set_main_luid(state.gpu_kmt.as_ref().map(|k| k.pdh_luid.clone()));
+        }
+    }
+    None
 }
 
 /// Korektní ukončení sampleru.

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// `HardwareReport` přečte razítko času z bajtu příznaku `Option`,
 /// takže vyjde rok 1970 a nikde se nic nezhroutí. Tichý nesmysl je
 /// horší než chybová hláška, protože ho nikdo nenahlásí.
-pub const PROTOCOL_VERSION: u32 = 49;
+pub const PROTOCOL_VERSION: u32 = 50;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -351,7 +351,11 @@ mod wire_shape {
         // (jméno, naměřeno, zaznamenáno při PROTOCOL_VERSION 47)
         let mereno: Vec<(&str, (usize, u64), (usize, u64))> = vec![
             ("ProcRow", otisk::<ProcRow>(), (23, 2959247389591744881)),
-            ("SystemSnapshot", otisk::<SystemSnapshot>(), (31, 1630485381821562429)),
+            ("SystemSnapshot", otisk::<SystemSnapshot>(), (32, 9363335324375932243)),
+            // GpuInfo jde do SystemSnapshot jako `None` — délka prázdného
+            // snapshotu jeho změnu nevidí, proto má otisk zvlášť.
+            ("GpuInfo", otisk::<GpuInfo>(), (15, 8208288304695416354)),
+            ("GpuMemUser", otisk::<GpuMemUser>(), (4, 7417733315500433997)),
             ("StaticInfo", otisk::<StaticInfo>(), (11, 16331367557955489898)),
             ("StartupRow", otisk::<StartupRow>(), (12, 5603128357851775481)),
             ("ProtectionReport", otisk::<ProtectionReport>(), (20, 7503998234196962424)),

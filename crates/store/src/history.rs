@@ -83,6 +83,8 @@ pub fn detail_at(
                     vram_total_mb: None,
                     power_w: r.get::<_, Option<f64>>(2)?.map(|v| v as f32),
                     clock_mhz: r.get::<_, Option<i64>>(3)?.map(|v| v.max(0) as u32),
+                    // Ventilátor, enginy a další jsou jen živě.
+                    ..Default::default()
                 })
             })
             .ok()

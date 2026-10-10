@@ -1,0 +1,3 @@
+# Podepsané moduly PawnIO se nesmí změnit ani o bajt (ovladač by je
+# odmítl a test velikostí v pawnio.rs by spadl) — žádné převody konců řádků.
+*.bin binary

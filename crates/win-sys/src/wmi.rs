@@ -2,8 +2,8 @@
 //!
 //! WMI je pomalé a umí se zaseknout, proto platí dvě pravidla ze SPEC
 //! kap. 15.1: **jednorázově, nikdy v sekundovém cyklu**, a volající si
-//! výsledek cachuje. Používá se jen tam, kde jiná cesta není — teploty
-//! z ACPI a z LibreHardwareMonitoru, které Win32 API nenabízí.
+//! výsledek cachuje. Používá se jen tam, kde jiná cesta není — třeba
+//! teplota z ACPI, kterou Win32 API nenabízí.
 //!
 //! Vrací prosté řetězce a čísla; složitější typy tenhle modul neumí
 //! a ani nemá — kdo potřebuje víc, ať si napíše vlastní volání.
@@ -49,7 +49,7 @@ pub fn flag(row: &Row, name: &str) -> Option<bool> {
 /// Spustí WQL dotaz v daném jmenném prostoru (např. `root\WMI`).
 ///
 /// Vrací prázdný seznam, když jmenný prostor neexistuje — to je běžný,
-/// očekávaný stav (LibreHardwareMonitor většina lidí nemá), ne chyba.
+/// očekávaný stav (třeba třída, kterou stroj nemá), ne chyba.
 /// COM musí být na vlákně inicializované (`wic::init_com_for_thread`).
 pub fn query(namespace: &str, wql: &str, props: &[&str]) -> Vec<Row> {
     // SAFETY: COM objekty se drží jen po dobu volání; řetězce jako BSTR

@@ -22,8 +22,10 @@
 		const out = [];
 		const cpu = hw?.cpu_thermal;
 		if (cpu?.celsius != null) out.push({ co: 'Procesor', c: cpu.celsius, zdroj: cpu.temp_source });
+		// Teplota grafiky je z NVML, nebo (AMD/Intel, NVML bez teploty)
+		// z D3DKMT; snímek zdroj nenese, obojí ale čte ovladač karty.
 		const gpu = data.system?.gpu?.temp_c;
-		if (gpu != null) out.push({ co: 'Grafika', c: gpu, zdroj: 'NVML' });
+		if (gpu != null) out.push({ co: 'Grafika', c: gpu, zdroj: 'ovladač GPU' });
 		for (const d of data.volumes?.health ?? []) {
 			if (d.temp_c != null) out.push({ co: d.model, c: d.temp_c, zdroj: 'SMART' });
 		}

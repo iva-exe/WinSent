@@ -241,6 +241,19 @@
 	const dCpuPct = $derived(dIdx != null ? cpu[dIdx] : system?.cpu_pct);
 	const dMemPct = $derived(dIdx != null ? mem[dIdx] : mem.at(-1));
 	const dGpuPct = $derived(dIdx != null ? gpu[dIdx] : system?.gpu_pct);
+	// Dlaždice enginů GPU (stejné grafy má Správce úloh). Kreslí se jen
+	// ty, které ŽIVÝ adaptér hlásí — při zámku času se rozložení
+	// nepřeskládá, hodnoty jen přejdou na „—" (do historie nejdou).
+	const GPU_ENGINY = [
+		['eng_3d', '3d'],
+		['eng_copy', 'kopírování'],
+		['eng_video_dec', 'video dekódování'],
+		['eng_video_enc', 'video kódování'],
+		['eng_compute', 'výpočty']
+	];
+	const dGpuEnginy = $derived(GPU_ENGINY.filter(([k]) => system?.gpu?.[k] != null));
+	// VRAM podle procesů je jen živě; null = zámek času.
+	const dGpuTop = $derived(pinned == null ? (system?.gpu_top_mem ?? []) : null);
 	const dDown = $derived(dIdx != null ? down[dIdx] : system?.net_rx_bps);
 	const dUp = $derived(dIdx != null ? up[dIdx] : system?.net_tx_bps);
 	const dDiskTot = $derived(dIdx != null ? diskTot[dIdx] : diskTot.at(-1));
@@ -1421,10 +1434,27 @@
 						</span>
 					</div>
 					<div class="tile">
+						<span class="label-tech">ventilátor</span>
+						<span class="tile-val value-mono"><Num value={dGpu.fan_rpm} decimals={0} suffix=" ot/min" /></span>
+						<!-- Podřádky % podle ŽIVÉHO adaptéru jako enginy: historie
+						     je nenese a bez nich by se při zámku času řada zmenšila. -->
+						{#if system?.gpu?.fan_pct != null}
+							<span class="mod-sub label-tech">{dGpu.fan_pct != null ? `${dGpu.fan_pct.toFixed(0)} %` : '—'}</span>
+						{/if}
+					</div>
+					<div class="tile">
 						<span class="label-tech">vram</span>
 						<span class="tile-val value-mono">
 							{#if dGpu.vram_used_mb != null}
 								<Num value={dGpu.vram_used_mb / 1024} suffix=" GB" /> / {((dGpu.vram_total_mb ?? system?.gpu?.vram_total_mb ?? 0) / 1024).toFixed(0)} GB
+							{:else}—{/if}
+						</span>
+					</div>
+					<div class="tile">
+						<span class="label-tech">sdílená paměť</span>
+						<span class="tile-val value-mono">
+							{#if dGpu.shared_used_mb != null}
+								<Num value={dGpu.shared_used_mb / 1024} suffix=" GB" />{dGpu.shared_total_mb ? ` / ${(dGpu.shared_total_mb / 1024).toFixed(0)} GB` : ''}
 							{:else}—{/if}
 						</span>
 					</div>
@@ -1434,17 +1464,57 @@
 					</div>
 					<div class="tile">
 						<span class="label-tech">spotřeba</span>
-						<span class="tile-val value-mono"><Num value={dGpu.power_w} decimals={0} suffix=" W" /></span>
+						<span class="tile-val value-mono">
+							<!-- Bez wattů (AMD/Intel) je údajem samotné % limitu. -->
+							{#if dGpu.power_w == null && dGpu.power_pct != null}
+								<Num value={dGpu.power_pct} decimals={0} suffix=" % limitu" />
+							{:else}
+								<Num value={dGpu.power_w} decimals={0} suffix=" W" />
+							{/if}
+						</span>
+						{#if system?.gpu?.power_w != null && system?.gpu?.power_pct != null}
+							<span class="mod-sub label-tech">{dGpu.power_pct != null ? `${dGpu.power_pct.toFixed(0)} % limitu` : '—'}</span>
+						{/if}
 					</div>
 					<div class="tile">
 						<span class="label-tech">využití</span>
 						<span class="tile-val value-mono" style:color={colorForLoad(dGpuPct)}><Num value={dGpuPct} suffix=" %" /></span>
 					</div>
 				</div>
+				{#if dGpuEnginy.length}
+					<div class="tiles info-row">
+						{#each dGpuEnginy as [k, nazev] (k)}
+							<div class="tile">
+								<span class="label-tech">{nazev}</span>
+								<span class="tile-val value-mono" style:color={colorForLoad(dGpu[k])}><Num value={dGpu[k]} suffix=" %" /></span>
+							</div>
+						{/each}
+					</div>
+				{/if}
+				<!-- Prostý text, ne <Num>: řádky se přeskupují a tween by
+				     čísla přeléval mezi různými procesy. -->
+				{#if system?.gpu_top_mem?.length}
+					<div
+						class="info-row"
+						title="VRAM, kterou proces právě drží v paměti karty. Sdílené alokace se počítají u každého procesu, který je používá — součet proto může přesáhnout obsazenou VRAM."
+					>
+						<span class="label-tech">vram podle procesů</span>
+						{#if dGpuTop == null}
+							<p class="empty-note label-tech">rozpis podle procesů je jen živě — do historie se neukládá</p>
+						{:else}
+							<div class="gpu-top">
+								{#each dGpuTop as u (u.pid)}
+									<span class="gpu-top-name">{u.app_name || u.name}</span>
+									<span class="gpu-top-mb value-mono">{(u.mb / 1024).toFixed(2)} GB</span>
+								{/each}
+							</div>
+						{/if}
+					</div>
+				{/if}
 			{:else if pinned != null}
 				<p class="empty-note label-tech">pro zamčený čas nejsou gpu senzory v historii</p>
 			{:else}
-				<p class="empty-note label-tech">gpu detail nedostupný — vyžaduje NVIDIA (NVML); AMD/Intel přijde ve v3</p>
+				<p class="empty-note label-tech">gpu detail nedostupný — grafický ovladač nehlásí žádné údaje</p>
 			{/if}
 		{:else if mode === 'disk'}
 			<!-- Per-disk rychlosti (při zámku z historie) -->
@@ -1928,6 +1998,21 @@
 	.mod-sub {
 		text-transform: none;
 		letter-spacing: 0.02em;
+	}
+	/* VRAM podle procesů: název a GB ve dvou sloupcích u sebe. */
+	.gpu-top {
+		display: grid;
+		grid-template-columns: minmax(0, max-content) max-content;
+		gap: 0.2rem 1.2rem;
+		margin-top: 0.4rem;
+	}
+	.gpu-top-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.gpu-top-mb {
+		text-align: right;
 	}
 	.tile-sep {
 		color: var(--text-faint);

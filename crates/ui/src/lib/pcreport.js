@@ -606,9 +606,9 @@ export function reportText(d) {
 			const c = h.cpu_thermal;
 			// Teplota se vypisuje, jen když ji někdo opravdu hlásí.
 			//
-			// Windows teplotu jádra běžně nevydávají a kdo ji čte (HWiNFO
-			// a spol.), má na to vlastní ovladač v jádře — tam Winsent
-			// zásadně nesahá. Řádek „teplota — °C (zdroj nedostupné)"
+			// Windows teplotu jádra běžně nevydávají; Winsent ji umí přečíst
+			// jen přes ovladač PawnIO, který si uživatel nainstaloval sám
+			// (nebo ACPI, které desktopy většinou nemají). Řádek „teplota — °C (zdroj nedostupné)"
 			// tedy nebyl údaj, jen šum přes celou sekci.
 			const teplota =
 				c.celsius != null ? `teplota ${Math.round(c.celsius)} °C (zdroj ${c.temp_source}), ` : '';
@@ -630,7 +630,7 @@ export function reportText(d) {
 			);
 			if (c.celsius == null) {
 				L.push(
-					'        (teplotu jádra Windows samy nevydávají — Winsent ji přečte, když běží HWiNFO se zapnutou sdílenou pamětí nebo LibreHardwareMonitor)'
+					'        (teplotu jádra Windows samy nevydávají — Winsent ji umí přečíst přes ovladač PawnIO na procesorech AMD Ryzen a Intel Core 2. generace a novějších; PawnIO nabídne i LibreHardwareMonitor)'
 				);
 			}
 		}

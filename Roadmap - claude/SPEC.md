@@ -571,7 +571,7 @@ CREATE TABLE system_1s (
   disk_qlen REAL, disk_lat_ms REAL, hard_flt_rate INTEGER,
   gpu_pct REAL, thermal_throttle INTEGER,
   cpu_temp_c REAL,          -- NULL když nedostupné (viz kaskáda 15.2)
-  cpu_temp_src TEXT,        -- 'hwinfo'|'lhm'|'acpi'|NULL — vždy uveď zdroj
+  cpu_temp_src TEXT,        -- 'pawnio'|'acpi'|NULL — vždy uveď zdroj (zatím se nezapisuje)
   cpu_clock_mhz INTEGER, cpu_clock_max_mhz INTEGER  -- throttling = clock/max
 ) WITHOUT ROWID;
 
@@ -1018,7 +1018,7 @@ NVML na 1 Hz je prakticky zdarma. Tohle **dělej** — u GPU je teplota plnohodn
 
 | Priorita | Zdroj | Dostupnost | Poznámka |
 |---|---|---|---|
-| 1 | **HWiNFO** shared memory / **LibreHardwareMonitor** WMI (`root\LibreHardwareMonitor`), pokud běží | přesné | driver si nainstaloval **uživatel** jiným nástrojem — tvoje app zůstává čistá, jen konzumuje |
+| 1 | **PawnIO** (open-source ovladač; služba čte čidlo CPU přes jeho podepsané moduly, jen čtecí funkce) | přesné | ovladač si nainstaloval **uživatel** (sám, nebo přes LibreHardwareMonitor ≥ 0.9.5) — Winsent ho nešíří. HWiNFO (uzavřené) a WMI z LHM/OHM (LHM ho od 0.9.5 nemá, starší verze a OHM běží na zranitelném WinRing0) se nečtou |
 | 2 | **ACPI thermal zone** (`MSAcpi_ThermalZoneTemperature`, `root\WMI`) | často notebooky, zřídka desktopy | userspace + admin, bez driveru; desktopy často hlásí chipset, ne jádra |
 | 3 | **Throttling + takty** (`CallNtPowerInformation(ProcessorInformation)`, aktuální vs. max MHz) | **vždy, 100 % strojů** | odpovídá na skutečnou otázku „zpomaluje mi to kvůli teplu?" i bez stupňů |
 

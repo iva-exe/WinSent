@@ -824,6 +824,54 @@ fn search_web(query: String) -> Result<(), String> {
     }
 }
 
+/// Stav cizích zdrojů senzorů pro kartu v Nastavení.
+///
+/// Zjišťuje se tady v UI, ne ve službě: přítomnost ovladače PawnIO
+/// pozná i proces bez práv správce („přístup odepřen" = je tam,
+/// „nenalezeno" = není) a verze leží v registru čitelném pro každého.
+/// Jestli se teplota přes PawnIO opravdu čte, ví jen služba — to UI
+/// bere z hardwarového přehledu (`cpu_thermal.temp_source`).
+#[derive(Debug, Serialize)]
+struct ZdrojeSenzoruDto {
+    pawnio_installed: bool,
+    pawnio_version: Option<String>,
+}
+
+#[tauri::command(async)]
+fn query_sensor_sources() -> ZdrojeSenzoruDto {
+    ZdrojeSenzoruDto {
+        pawnio_installed: win_sys::pawnio::installed(),
+        pawnio_version: win_sys::pawnio::version(),
+    }
+}
+
+/// Otevře stránku projektu cizího zdroje v prohlížeči.
+///
+/// Přijímá jen id z pevného seznamu — URL z UI se nebere, takže se
+/// přes tenhle příkaz nedá otevřít nic jiného než tyhle stránky.
+#[tauri::command(async)]
+fn open_project_page(id: String) -> Result<(), String> {
+    let url = match id.as_str() {
+        "pawnio" => "https://github.com/namazso/PawnIO",
+        // Zdrojový kód a licence přibalených modulů (LGPL-2.1).
+        "pawnio-moduly" => "https://github.com/namazso/PawnIO.Modules/tree/0.2.11",
+        _ => return Err(format!("neznámý projekt: {id}")),
+    };
+
+    use windows::core::HSTRING;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let open = HSTRING::from("open");
+    let file = HSTRING::from(url);
+    // SAFETY: oba řetězce žijí přes celé volání.
+    let rc = unsafe { ShellExecuteW(None, &open, &file, None, None, SW_SHOWNORMAL) };
+    if rc.0 as usize > 32 {
+        Ok(())
+    } else {
+        Err(format!("prohlížeč se nepodařilo otevřít (kód {})", rc.0 as usize))
+    }
+}
+
 /// Otevře stránku Nastavení Windows.
 ///
 /// Winsent oprávnění ani systémová nastavení nepřepíná — jen doveze
@@ -1488,6 +1536,9 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// Je hlavní okno minimalizované (a jeho webview proto uspané)?
+static MINIMALIZOVANO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Uspí nebo probudí webview daného okna.
 ///
 /// Schování okna samo o sobě webview NEZASTAVÍ: Tauri sáhne jen na
@@ -1572,6 +1623,8 @@ fn main() {
             query_db_location,
             search_web,
             open_settings_page,
+            query_sensor_sources,
+            open_project_page,
             launch_app,
             query_launchables,
             query_launchable_icon,
@@ -1713,6 +1766,22 @@ fn main() {
                 // Uspat i webview, jinak běží dál naprázdno (viz
                 // `uspi_webview`). Spotlight se schovává vlastní cestou.
                 uspi_webview(window.app_handle(), window.label(), true);
+            }
+            // Minimalizace na hlavní panel webview taky nezastaví: stránka
+            // dál tikala a kreslila (naměřeno ~11 % jádra a ~3 % GPU
+            // u minimalizovaného okna). Minimalizované okno má nulovou
+            // klientskou plochu — podle ní se pozná bez dalšího dotazu
+            // na okno. Probouzí se jen to, co uspala minimalizace;
+            // okno schované do tray probouzí `show_main_window`.
+            if let tauri::WindowEvent::Resized(size) = event {
+                if window.label() == "main" {
+                    use std::sync::atomic::Ordering;
+                    use tauri::Manager;
+                    let minimalizovano = size.width == 0 && size.height == 0;
+                    if MINIMALIZOVANO.swap(minimalizovano, Ordering::Relaxed) != minimalizovano {
+                        uspi_webview(window.app_handle(), "main", minimalizovano);
+                    }
+                }
             }
         })
         .run(tauri::generate_context!())

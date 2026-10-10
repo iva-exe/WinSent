@@ -604,8 +604,9 @@
 										<dd class="dim">
 											—
 											<span class="note-v">
-												Windows teplotu jádra nevydávají; přečte se, když běží HWiNFO
-												se zapnutou sdílenou pamětí nebo LibreHardwareMonitor
+												Windows teplotu jádra nevydávají; Winsent ji umí přečíst přes
+												ovladač PawnIO na procesorech AMD Ryzen a Intel Core 2. generace
+												a novějších (PawnIO nabídne i LibreHardwareMonitor) — viz Nastavení
 											</span>
 										</dd>
 									{/if}

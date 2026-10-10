@@ -276,7 +276,7 @@ jednu crate, pak k ní testy, pak měření. Teprve pak další.
 
 **Staví se:**
 - `collector-hw` — inventář hardwaru + SMART + baterie (SPEC kap. 15.1).
-- `collector-sensors` — **CPU teploty** degradační kaskádou (HWiNFO/LHM → ACPI → throttling+takty, SPEC kap. 15.2) + **FPS/frame time** přes ETW DXGI/Dwm, opt-in per proces (SPEC kap. 15.3). GPU teploty už jsou z v3.
+- `collector-sensors` — **CPU teploty** degradační kaskádou (PawnIO → ACPI → throttling+takty, SPEC kap. 15.2) + **FPS/frame time** přes ETW DXGI/Dwm, opt-in per proces (SPEC kap. 15.3). GPU teploty už jsou z v3.
 - Komponentově orientované karty (SPEC kap. 15.4): graf nahoře, údaje pod ním, historie v kartě.
 - `collector-net` — spojení per aplikace, porty, trafik v čase, geo (offline), WiFi, signály (SPEC kap. 12). **Bez DPI.**
 - `collector-sec` — stav ochrany, signály procesů, telemetrie (čtení) + **oprávnění aplikací přes CapabilityAccessManager ConsentStore** (SPEC kap. 13.4): kdo má přístup, **kdo právě používá** (`LastUsedTimeStop == 0`), historie použití. Čteno **událostně** (`RegNotifyChangeKeyValue`), ne pollem. Přepínače Allow/Deny se NESTAVÍ (rozhodnutí na konci sekce).

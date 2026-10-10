@@ -199,8 +199,8 @@ const KONTROLY = [
 	[
 		'teplota: naměřená se vypíše i se zdrojem',
 		() =>
-			/teplota 54 °C \(zdroj HWiNFO\)/.test(
-				zaznamHw({ celsius: 53.6, temp_source: 'HWiNFO' })
+			/teplota 54 °C \(zdroj PawnIO\)/.test(
+				zaznamHw({ celsius: 53.6, temp_source: 'PawnIO' })
 			)
 	],
 	// „Takt pod maximem" bez zátěže je úsporné řízení, ne brzdění.

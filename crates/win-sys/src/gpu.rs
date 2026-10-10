@@ -29,7 +29,20 @@ struct NvmlMemory {
     used: u64,
 }
 
+/// nvmlPciInfo_t (v2 i v3 mají stejný tvar).
+#[repr(C)]
+struct NvmlPciInfo {
+    bus_id_legacy: [u8; 16],
+    domain: u32,
+    bus: u32,
+    device: u32,
+    pci_device_id: u32,
+    pci_sub_system_id: u32,
+    bus_id: [u8; 32],
+}
+
 type FnInit = unsafe extern "C" fn() -> i32;
+type FnPciInfo = unsafe extern "C" fn(*mut c_void, *mut NvmlPciInfo) -> i32;
 type FnDeviceByIndex = unsafe extern "C" fn(u32, *mut *mut c_void) -> i32;
 type FnUtilization = unsafe extern "C" fn(*mut c_void, *mut NvmlUtilization) -> i32;
 type FnTemperature = unsafe extern "C" fn(*mut c_void, u32, *mut u32) -> i32;
@@ -123,6 +136,21 @@ impl Nvml {
         }
         let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
         Some(String::from_utf8_lossy(&buf[..end]).trim().to_string())
+    }
+
+    /// Číslo PCI sběrnice GPU. Volá se jednou při startu — páruje NVML
+    /// s adaptérem D3DKMT (gpukmt), aby senzory obou patřily téže kartě.
+    pub fn pci_bus(&self) -> Option<u32> {
+        // SAFETY: symbol ověřený, výstupní struktura je lokální
+        // a nulovaná (POD bez ukazatelů).
+        unsafe {
+            let f: FnPciInfo = std::mem::transmute(
+                load(self.lib, s!("nvmlDeviceGetPciInfo_v3"))
+                    .or_else(|| load(self.lib, s!("nvmlDeviceGetPciInfo_v2")))?,
+            );
+            let mut info: NvmlPciInfo = std::mem::zeroed();
+            (f(self.device, &mut info) == 0).then_some(info.bus)
+        }
     }
 
     /// Doplňkové údaje (teplota, VRAM, spotřeba, takt) — co ovladač dá.
