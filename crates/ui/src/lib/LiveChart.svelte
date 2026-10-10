@@ -63,10 +63,19 @@
 	const rgba = ([r, g, b], a) => `rgba(${r}, ${g}, ${b}, ${a})`;
 	const lerp = (c1, c2, t) => c1.map((v, i) => Math.round(v + (c2[i] - v) * t));
 
+	// Barvy zátěže a incidentů — čtou se jednou v build(), ne při každém
+	// kreslení. Graf se kreslí s každým vzorkem a getComputedStyle
+	// uprostřed kreslení vynutí přepočet stylů celé stránky.
+	//
+	// Za běhu se nemění: app.css je má na :root napevno a nic je
+	// nepřepíná (žádné téma, prefers-color-scheme ani setProperty).
+	// Barvy os a sítě se v build() braly jednou odjakživa, tyhle teď
+	// stejně. Kdyby jednou přibylo přepínání vzhledu, musí po něm
+	// proběhnout build() znovu.
+	let barvy;
+
 	function colorForLoad(v) {
-		const ok = hexToRgb(cssVar('--ok') || '#4ade80');
-		const warn = hexToRgb(cssVar('--warn') || '#f59e0b');
-		const danger = hexToRgb(cssVar('--danger') || '#ef4444');
+		const { ok, warn, danger } = barvy;
 		if (v == null) return rgba(ok, 1);
 		if (v <= 55) return rgba(ok, 1);
 		if (v <= 75) return rgba(lerp(ok, warn, (v - 55) / 20), 1);
@@ -75,9 +84,7 @@
 	}
 
 	function loadGradient(uu, alpha) {
-		const ok = hexToRgb(cssVar('--ok') || '#4ade80');
-		const warn = hexToRgb(cssVar('--warn') || '#f59e0b');
-		const danger = hexToRgb(cssVar('--danger') || '#ef4444');
+		const { ok, warn, danger } = barvy;
 		const yMin = uu.valToPos(0, 'y', true);
 		const yMax = uu.valToPos(100, 'y', true);
 		const g = uu.ctx.createLinearGradient(0, yMin, 0, yMax);
@@ -153,9 +160,7 @@
 		pinDotEl.style.display = 'block';
 		pinDotEl.style.left = `${x}px`;
 		pinDotEl.style.top = `${y}px`;
-		pinDotEl.style.borderColor = isNet
-			? cssVar('--net-down') || '#7cc0ff'
-			: colorForLoad(v);
+		pinDotEl.style.borderColor = isNet ? barvy.netDown : colorForLoad(v);
 	}
 
 	// Tečky = jednotlivé naměřené vzorky. Ukazují se jen při skutečném
@@ -242,8 +247,7 @@
 		const ctx = uu.ctx;
 		const { left, top, width, height } = uu.bbox;
 		const dpr = window.devicePixelRatio || 1;
-		const warn = cssVar('--warn') || '#f59e0b';
-		const danger = cssVar('--danger') || '#ef4444';
+		const { warnCss: warn, dangerCss: danger } = barvy;
 		ctx.save();
 		for (const m of markers) {
 			const x = uu.valToPos(m.ts, 'x', true);
@@ -425,6 +429,18 @@
 		const grid = 'rgba(255,255,255,0.07)';
 		const netDown = cssVar('--net-down') || '#7cc0ff';
 		const netUp = cssVar('--net-up') || '#c4a7ff';
+		const warn = cssVar('--warn') || '#f59e0b';
+		const danger = cssVar('--danger') || '#ef4444';
+		// Musí být hotové dřív než new uPlot — ten kreslí hned
+		// (gradient zátěže, markery, tečka zámku).
+		barvy = {
+			ok: hexToRgb(cssVar('--ok') || '#4ade80'),
+			warn: hexToRgb(warn),
+			danger: hexToRgb(danger),
+			warnCss: warn,
+			dangerCss: danger,
+			netDown
+		};
 
 		u?.destroy();
 		// Tečky dědí barvu své křivky (u procent tedy gradient podle

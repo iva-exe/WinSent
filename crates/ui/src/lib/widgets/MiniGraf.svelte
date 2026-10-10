@@ -1,3 +1,16 @@
+<script module>
+	// Barvy z :root (`var(--ok)` a spol.) si pamatují všechny grafy
+	// společně — getComputedStyle by při každém překreslení vynutil
+	// přepočet stylů. Za běhu se nemění: app.css je má na :root napevno
+	// a nic je nepřepíná (žádné téma, prefers-color-scheme ani
+	// setProperty). Prázdná hodnota (styly ještě nenačtené) se
+	// nepamatuje, takže i tehdy platí náhradní šedá jako dřív. Kdyby
+	// jednou přibylo přepínání vzhledu, musí se tahle paměť při
+	// přepnutí vyprázdnit.
+	/** @type {Map<string, string>} */
+	const barvyRoot = new Map();
+</script>
+
 <script>
 	// Malý průběh do dlaždice (canvas, bez knihovny).
 	//
@@ -43,7 +56,12 @@
 		const s = String(v).trim();
 		if (!s.startsWith('var(')) return s;
 		const jmeno = s.slice(4, -1).trim();
-		return getComputedStyle(document.documentElement).getPropertyValue(jmeno).trim() || '#888';
+		let b = barvyRoot.get(jmeno);
+		if (b === undefined) {
+			b = getComputedStyle(document.documentElement).getPropertyValue(jmeno).trim();
+			if (b) barvyRoot.set(jmeno, b);
+		}
+		return b || '#888';
 	}
 
 	function krivka(ctx, data, w, h, max, barvaCss, plnit) {
@@ -84,11 +102,21 @@
 		const h = vyska ?? canvas.clientHeight;
 		if (!w || !h) return;
 		const dpr = window.devicePixelRatio || 1;
-		canvas.width = w * dpr;
-		canvas.height = h * dpr;
 		const ctx = canvas.getContext('2d');
-		ctx.scale(dpr, dpr);
-		ctx.clearRect(0, 0, w, h);
+		// Přiřazení width/height zahodí bitmapu i stav kontextu, i když
+		// se velikost nezměnila. Nová bitmapa proto jen při skutečné
+		// změně velikosti v pixelech (prohlížeč desetinná čísla usekne,
+		// proto Math.trunc); jinak stačí vymazat. Stav kontextu kromě
+		// transformace se nevrací: krivka() si barvu, tloušťku, spoj
+		// i cestu pokaždé nastaví sama.
+		if (canvas.width !== Math.trunc(w * dpr) || canvas.height !== Math.trunc(h * dpr)) {
+			canvas.width = w * dpr;
+			canvas.height = h * dpr;
+		} else {
+			ctx.resetTransform();
+			ctx.clearRect(0, 0, canvas.width, canvas.height);
+		}
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
 		let max = 100;
 		if (skala === 'auto') {

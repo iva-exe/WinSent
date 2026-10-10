@@ -1,3 +1,27 @@
+<script module>
+	// Barvy z :root si pamatují všechny sparkliny společně. Dřív se při
+	// každém překreslení pětkrát volal getComputedStyle (a s ním
+	// přepočet stylů) — v Tasks jich je dvanáct a kreslí se s každým
+	// vzorkem.
+	//
+	// Za běhu se barvy nemění: app.css je má na :root napevno a nic je
+	// nepřepíná (žádné téma, prefers-color-scheme ani setProperty).
+	// Prázdná hodnota (styly ještě nenačtené) se nepamatuje, takže se
+	// i ten případ chová přesně jako dřív. Kdyby jednou přibylo
+	// přepínání vzhledu, musí se tahle paměť při přepnutí vyprázdnit.
+	/** @type {Map<string, string>} */
+	const barvy = new Map();
+
+	function cssVar(/** @type {string} */ name) {
+		let v = barvy.get(name);
+		if (v === undefined) {
+			v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+			if (v) barvy.set(name, v);
+		}
+		return v;
+	}
+</script>
+
 <script>
 	// Mini graf zátěže (canvas, bez knihovny) — pro jádra CPU v detail
 	// sekci. Škála pevně 0–100 %. Barva čáry = stejný vertikální
@@ -9,10 +33,6 @@
 
 	let canvas;
 
-	function cssVar(name) {
-		return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-	}
-
 	$effect(() => {
 		// závislosti: values, marker
 		values;
@@ -22,11 +42,21 @@
 		const w = canvas.clientWidth;
 		const h = height;
 		if (w === 0) return;
-		canvas.width = w * dpr;
-		canvas.height = h * dpr;
 		const ctx = canvas.getContext('2d');
-		ctx.scale(dpr, dpr);
-		ctx.clearRect(0, 0, w, h);
+		// Přiřazení width/height zahodí bitmapu i stav kontextu, i když
+		// se velikost nezměnila — a kreslí se s každým vzorkem. Nová
+		// bitmapa proto jen při skutečné změně velikosti v pixelech
+		// (prohlížeč desetinná čísla usekne, proto Math.trunc); jinak
+		// stačí vymazat. Stav kontextu kromě transformace se nevrací:
+		// kreslení níž si barvu, tloušťku i cestu pokaždé nastaví samo.
+		if (canvas.width !== Math.trunc(w * dpr) || canvas.height !== Math.trunc(h * dpr)) {
+			canvas.width = w * dpr;
+			canvas.height = h * dpr;
+		} else {
+			ctx.resetTransform();
+			ctx.clearRect(0, 0, canvas.width, canvas.height);
+		}
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		if (values.length < 2) return;
 
 		// Gradient odspoda (0 %) nahoru (100 %) — zastávky jako hlavní graf.
