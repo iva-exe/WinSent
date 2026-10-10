@@ -163,13 +163,22 @@ unsafe fn read_counter_array(counter: PDH_HCOUNTER) -> Vec<(String, f64)> {
     }
 
     for it in buf.iter().take(count as usize) {
-        if it.FmtValue.CStatus != 0 {
+        // Platná jsou DVĚ stavová čísla: VALID_DATA (0) a NEW_DATA (1,
+        // „platná a jiná než minule"). Dřív se bral jen nulový stav,
+        // takže by vypadla právě hodnota, která se změnila.
+        if !platny_stav(it.FmtValue.CStatus) {
             continue; // neplatná hodnota pro tuto instanci
         }
         let name = it.szName.to_string().unwrap_or_default();
         out.push((name, it.FmtValue.Anonymous.doubleValue));
     }
     out
+}
+
+/// Je hodnota PDH čítače platná? (PDH_CSTATUS_VALID_DATA, PDH_CSTATUS_NEW_DATA)
+pub(crate) fn platny_stav(cstatus: u32) -> bool {
+    use windows::Win32::System::Performance::{PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA};
+    cstatus == PDH_CSTATUS_VALID_DATA || cstatus == PDH_CSTATUS_NEW_DATA
 }
 
 /// Vyparsuje PID z názvu instance „pid_1234_luid_..._engtype_3D".

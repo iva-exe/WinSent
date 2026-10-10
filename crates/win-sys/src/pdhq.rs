@@ -66,7 +66,7 @@ impl MemFaults {
             }
             let mut val = PDH_FMT_COUNTERVALUE::default();
             if PdhGetFormattedCounterValue(self.page_reads, PDH_FMT_DOUBLE, None, &mut val) != 0
-                || val.CStatus != 0
+                || !crate::gpuproc::platny_stav(val.CStatus)
             {
                 return None;
             }

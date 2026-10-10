@@ -26,12 +26,17 @@ pub struct Orchestrator {
     strict: bool,
     /// Žádost na zapisovací vlákno, ať pustí zámek DB (viz audit_conn).
     uvolni_zapis: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Kanál, kterým se zapisovací vlákno hned probudí. Bez něj by si
+    /// žádosti všimlo až po svém timeoutu (100 ms) a přepnutí po startu
+    /// (T0, rozpočet pod 50 ms) trvalo přes sto milisekund.
+    probud: Option<std::sync::mpsc::SyncSender<crate::incidents::StoreMsg>>,
 }
 
 impl Orchestrator {
     pub fn new(
         audit_conn: store::Connection,
         uvolni_zapis: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        probud: Option<std::sync::mpsc::SyncSender<crate::incidents::StoreMsg>>,
     ) -> Orchestrator {
         Orchestrator {
             audit_conn: Mutex::new(audit_conn),
@@ -39,6 +44,7 @@ impl Orchestrator {
             next_id: AtomicU64::new(1),
             strict: true,
             uvolni_zapis,
+            probud,
         }
     }
 
@@ -47,6 +53,11 @@ impl Orchestrator {
     /// auditní spojení čeká (viz `Davka::zadost` v daemonu).
     fn audit_conn(&self) -> std::sync::MutexGuard<'_, store::Connection> {
         self.uvolni_zapis.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(tx) = &self.probud {
+            // Plný kanál nevadí: vlákno pak stejně zpracovává zprávy
+            // a žádost si přečte před každou z nich.
+            let _ = tx.try_send(crate::incidents::StoreMsg::UvolniZamek);
+        }
         self.audit_conn.lock().expect("audit conn lock")
     }
 
@@ -426,7 +437,7 @@ mod tests {
     fn orch() -> Orchestrator {
         let conn = store::Connection::open_in_memory().expect("in-memory DB");
         store::migrations::run(&conn).expect("migrace");
-        Orchestrator::new(conn, Default::default())
+        Orchestrator::new(conn, Default::default(), None)
     }
 
     // Brána v5: expirovaný plán je při Execute odmítnut.

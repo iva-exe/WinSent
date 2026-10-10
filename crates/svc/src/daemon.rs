@@ -435,6 +435,8 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     let size_tx = sample_tx.clone();
     // Klon pro sledování oprávnění (v9D) — vlákno spí na registru.
     let perm_tx = sample_tx.clone();
+    // Klon pro audit akcí: jen budí zapisovací vlákno (UvolniZamek).
+    let audit_tx = sample_tx.clone();
 
     // Žádost auditu akcí o uvolnění zámku DB (viz Davka::zadost).
     let uvolni_zapis = Arc::new(AtomicBool::new(false));
@@ -1172,7 +1174,11 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
     let orch = {
         let conn = store::open(&db_path)?;
         let _ = conn.busy_timeout(std::time::Duration::from_millis(2000));
-        Arc::new(crate::actions::Orchestrator::new(conn, Arc::clone(&uvolni_zapis)))
+        Arc::new(crate::actions::Orchestrator::new(
+            conn,
+            Arc::clone(&uvolni_zapis),
+            Some(audit_tx),
+        ))
     };
 
     // IPC server: navázání na pipe je synchronní — kolize s jinou
@@ -2424,6 +2430,8 @@ fn store_msg(
     use crate::incidents::StoreMsg;
     match msg {
         StoreMsg::Tick(ts, procs, sys) => store::samples::insert_tick(conn, ts, &sys, &procs, names),
+        // Dávku už dopsal zpracuj() — samotná zpráva nic nezapisuje.
+        StoreMsg::UvolniZamek => Ok(()),
         StoreMsg::PermUse(entries) => {
             // Jedna transakce na celou dávku — dvě stě samostatných
             // zápisů by zbytečně mlelo diskem.

@@ -39,6 +39,10 @@ impl PermUseEntry {
 /// kanálem, aby DB měla jediného zapisovatele.
 pub enum StoreMsg {
     Tick(i64, Vec<ProcRow>, SystemSnapshot),
+    /// Jiný zapisovatel (audit akcí) potřebuje zámek databáze. Zpráva
+    /// nic nezapisuje, jen hned probudí zapisovací vlákno, ať dopíše
+    /// otevřenou dávku vzorků (viz Davka::zadost v daemonu).
+    UvolniZamek,
     /// Výsledek skenu inventáře (v4) — nahradí obsah app/app_path.
     Inventory(Vec<store::apps::ScanApp>),
     /// Spočtená velikost cesty aplikace (lazy cache).
