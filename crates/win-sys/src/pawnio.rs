@@ -15,28 +15,50 @@
 //! ovladač přijme jen moduly podepsané autorem (RSA-4096), takže je
 //! nejde podvrhnout ani upravit.
 //!
-//! Z modulů se volají **výhradně čtecí funkce s pevnou adresou**
-//! (`ioctl_read_smn`, `ioctl_read_msr`). Moduly mají i zápisovou funkci
-//! (zápis MSR — napětí, limity příkonu); Winsent ji nikdy nevolá: jména
-//! volaných funkcí jsou pevná v `read_one` a veřejné API nic jiného
-//! nedovolí.
+//! ## Jen čtení — a jak je to zajištěné
 //!
-//! Ovladač pustí k sobě jen SYSTEM a správce — čte tedy služba.
-//! Ovladač se otevírá jen na dobu jednoho čtení: když UI nikdo nemá
-//! otevřené (třeba při hraní), Winsent na PawnIO vůbec nesahá.
+//! Moduly umí i zápis (MSR: napětí, limity příkonu). Winsent ho nikdy
+//! nevolá a tenhle soubor je postavený tak, aby to ani udělat nešlo:
+//!
+//! 1. **Uzavřený výčet čtení** ([`Cteni`]). Jméno funkce i adresa jsou
+//!    pevně svázané v jedné hodnotě výčtu; jiný řetězec ani jiná adresa
+//!    se do žádosti dostat nedají. Žádost skládá jediná funkce
+//!    ([`zadost`]) a ta bere jen [`Cteni`].
+//! 2. **Uzavřený výčet modulů** ([`Modul`]). Ovladači jde předat jen
+//!    jeden z obou přibalených souborů, a to až po kontrole SHA-256
+//!    proti otisku z oficiálního vydání. Kdyby někdo v repozitáři soubor
+//!    vyměnil (třeba za jiný podepsaný modul se zápisem do hardwaru),
+//!    služba ho nenačte a test spadne.
+//! 3. **Jen dva kódy IOCTL** (načtení modulu, volání funkce) a jen tady.
+//!    Nic jiného v celém Winsentu na zařízení PawnIO nesahá.
+//! 4. **Žádný vstup zvenku.** Veřejné API je [`cpu_temp`], [`installed`]
+//!    a [`version`]; nic z nich nebere parametr, který by šel do
+//!    ovladače. Přes IPC služby tak klient dostane nanejvýš číslo
+//!    teploty.
+//! 5. **UI na ovladač nesahá.** K zařízení smí jen SYSTEM a správci;
+//!    UI (běžný uživatel) zjišťuje přítomnost PawnIO jen dotazem na
+//!    správce služeb, zařízení vůbec neotevírá.
+//!
+//! Jediný zápis, který čtení vůbec obsahuje: na AMD se registr SMN čte
+//! přes dvojici index/data v konfiguračním prostoru PCI (0:0.0, offsety
+//! 0x60/0x64). Do indexu se zapíše adresa 0x59800 — to jen vybírá, který
+//! registr se čte, žádné nastavení procesoru to nemění (stejně to dělá
+//! Linux k10temp). Protože je ta dvojice sdílená s ostatními nástroji,
+//! čte se jen pod mutexem `Global\Access_PCI`; bez něj se čtení vynechá.
+//! Na Intelu jde o čisté čtení MSR.
 
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    LocalFree, ERROR_ACCESS_DENIED, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL,
-    WAIT_ABANDONED, WAIT_OBJECT_0,
+    LocalFree, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL, WAIT_ABANDONED, WAIT_OBJECT_0,
 };
 use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
+use windows::Win32::Security::Cryptography::{BCryptHash, BCRYPT_SHA256_ALG_HANDLE};
 use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -50,6 +72,8 @@ use windows::Win32::System::IO::DeviceIoControl;
 /// Cesta k zařízení. GLOBALROOT funguje na všech verzích 2.x (2.1.0
 /// starý `\\.\PawnIO` dočasně neměla) a používá ji i LibreHardwareMonitor.
 const DEVICE: PCWSTR = w!(r"\\?\GLOBALROOT\Device\PawnIO");
+/// Jméno služby ovladače ve správci služeb.
+const SLUZBA: PCWSTR = w!("PawnIO");
 
 /// CTL_CODE(0xA1B2, func, METHOD_BUFFERED, FILE_ANY_ACCESS) — `pawnio_um.h`.
 const fn ctl_code(func: u32) -> u32 {
@@ -60,25 +84,30 @@ const IOCTL_PIO_EXECUTE_FN: u32 = ctl_code(0x841);
 /// Jméno funkce v žádosti: 32 B, ukončené nulou.
 const FN_NAME_LEN: usize = 32;
 
-/// AMD Zen: THM_TCON_CUR_TMP v prostoru SMN (k10temp v Linuxu i LHM).
-const SMN_THM_TCON_CUR_TMP: u64 = 0x0005_9800;
 /// Rozsah −49…206 °C místo 0…255 °C (CUR_TEMP_RANGE_SEL).
 const CUR_TEMP_RANGE_SEL: u32 = 1 << 19;
 /// Totéž, když jsou oba bity TJ_SEL nastavené.
 const CUR_TEMP_TJ_SEL: u32 = 0b11 << 16;
-/// Intel: TjMax (bity 23:16) a teplota celého pouzdra (odstup od TjMax).
-const IA32_TEMPERATURE_TARGET: u64 = 0x1A2;
-const IA32_PACKAGE_THERM_STATUS: u64 = 0x1B1;
 
 /// Konvence nástrojů pro hardwarový monitoring (LibreHardwareMonitor a další):
 /// kdo sahá na PCI konfigurační prostor, drží tenhle mutex. Čtení SMN
 /// jsou dva kroky (zapsat index, přečíst data) a cizí nástroj by je
 /// jinak mohl prostřídat.
 const PCI_MUTEX: PCWSTR = w!(r"Global\Access_PCI");
-/// Jako LHM: na mutexu smí čekat a uvolnit ho kdokoli — jinak by ho
-/// služba (SYSTEM) založila tak, že by ostatní nástroje nemohly čekat.
-const PCI_MUTEX_SDDL: PCWSTR = w!("D:(A;;0x1F0001;;;WD)");
-const PCI_LOCK_MS: u32 = 20;
+/// SYSTEM a správci mají k mutexu plná práva (LHM a spol. běží jako
+/// správce a otevírají ho s MUTEX_ALL_ACCESS); ostatní smí jen čekat
+/// a uvolnit (SYNCHRONIZE | MUTEX_MODIFY_STATE), což stačí i .NET
+/// `Mutex.OpenExisting`. LHM dává všem plná práva — pak by ale kdokoli
+/// mohl přepsat DACL (WRITE_DAC) a koordinaci nástrojů vypnout.
+/// Podržet mutex může kdokoli dál (tak konvence funguje); Winsent pak
+/// jen vynechá čtení.
+const PCI_MUTEX_SDDL: PCWSTR = w!("D:(A;;0x1F0001;;;SY)(A;;0x1F0001;;;BA)(A;;0x100001;;;WD)");
+/// Jak dlouho čekat na mutex. Čtení samo trvá mikrosekundy, kdo mutex
+/// drží poctivě, pustí ho hned; déle se nečeká, ať sampler nestojí.
+const PCI_LOCK_MS: u32 = 5;
+/// Po tolika obsazených pokusech v řadě se na mutex chvíli nečeká vůbec.
+const PCI_OBSAZENO_LIMIT: u32 = 5;
+const PCI_PAUZA: Duration = Duration::from_secs(30);
 
 /// Odmítnutý modul (starý ovladač, nečekaný procesor) se nezkouší při
 /// každém čtení, ale až po téhle době.
@@ -86,6 +115,93 @@ const ZNOVU_PO_ODMITNUTI: Duration = Duration::from_secs(600);
 
 static AMD_FAMILY17: &[u8] = include_bytes!("../pawnio/AMDFamily17.bin");
 static INTEL_MSR: &[u8] = include_bytes!("../pawnio/IntelMSR.bin");
+
+/// Moduly, které Winsent ovladači vůbec umí předat. Nic jiného nejde.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Modul {
+    AmdFamily17,
+    IntelMsr,
+}
+
+impl Modul {
+    fn data(self) -> &'static [u8] {
+        match self {
+            Modul::AmdFamily17 => AMD_FAMILY17,
+            Modul::IntelMsr => INTEL_MSR,
+        }
+    }
+
+    /// SHA-256 souboru z oficiálního vydání PawnIO.Modules 0.2.11
+    /// (stejné otisky jsou v `pawnio/README.md`).
+    fn otisk(self) -> &'static str {
+        match self {
+            Modul::AmdFamily17 => "dae74615761b78bdf064dfb3e136252ddcc6fc727d88f14738d0e5800d427a91",
+            Modul::IntelMsr => "d6ed85d65ab17a22f813ef98207d6d537155ee2ded5976a21cb48413c9b92e5f",
+        }
+    }
+
+    /// Sedí přibalený soubor s otiskem? Počítá se jednou za běh služby.
+    fn overeny(self) -> bool {
+        static AMD: OnceLock<bool> = OnceLock::new();
+        static INTEL: OnceLock<bool> = OnceLock::new();
+        let bunka = match self {
+            Modul::AmdFamily17 => &AMD,
+            Modul::IntelMsr => &INTEL,
+        };
+        *bunka.get_or_init(|| sha256_hex(self.data()).as_deref() == Some(self.otisk()))
+    }
+}
+
+/// Jediná čtení, která Winsent z modulů volá. Jméno funkce a adresa
+/// jsou svázané tady a nikde jinde — žádost s jiným jménem (třeba
+/// zápisem) nebo jinou adresou se v tomhle souboru složit nedá.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cteni {
+    /// AMD Zen: THM_TCON_CUR_TMP v prostoru SMN (k10temp v Linuxu i LHM).
+    AmdTctl,
+    /// Intel: IA32_TEMPERATURE_TARGET — TjMax v bitech 23:16.
+    IntelTjMax,
+    /// Intel: IA32_PACKAGE_THERM_STATUS — odstup teploty pouzdra od TjMax.
+    IntelPouzdro,
+}
+
+impl Cteni {
+    #[cfg(test)]
+    const VSECHNA: [Cteni; 3] = [Cteni::AmdTctl, Cteni::IntelTjMax, Cteni::IntelPouzdro];
+
+    fn funkce(self) -> &'static [u8] {
+        match self {
+            Cteni::AmdTctl => b"ioctl_read_smn",
+            Cteni::IntelTjMax | Cteni::IntelPouzdro => b"ioctl_read_msr",
+        }
+    }
+
+    fn adresa(self) -> u64 {
+        match self {
+            Cteni::AmdTctl => 0x0005_9800,
+            Cteni::IntelTjMax => 0x1A2,
+            Cteni::IntelPouzdro => 0x1B1,
+        }
+    }
+
+    /// Modul, ve kterém funkce je — jinde se volat nesmí.
+    fn modul(self) -> Modul {
+        match self {
+            Cteni::AmdTctl => Modul::AmdFamily17,
+            Cteni::IntelTjMax | Cteni::IntelPouzdro => Modul::IntelMsr,
+        }
+    }
+}
+
+/// Žádost pro IOCTL_PIO_EXECUTE_FN: 32 B jména (zbytek nuly =
+/// ukončení) + jeden argument (u64 LE). Jediné místo, kde žádost vzniká.
+fn zadost(c: Cteni) -> [u8; FN_NAME_LEN + 8] {
+    let mut z = [0u8; FN_NAME_LEN + 8];
+    let jmeno = c.funkce();
+    z[..jmeno.len()].copy_from_slice(jmeno);
+    z[FN_NAME_LEN..].copy_from_slice(&c.adresa().to_le_bytes());
+    z
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Cpu {
@@ -97,25 +213,63 @@ enum Cpu {
     Jiny,
 }
 
-/// Stav mezi voláními: jen procesor (zjistí se jednou) a čas
-/// posledního odmítnutí. Handle na ovladač se mezi voláními nedrží.
+/// Otevřené zařízení s načteným modulem. Služba čte teplotu každou
+/// sekundu (živý graf i historie), takže se modul načte jednou a drží
+/// — opakované načítání by pokaždé stálo ověření podpisu v ovladači.
+/// Při chybě volání se sezení zahodí a příště se otevře znovu (ovladač
+/// mohl být aktualizován nebo odebrán).
+struct Sezeni {
+    dev: OwnedHandle,
+    modul: Modul,
+    /// `Global\Access_PCI` (jen AMD); None = zatím nejde založit ani
+    /// otevřít — zkouší se znovu při každém čtení, bez něj se nečte.
+    pci: Option<OwnedHandle>,
+    /// Obsazený mutex v řadě a do kdy se na něj nečeká (viz PCI_PAUZA).
+    pci_obsazeno: u32,
+    pci_pauza_do: Option<Instant>,
+    /// TjMax (Intel) — mění se jen s procesorem, čte se jednou.
+    tjmax: Option<u8>,
+    /// Už se z tohohle sezení aspoň jednou přečetlo?
+    precteno: bool,
+}
+
 struct Stav {
     cpu: Option<Cpu>,
     odmitnuto: Option<Instant>,
+    sezeni: Option<Sezeni>,
 }
 
 static STAV: Mutex<Stav> = Mutex::new(Stav {
     cpu: None,
     odmitnuto: None,
+    sezeni: None,
 });
 
-/// Je PawnIO v systému (ovladač běží)? Funguje i z UI bez práv správce:
-/// existující zařízení, ke kterému nemáme přístup, hlásí „přístup
-/// odepřen“, chybějící „nenalezeno“.
+/// Je PawnIO v systému a běží? Jen dotaz na správce služeb — zařízení
+/// se neotevírá, takže to bez rizika smí volat i UI pod běžným
+/// uživatelem.
 pub fn installed() -> bool {
-    match open() {
-        Ok(_) => true,
-        Err(e) => e.code() == ERROR_ACCESS_DENIED.to_hresult(),
+    use windows::Win32::System::Services::{
+        CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_MANAGER_CONNECT,
+        SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_STATUS,
+    };
+    // SAFETY: oba handly se zavřou; struktura stavu žije přes volání.
+    unsafe {
+        let Ok(scm) = OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT) else {
+            return false;
+        };
+        let bezi = match OpenServiceW(scm, SLUZBA, SERVICE_QUERY_STATUS) {
+            Ok(svc) => {
+                let mut st = SERVICE_STATUS::default();
+                let ok = QueryServiceStatus(svc, &mut st).is_ok()
+                    && st.dwCurrentState == SERVICE_RUNNING;
+                let _ = CloseServiceHandle(svc);
+                ok
+            }
+            Err(_) => false,
+        };
+        let _ = CloseServiceHandle(scm);
+        bezi
     }
 }
 
@@ -135,39 +289,79 @@ pub fn cpu_temp() -> Option<f32> {
     let mut stav = STAV.lock().unwrap_or_else(|p| p.into_inner());
     let cpu = *stav.cpu.get_or_insert_with(detect_cpu);
     let modul = match cpu {
-        Cpu::Amd { .. } => AMD_FAMILY17,
-        Cpu::Intel => INTEL_MSR,
+        Cpu::Amd { .. } => Modul::AmdFamily17,
+        Cpu::Intel => Modul::IntelMsr,
         Cpu::Jiny => return None,
     };
     if stav.odmitnuto.is_some_and(|t| t.elapsed() < ZNOVU_PO_ODMITNUTI) {
         return None;
     }
-    // Chybějící ovladač nebo chybějící práva jsou běžný stav, ne chyba.
-    let dev = open().ok()?;
-    if let Err(e) = ioctl(&dev, IOCTL_PIO_LOAD_BINARY, modul, &mut []) {
-        // Podpis nesedí se starým ovladačem, nebo main() modulu procesor
-        // odmítl. Jednou zalogovat a chvíli nezkoušet.
-        if stav.odmitnuto.is_none() {
-            tracing::warn!("PawnIO odmítlo modul: {e}");
+    if stav.sezeni.is_none() {
+        match otevri(modul) {
+            Ok(s) => {
+                stav.sezeni = Some(s);
+                stav.odmitnuto = None;
+            }
+            // Chybějící ovladač nebo chybějící práva jsou běžný stav.
+            Err(Otevreni::Neni) => return None,
+            Err(Otevreni::Odmitnuto(proc)) => {
+                // Podpis nesedí se starým ovladačem, main() modulu
+                // procesor odmítl, nebo přibalený soubor neprošel
+                // kontrolou otisku. Jednou zalogovat a chvíli nezkoušet.
+                if stav.odmitnuto.is_none() {
+                    tracing::warn!("PawnIO: modul se nenačetl: {proc}");
+                }
+                stav.odmitnuto = Some(Instant::now());
+                return None;
+            }
         }
-        stav.odmitnuto = Some(Instant::now());
-        return None;
     }
-    stav.odmitnuto = None;
+    let sezeni = stav.sezeni.as_mut()?;
+    let cerstve = !sezeni.precteno;
     let t = match cpu {
-        Cpu::Amd { tdie_offset } => read_amd(&dev).map(|t| t - tdie_offset),
-        Cpu::Intel => read_intel(&dev),
-        Cpu::Jiny => None,
+        Cpu::Amd { tdie_offset } => read_amd(sezeni).map(|t| t.map(|t| t - tdie_offset)),
+        Cpu::Intel => read_intel(sezeni),
+        Cpu::Jiny => Ok(None),
     };
-    // Handle se zavře tady (drop) a ovladač tím zahodí i načtený modul.
-    t.filter(|c| (5.0..=120.0).contains(c))
+    match t {
+        Ok(t) => {
+            sezeni.precteno = true;
+            t.filter(|c| (5.0..=120.0).contains(c))
+        }
+        Err(()) => {
+            stav.sezeni = None;
+            if cerstve {
+                // Selhalo hned první čtení po načtení modulu (třeba VM,
+                // kde PCI 0:0.0 není AMD): stejné jako odmítnutí — jinak
+                // by se modul každou sekundu načítal a ověřoval znovu.
+                if stav.odmitnuto.is_none() {
+                    tracing::warn!("PawnIO: čtení selhalo hned po načtení modulu");
+                }
+                stav.odmitnuto = Some(Instant::now());
+            }
+            // Jinak handle mohl přestat platit (aktualizace nebo odebrání
+            // ovladače) — příště se otevře znovu.
+            None
+        }
+    }
 }
 
-fn open() -> windows::core::Result<OwnedHandle> {
+enum Otevreni {
+    Neni,
+    Odmitnuto(String),
+}
+
+fn otevri(modul: Modul) -> Result<Sezeni, Otevreni> {
+    // Kontrola otisku PŘED tím, než se čehokoli dotkne ovladač.
+    if !modul.overeny() {
+        return Err(Otevreni::Odmitnuto(format!(
+            "přibalený {modul:?} neodpovídá oficiálnímu otisku"
+        )));
+    }
     // SAFETY: platná nulou ukončená cesta; vrácený handle hned přebírá
     // OwnedHandle, který ho zavře.
-    unsafe {
-        let h = CreateFileW(
+    let dev = unsafe {
+        CreateFileW(
             DEVICE,
             (GENERIC_READ | GENERIC_WRITE).0,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -175,14 +369,29 @@ fn open() -> windows::core::Result<OwnedHandle> {
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
             None,
-        )?;
-        Ok(OwnedHandle::from_raw_handle(h.0))
-    }
+        )
+        .map(|h| OwnedHandle::from_raw_handle(h.0))
+        .map_err(|_| Otevreni::Neni)?
+    };
+    ioctl(&dev, IOCTL_PIO_LOAD_BINARY, modul.data(), &mut [])
+        .map_err(|e| Otevreni::Odmitnuto(e.to_string()))?;
+    let pci = (modul == Modul::AmdFamily17).then(pci_mutex).flatten();
+    Ok(Sezeni {
+        dev,
+        modul,
+        pci,
+        pci_obsazeno: 0,
+        pci_pauza_do: None,
+        tjmax: None,
+        precteno: false,
+    })
 }
 
-/// Jedno volání ovladače. Výstup musí přijít celý — PawnIO vrací vždy
-/// přesně tolik, kolik se žádá; méně znamená něco jiného, než čekáme.
+/// Jedno volání ovladače. Volá se výhradně se dvěma kódy výše:
+/// načtení modulu z [`Modul`] a funkce ze [`zadost`]. Výstup musí
+/// přijít celý — PawnIO vrací vždy přesně tolik, kolik se žádá.
 fn ioctl(dev: &OwnedHandle, code: u32, input: &[u8], out: &mut [u64]) -> windows::core::Result<()> {
+    debug_assert!(code == IOCTL_PIO_LOAD_BINARY || code == IOCTL_PIO_EXECUTE_FN);
     let mut vraceno = 0u32;
     let out_len = std::mem::size_of_val(out) as u32;
     // SAFETY: oba buffery žijí po celou dobu synchronního volání a
@@ -205,32 +414,43 @@ fn ioctl(dev: &OwnedHandle, code: u32, input: &[u8], out: &mut [u64]) -> windows
     Ok(())
 }
 
-/// Čtecí funkce modulu s jedním argumentem a jedním výsledkem. Jména
-/// jsou pevná — nic jiného než čtení se odsud zavolat nedá.
-#[derive(Clone, Copy)]
-enum Cteni {
-    Smn,
-    Msr,
-}
-
-fn read_one(dev: &OwnedHandle, co: Cteni, adresa: u64) -> Option<u64> {
-    let jmeno: &[u8] = match co {
-        Cteni::Smn => b"ioctl_read_smn",
-        Cteni::Msr => b"ioctl_read_msr",
-    };
-    // Žádost: 32 B jména (zbytek nuly = ukončení) + argument (u64 LE).
-    let mut zadost = [0u8; FN_NAME_LEN + 8];
-    zadost[..jmeno.len()].copy_from_slice(jmeno);
-    zadost[FN_NAME_LEN..].copy_from_slice(&adresa.to_le_bytes());
+/// Jedno čtení z uzavřeného výčtu. `Err` = volání selhalo (sezení pryč).
+fn precti(s: &Sezeni, c: Cteni) -> Result<u64, ()> {
+    // Funkce z jiného modulu, než jaký je načtený, se nevolá vůbec.
+    if c.modul() != s.modul {
+        return Err(());
+    }
     let mut out = [0u64; 1];
-    ioctl(dev, IOCTL_PIO_EXECUTE_FN, &zadost, &mut out).ok()?;
-    Some(out[0])
+    ioctl(&s.dev, IOCTL_PIO_EXECUTE_FN, &zadost(c), &mut out).map_err(|_| ())?;
+    Ok(out[0])
 }
 
-fn read_amd(dev: &OwnedHandle) -> Option<f32> {
-    let _zamek = PciZamek::vezmi()?;
-    let raw = read_one(dev, Cteni::Smn, SMN_THM_TCON_CUR_TMP)?;
-    decode_tctl(raw as u32)
+fn read_amd(s: &mut Sezeni) -> Result<Option<f32>, ()> {
+    if s.pci_pauza_do.is_some_and(|t| Instant::now() < t) {
+        return Ok(None);
+    }
+    // Bez mutexu se na sdílenou dvojici index/data nesahá vůbec (zavřeno,
+    // ne otevřeno). Mutex se zkouší založit znovu — po krátkém výpadku
+    // tak teplota naskočí sama.
+    if s.pci.is_none() {
+        s.pci = pci_mutex();
+    }
+    let Some(pci) = s.pci.as_ref() else {
+        return Ok(None);
+    };
+    let Some(_zamek) = PciZamek::vezmi(pci) else {
+        // Mutex drží jiný nástroj — tohle čtení se vynechá. Když ho drží
+        // pořád, chvíli se nečeká vůbec, ať sampler nestojí každý tick.
+        s.pci_obsazeno += 1;
+        if s.pci_obsazeno >= PCI_OBSAZENO_LIMIT {
+            s.pci_obsazeno = 0;
+            s.pci_pauza_do = Some(Instant::now() + PCI_PAUZA);
+        }
+        return Ok(None);
+    };
+    s.pci_obsazeno = 0;
+    let raw = precti(s, Cteni::AmdTctl)?;
+    Ok(decode_tctl(raw as u32))
 }
 
 /// Tctl z registru THM_TCON_CUR_TMP: 11 bitů po 0,125 °C od bitu 21,
@@ -247,39 +467,41 @@ fn decode_tctl(raw: u32) -> Option<f32> {
     Some(t)
 }
 
-fn read_intel(dev: &OwnedHandle) -> Option<f32> {
-    let tjmax = (read_one(dev, Cteni::Msr, IA32_TEMPERATURE_TARGET)? >> 16) & 0xFF;
-    // Bez TjMax nejde teplotu spočítat; LHM by dosadil 100 °C, tady se
-    // radši přizná, že teplotu neznáme.
-    if tjmax == 0 {
-        return None;
-    }
-    let odstup = (read_one(dev, Cteni::Msr, IA32_PACKAGE_THERM_STATUS)? >> 16) & 0x7F;
-    Some(tjmax as f32 - odstup as f32)
+fn read_intel(s: &mut Sezeni) -> Result<Option<f32>, ()> {
+    let tjmax = match s.tjmax {
+        Some(t) => t,
+        None => {
+            let t = ((precti(s, Cteni::IntelTjMax)? >> 16) & 0xFF) as u8;
+            // Bez TjMax nejde teplotu spočítat; LHM by dosadil 100 °C,
+            // tady se radši přizná, že teplotu neznáme.
+            if t == 0 {
+                return Ok(None);
+            }
+            s.tjmax = Some(t);
+            t
+        }
+    };
+    let odstup = (precti(s, Cteni::IntelPouzdro)? >> 16) & 0x7F;
+    Ok(Some(tjmax as f32 - odstup as f32))
 }
 
-/// Drží `Global\Access_PCI` jen po dobu jednoho čtení.
-struct PciZamek(OwnedHandle);
+/// Drží `Global\Access_PCI` po dobu jednoho čtení.
+struct PciZamek<'a>(&'a OwnedHandle);
 
-impl PciZamek {
-    /// `None` = mutex drží někdo jiný déle než 20 ms; čtení se vynechá.
-    /// Když mutex nejde vůbec založit ani otevřít, čte se bez něj
-    /// (stejně jako LHM) — vrací se zámek bez mutexu.
-    fn vezmi() -> Option<Option<PciZamek>> {
-        let Some(h) = pci_mutex() else {
-            return Some(None);
-        };
+impl<'a> PciZamek<'a> {
+    /// `None` = mutex drží někdo jiný déle než PCI_LOCK_MS.
+    fn vezmi(h: &'a OwnedHandle) -> Option<PciZamek<'a>> {
         // SAFETY: platný handle mutexu.
         let w = unsafe { WaitForSingleObject(HANDLE(h.as_raw_handle()), PCI_LOCK_MS) };
         // Opuštěný mutex (držitel spadl) je náš stejně jako volný.
-        (w == WAIT_OBJECT_0 || w == WAIT_ABANDONED).then(|| Some(PciZamek(h)))
+        (w == WAIT_OBJECT_0 || w == WAIT_ABANDONED).then_some(PciZamek(h))
     }
 }
 
-impl Drop for PciZamek {
+impl Drop for PciZamek<'_> {
     fn drop(&mut self) {
         // SAFETY: mutex vlastní tohle vlákno (vzal ho `vezmi` ve stejném
-        // volání); handle zavře OwnedHandle až po uvolnění.
+        // volání pod zámkem STAV).
         unsafe {
             let _ = ReleaseMutex(HANDLE(self.0.as_raw_handle()));
         }
@@ -318,6 +540,15 @@ fn pci_mutex() -> Option<OwnedHandle> {
     }
 }
 
+/// SHA-256 v hexu přes Windows CNG; None jen když CNG selže.
+fn sha256_hex(data: &[u8]) -> Option<String> {
+    let mut out = [0u8; 32];
+    // SAFETY: pseudo-handle algoritmu je statický; buffery mají správné délky.
+    let st = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, data, &mut out) };
+    st.is_ok()
+        .then(|| out.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 fn detect_cpu() -> Cpu {
     #[allow(unused_unsafe)]
     // SAFETY: CPUID je na x86_64 vždy k dispozici.
@@ -348,7 +579,7 @@ fn detect_cpu() -> Cpu {
         }
         // Teplota pouzdra (PTM) je od Sandy Bridge; bez ní by se musela
         // číst jádra po jednom s přišpendleným vláknem — to tu není.
-        b"GenuineIntel" if cpuid(0).eax >= 6 && cpuid(6).eax & (1 << 6) != 0 => Cpu::Intel,
+        b"GenuineIntel" if v.eax >= 6 && cpuid(6).eax & (1 << 6) != 0 => Cpu::Intel,
         _ => Cpu::Jiny,
     }
 }
@@ -382,6 +613,41 @@ mod tests {
         assert_eq!(IOCTL_PIO_EXECUTE_FN, 0xA1B2_2104);
     }
 
+    // Jen čtení: každá žádost, kterou tenhle soubor umí složit, volá
+    // čtecí funkci na jedné ze tří pevných adres. Kdyby někdo do výčtu
+    // přidal cokoli se zápisem, tady to spadne.
+    #[test]
+    fn zadosti_jsou_jen_cteni() {
+        // Match bez zástupného vzoru: nová varianta výčtu tenhle test
+        // nepřeloží, dokud ji někdo nedopíše i sem a do VSECHNA.
+        let _vycerpano = |c: Cteni| match c {
+            Cteni::AmdTctl | Cteni::IntelTjMax | Cteni::IntelPouzdro => (),
+        };
+        assert_eq!(Cteni::VSECHNA.len(), 3);
+        for c in Cteni::VSECHNA {
+            let z = zadost(c);
+            let konec = z[..FN_NAME_LEN].iter().position(|&b| b == 0).unwrap();
+            let jmeno = std::str::from_utf8(&z[..konec]).unwrap();
+            assert!(
+                jmeno == "ioctl_read_smn" || jmeno == "ioctl_read_msr",
+                "{c:?} volá {jmeno}"
+            );
+            assert!(!jmeno.contains("write"));
+            // Za jménem jen nuly a pak právě jeden argument.
+            assert!(z[konec..FN_NAME_LEN].iter().all(|&b| b == 0));
+            let adresa = u64::from_le_bytes(z[FN_NAME_LEN..].try_into().unwrap());
+            assert!([0x0005_9800, 0x1A2, 0x1B1].contains(&adresa));
+            assert_eq!(z.len(), FN_NAME_LEN + 8);
+        }
+    }
+
+    #[test]
+    fn cteni_patri_ke_spravnemu_modulu() {
+        assert_eq!(Cteni::AmdTctl.modul(), Modul::AmdFamily17);
+        assert_eq!(Cteni::IntelTjMax.modul(), Modul::IntelMsr);
+        assert_eq!(Cteni::IntelPouzdro.modul(), Modul::IntelMsr);
+    }
+
     #[test]
     fn tctl_dekodovani() {
         assert_eq!(decode_tctl(360 << 21), Some(45.0));
@@ -400,17 +666,26 @@ mod tests {
         assert_eq!(tdie_offset("AMD Ryzen Threadripper 1950X 16-Core Processor"), 27.0);
     }
 
-    // Moduly jsou přesně ty ověřené z oficiálního vydání (SHA-256 viz
-    // pawnio/README.md) — náhodná záměna souboru by tu spadla.
+    // Přibalené moduly jsou přesně ty z oficiálního vydání: stejná
+    // kontrola otisku, jakou dělá služba před načtením.
     #[test]
-    fn moduly_maji_hlavicku_s_podpisem() {
-        for m in [AMD_FAMILY17, INTEL_MSR] {
-            let sig = u32::from_le_bytes(m[..4].try_into().unwrap()) as usize;
+    fn moduly_odpovidaji_oficialnimu_otisku() {
+        for m in [Modul::AmdFamily17, Modul::IntelMsr] {
+            assert_eq!(sha256_hex(m.data()).as_deref(), Some(m.otisk()), "{m:?}");
+            assert!(m.overeny());
+            let sig = u32::from_le_bytes(m.data()[..4].try_into().unwrap()) as usize;
             assert_eq!(sig, 512, "podpis RSA-4096");
-            assert!(m.len() > 4 + sig);
         }
-        assert_eq!(AMD_FAMILY17.len(), 10_652);
-        assert_eq!(INTEL_MSR.len(), 5_324);
+        // A kontrola sama opravdu rozliší jiný soubor.
+        assert_ne!(sha256_hex(b"jiny modul").as_deref(), Some(Modul::AmdFamily17.otisk()));
+    }
+
+    // Mutex: všem jen čekání a uvolnění, plná práva jen SYSTEM a správci.
+    #[test]
+    fn dacl_mutexu_neda_vsem_plna_prava() {
+        let sddl = String::from_utf16_lossy(unsafe { PCI_MUTEX_SDDL.as_wide() });
+        assert!(sddl.contains("(A;;0x100001;;;WD)"));
+        assert!(!sddl.contains("0x1F0001;;;WD"));
     }
 
     // Bez služby (test běží jako uživatel) PawnIO nikdy nic nevrátí:
@@ -419,5 +694,7 @@ mod tests {
     fn bez_prav_nic_nepredstira() {
         let t = cpu_temp();
         assert!(t.is_none() || (5.0..=120.0).contains(&t.unwrap()));
+        // Dotaz na správce služeb funguje i bez práv a nespadne.
+        let _ = installed();
     }
 }

@@ -85,6 +85,13 @@ pub struct ProcRow {
     /// Jak jistá je identita (SPEC kap. 4.4) — `guess`/`path` se v UI
     /// odliší tečkovaným podtrhem.
     pub confidence: Confidence,
+    /// VRAM, kterou proces drží na hlavním GPU, v MB. Z PDH
+    /// `\GPU Process Memory(*)\Local Usage` (rezidentní v paměti karty),
+    /// ne z „Dedicated Usage" — ten je na Win10 rozbitý (KB4490156).
+    /// Sdílené alokace se počítají u každého procesu, který je používá,
+    /// takže součet může přesáhnout obsazenou VRAM. None = čítač tu
+    /// není. Jen živě, do historie se neukládá.
+    pub vram_mb: Option<u32>,
 }
 
 /// Ochranná třída procesu (SPEC kap. 4.3) — zatím jen pro zobrazení.
@@ -157,16 +164,6 @@ pub struct GpuInfo {
     pub eng_compute: Option<f32>,
 }
 
-/// Proces s největší obsazenou VRAM (rezidentní v lokální paměti
-/// adaptéru). Jen živě — do historie se neukládá.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct GpuMemUser {
-    pub pid: u32,
-    pub name: String,
-    pub app_name: String,
-    pub mb: u32,
-}
-
 /// Systémové metriky z téhož vzorku.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SystemSnapshot {
@@ -203,8 +200,12 @@ pub struct SystemSnapshot {
     pub disk_qlen: f32,
     pub disk_lat_ms: f32,
     pub thermal_throttle: bool,
-    /// Největší spotřebitelé VRAM hlavního GPU (max 5, sestupně).
-    pub gpu_top_mem: Vec<GpuMemUser>,
+    /// Teplota CPU ve °C, jen přes PawnIO. None = PawnIO není, procesor
+    /// nepodporuje, nebo se tenhle vzorek nepovedl přečíst. ACPI z
+    /// kaskády `thermal` sem schválně nejde: desktopy tudy hlásí spíš
+    /// čipset než jádra a dotaz do WMI každou sekundu by stál víc než
+    /// celý zbytek vzorku.
+    pub cpu_temp_c: Option<f32>,
 }
 
 /// Událost na časové ose (zásek, pád procesu…) — markery v grafu.

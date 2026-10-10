@@ -61,11 +61,11 @@ pub fn tick(conn: &Connection) -> Result<(), rusqlite::Error> {
         &format!(
             "INSERT OR IGNORE INTO system_10s
             (ts, cpu_pct, cpu_pct_max, mem_used_mb, net_rx_bps, net_tx_bps,
-             gpu_pct, gpu_pct_max, gpu_temp_c, cpu_clock_mhz)
+             gpu_pct, gpu_pct_max, gpu_temp_c, cpu_temp_c, cpu_clock_mhz)
         SELECT (ts/10)*10, AVG(cpu_pct), MAX(cpu_pct),
                CAST(AVG(mem_used_mb) AS INTEGER),
                CAST(AVG(net_rx_bps) AS INTEGER), CAST(AVG(net_tx_bps) AS INTEGER),
-               AVG(gpu_pct), MAX(gpu_pct), AVG(gpu_temp_c),
+               AVG(gpu_pct), MAX(gpu_pct), AVG(gpu_temp_c), AVG(cpu_temp_c),
                CAST(AVG(cpu_clock_mhz) AS INTEGER)
         FROM system_1s WHERE ts < {cut} GROUP BY ts/10;
         INSERT OR IGNORE INTO sample_10s
@@ -94,11 +94,11 @@ pub fn tick(conn: &Connection) -> Result<(), rusqlite::Error> {
         &format!(
             "INSERT OR IGNORE INTO system_1m
             (ts, cpu_pct, cpu_pct_max, mem_used_mb, net_rx_bps, net_tx_bps,
-             gpu_pct, gpu_pct_max, gpu_temp_c, cpu_clock_mhz)
+             gpu_pct, gpu_pct_max, gpu_temp_c, cpu_temp_c, cpu_clock_mhz)
         SELECT (ts/60)*60, AVG(cpu_pct), MAX(cpu_pct_max),
                CAST(AVG(mem_used_mb) AS INTEGER),
                CAST(AVG(net_rx_bps) AS INTEGER), CAST(AVG(net_tx_bps) AS INTEGER),
-               AVG(gpu_pct), MAX(gpu_pct_max), AVG(gpu_temp_c),
+               AVG(gpu_pct), MAX(gpu_pct_max), AVG(gpu_temp_c), AVG(cpu_temp_c),
                CAST(AVG(cpu_clock_mhz) AS INTEGER)
         FROM system_10s WHERE ts < {cut} GROUP BY ts/60;
         INSERT OR IGNORE INTO sample_1m
@@ -157,11 +157,13 @@ mod tests {
         crate::migrations::run(&conn).unwrap();
         let old = chrono_now_unix() - KEEP_1S_S - 100;
         let bucket = old / 10 * 10;
-        // Dva vzorky v jednom bucketu: cpu 10 % a 30 % → avg 20, max 30.
+        // Dva vzorky v jednom bucketu: cpu 10 % a 30 % → avg 20, max 30;
+        // teplota CPU 40 a 60 °C → avg 50.
         for (ts, cpu) in [(bucket, 10.0), (bucket + 1, 30.0)] {
             conn.execute(
-                "INSERT INTO system_1s (ts, cpu_pct, mem_used_mb) VALUES (?1, ?2, 1000)",
-                params![ts, cpu],
+                "INSERT INTO system_1s (ts, cpu_pct, mem_used_mb, cpu_temp_c)
+                 VALUES (?1, ?2, 1000, ?3)",
+                params![ts, cpu, cpu + 30.0],
             )
             .unwrap();
             conn.execute(
@@ -176,15 +178,16 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM system_1s", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n1s, 0, "staré 1s vzorky mají být smazané");
-        let (avg, max): (f64, f64) = conn
+        let (avg, max, teplota): (f64, f64, f64) = conn
             .query_row(
-                "SELECT cpu_pct, cpu_pct_max FROM system_10s WHERE ts = ?1",
+                "SELECT cpu_pct, cpu_pct_max, cpu_temp_c FROM system_10s WHERE ts = ?1",
                 params![bucket],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
         assert!((avg - 20.0).abs() < 0.01, "avg: {avg}");
         assert!((max - 30.0).abs() < 0.01, "max: {max}");
+        assert!((teplota - 50.0).abs() < 0.01, "teplota CPU: {teplota}");
         let (pm, pm_max): (i64, i64) = conn
             .query_row(
                 "SELECT cpu_pm, cpu_pm_max FROM sample_10s WHERE ts = ?1 AND proc_id = 42",

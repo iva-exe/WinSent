@@ -109,16 +109,19 @@ struct DetailAtDto {
     cores: Vec<f32>,
     disks: Vec<core_types::proc::DiskRate>,
     gpu: Option<core_types::proc::GpuInfo>,
+    /// Teplota CPU z PawnIO; None = tehdy nebyla.
+    cpu_temp_c: Option<f32>,
 }
 
 #[tauri::command(async)]
 fn query_detail_at(ts: i64) -> Result<DetailAtDto, String> {
     roura::volej(|| ipc::client::query_detail_at(ts))
-        .map(|(ts, cores, disks, gpu)| DetailAtDto {
+        .map(|(ts, cores, disks, gpu, cpu_temp_c)| DetailAtDto {
             ts,
             cores,
             disks,
             gpu,
+            cpu_temp_c,
         })
         .map_err(|e| e.to_string())
 }
@@ -826,11 +829,11 @@ fn search_web(query: String) -> Result<(), String> {
 
 /// Stav cizích zdrojů senzorů pro kartu v Nastavení.
 ///
-/// Zjišťuje se tady v UI, ne ve službě: přítomnost ovladače PawnIO
-/// pozná i proces bez práv správce („přístup odepřen" = je tam,
-/// „nenalezeno" = není) a verze leží v registru čitelném pro každého.
-/// Jestli se teplota přes PawnIO opravdu čte, ví jen služba — to UI
-/// bere z hardwarového přehledu (`cpu_thermal.temp_source`).
+/// Zjišťuje se tady v UI, ne ve službě, a bez dotyku ovladače:
+/// přítomnost PawnIO se pozná dotazem na správce služeb (stav služby
+/// ovladače), verze z jeho záznamu v registru. Zařízení PawnIO UI nikdy
+/// neotevírá. Jestli se teplota přes PawnIO opravdu čte, ví jen služba —
+/// to UI bere z hardwarového přehledu (`cpu_thermal.temp_source`).
 #[derive(Debug, Serialize)]
 struct ZdrojeSenzoruDto {
     pawnio_installed: bool,

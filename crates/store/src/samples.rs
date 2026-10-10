@@ -176,9 +176,10 @@ pub fn insert_tick_in(
                  (ts, cpu_pct, mem_used_mb, net_rx_bps, net_tx_bps, gpu_pct,
                   cpu_clock_mhz, cpu_clock_max_mhz,
                   gpu_temp_c, gpu_vram_mb, gpu_power_w, gpu_clock_mhz,
-                  disk_qlen, disk_lat_ms, hard_flt_rate, thermal_throttle)
+                  disk_qlen, disk_lat_ms, hard_flt_rate, thermal_throttle,
+                  cpu_temp_c, cpu_temp_src)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                     ?13, ?14, ?15, ?16)",
+                     ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 ts,
                 sys.cpu_pct as f64,
@@ -196,6 +197,11 @@ pub fn insert_tick_in(
                 sys.disk_lat_ms as f64,
                 sys.hard_flt_rate as i64,
                 sys.thermal_throttle as i64,
+                // Sloupce jsou v system_1s od začátku; zdroj je zatím
+                // jen jeden, ale kdyby přibyl další, stará data řeknou,
+                // odkud jsou.
+                sys.cpu_temp_c.map(|v| v as f64),
+                sys.cpu_temp_c.map(|_| "pawnio"),
             ],
         )?;
 
@@ -338,6 +344,36 @@ mod tests {
             .unwrap();
         assert_eq!(n, 1, "restart založil další instanci");
         assert_eq!(last, 700_000, "last_ts se neobnovil");
+    }
+
+    // Teplota CPU z PawnIO jde do system_1s se zdrojem; bez ní NULL
+    // v obou sloupcích, ne nula.
+    #[test]
+    fn teplota_cpu_se_zapise_se_zdrojem() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::migrations::run(&conn).unwrap();
+        let mut names = NameCache::default();
+        let s = SystemSnapshot {
+            cpu_temp_c: Some(55.5),
+            ..Default::default()
+        };
+        insert_tick(&mut conn, 100, &s, &[], &mut names).unwrap();
+        insert_tick(&mut conn, 101, &SystemSnapshot::default(), &[], &mut names).unwrap();
+        let radky: Vec<(Option<f64>, Option<String>)> = conn
+            .prepare("SELECT cpu_temp_c, cpu_temp_src FROM system_1s ORDER BY ts")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            radky,
+            vec![(Some(55.5), Some("pawnio".into())), (None, None)]
+        );
+        let (_, _, _, _, t) = crate::history::detail_at(&conn, 100)
+            .unwrap()
+            .expect("vzorek");
+        assert_eq!(t, Some(55.5));
     }
 
     // Řádek z doby před migrací (jen pid, bez času vzniku) zůstane pro

@@ -1261,11 +1261,12 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
             Request::QueryDetailAt { ts } => {
                 let conn = read_conn.lock().expect("read conn lock poisoned");
                 match store::history::detail_at(&conn, ts) {
-                    Ok(Some((ts, cores, disks, gpu))) => Response::DetailAt {
+                    Ok(Some((ts, cores, disks, gpu, cpu_temp_c))) => Response::DetailAt {
                         ts,
                         cores,
                         disks,
                         gpu,
+                        cpu_temp_c,
                     },
                     Ok(None) => Response::Error {
                         message: "pro tento čas není vzorek v historii".into(),

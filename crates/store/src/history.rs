@@ -13,12 +13,12 @@ use rusqlite::{params, Connection};
 /// které žijí hodinu — pro starší zámek služba vrátila chybu a UI
 /// ukázalo u zamčeného času živé disky a GPU, aniž by to bylo poznat.
 /// Agregáty nesou méně: jádra jen v 1s úrovni (core_1s se neagreguje),
-/// z GPU jen teplotu.
+/// z GPU jen teplotu. Teplota CPU (PawnIO) je ve všech úrovních.
 #[allow(clippy::type_complexity)]
 pub fn detail_at(
     conn: &Connection,
     ts: i64,
-) -> Result<Option<(i64, Vec<f32>, Vec<DiskRate>, Option<GpuInfo>)>, rusqlite::Error> {
+) -> Result<Option<(i64, Vec<f32>, Vec<DiskRate>, Option<GpuInfo>, Option<f32>)>, rusqlite::Error> {
     // Úrovně kaskády: (systémová tabulka, disková tabulka, tolerance, surová?).
     for (sys_table, disk_table, tol, raw) in [
         ("system_1s", "disk_1s", 2, true),
@@ -66,18 +66,21 @@ pub fn detail_at(
             })?
             .collect::<Result<_, _>>()?;
 
-        // GPU senzory (NULL = tehdy nedostupné). Agregáty drží jen
-        // teplotu — VRAM, příkon a takt se do nich nepřenáší.
+        // GPU senzory a teplota CPU (NULL = tehdy nedostupné). Agregáty
+        // drží z GPU jen teplotu — VRAM, příkon a takt se do nich
+        // nepřenáší.
         let sql = if raw {
-            "SELECT gpu_temp_c, gpu_vram_mb, gpu_power_w, gpu_clock_mhz
+            "SELECT gpu_temp_c, gpu_vram_mb, gpu_power_w, gpu_clock_mhz, cpu_temp_c
              FROM system_1s WHERE ts = ?1"
                 .to_string()
         } else {
-            format!("SELECT gpu_temp_c, NULL, NULL, NULL FROM {sys_table} WHERE ts = ?1")
+            format!(
+                "SELECT gpu_temp_c, NULL, NULL, NULL, cpu_temp_c FROM {sys_table} WHERE ts = ?1"
+            )
         };
-        let gpu = conn
+        let (gpu, cpu_temp_c) = conn
             .query_row(&sql, params![actual], |r| {
-                Ok(GpuInfo {
+                let gpu = GpuInfo {
                     temp_c: r.get::<_, Option<f64>>(0)?.map(|v| v as f32),
                     vram_used_mb: r.get::<_, Option<i64>>(1)?.map(|v| v.max(0) as u64),
                     vram_total_mb: None,
@@ -85,12 +88,18 @@ pub fn detail_at(
                     clock_mhz: r.get::<_, Option<i64>>(3)?.map(|v| v.max(0) as u32),
                     // Ventilátor, enginy a další jsou jen živě.
                     ..Default::default()
-                })
+                };
+                Ok((gpu, r.get::<_, Option<f64>>(4)?.map(|v| v as f32)))
             })
-            .ok()
-            .filter(|g: &GpuInfo| g.temp_c.is_some() || g.vram_used_mb.is_some());
+            .map(|(g, t)| {
+                (
+                    Some(g).filter(|g| g.temp_c.is_some() || g.vram_used_mb.is_some()),
+                    t,
+                )
+            })
+            .unwrap_or((None, None));
 
-        return Ok(Some((actual, cores, disks, gpu)));
+        return Ok(Some((actual, cores, disks, gpu, cpu_temp_c)));
     }
     Ok(None)
 }
@@ -254,12 +263,14 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::migrations::run(&conn).unwrap();
         conn.execute_batch(
-            "INSERT INTO system_10s (ts, cpu_pct, mem_used_mb, gpu_temp_c) VALUES (1000, 5, 1, 61.5);
+            "INSERT INTO system_10s (ts, cpu_pct, mem_used_mb, gpu_temp_c, cpu_temp_c)
+                 VALUES (1000, 5, 1, 61.5, 48.5);
              INSERT INTO disk_10s (ts, disk, r_bps, w_bps) VALUES (1000, 0, 111, 222);
              INSERT INTO system_1m (ts, cpu_pct, mem_used_mb) VALUES (5000, 5, 1);",
         )
         .unwrap();
-        let (ts, cores, disks, gpu) = detail_at(&conn, 1004).unwrap().expect("10s detail");
+        let (ts, cores, disks, gpu, cpu_temp) =
+            detail_at(&conn, 1004).unwrap().expect("10s detail");
         assert_eq!(ts, 1000);
         assert!(cores.is_empty(), "jádra se neagregují");
         assert_eq!(disks.len(), 1);
@@ -267,11 +278,13 @@ mod tests {
         let gpu = gpu.expect("teplota GPU z agregátu");
         assert_eq!(gpu.temp_c, Some(61.5));
         assert_eq!(gpu.vram_used_mb, None);
+        assert_eq!(cpu_temp, Some(48.5), "teplota CPU z agregátu");
         // 1m úroveň bez GPU dat: detail je, GPU ne.
-        let (ts, _, disks, gpu) = detail_at(&conn, 5030).unwrap().expect("1m detail");
+        let (ts, _, disks, gpu, cpu_temp) = detail_at(&conn, 5030).unwrap().expect("1m detail");
         assert_eq!(ts, 5000);
         assert!(disks.is_empty());
         assert!(gpu.is_none());
+        assert!(cpu_temp.is_none());
         assert!(detail_at(&conn, 99_999).unwrap().is_none());
     }
 }

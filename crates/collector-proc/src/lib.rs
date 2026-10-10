@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use core_types::config::Config;
-use core_types::proc::{DiskDesc, DiskRate, GpuMemUser, ProcRow, StaticInfo, SystemSnapshot};
+use core_types::proc::{DiskDesc, DiskRate, ProcRow, StaticInfo, SystemSnapshot};
 
 pub mod stall;
 
@@ -241,7 +241,7 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
     state.prev_tick = now;
 
     // GPU přes PDH (vendor-neutrální): per-PID % + celkové % + VRAM.
-    let gpu_pdh = state
+    let mut gpu_pdh = state
         .gpu_proc
         .as_mut()
         .map(|g| g.sample())
@@ -308,6 +308,8 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
             publisher: id.publisher,
             protection: prot,
             confidence: id.confidence,
+            // Doplní se níž, až je známá celková VRAM (strop pro čítač).
+            vram_mb: None,
         });
     }
     // Obecné hostitelské procesy patří aplikaci, která je spustila.
@@ -512,30 +514,33 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
         g.eng_compute = e.compute;
     }
 
-    // Největší spotřebitelé VRAM s názvy z řádků procesů (WebView2 už
-    // pod svou aplikací). Hodnota nad celkovou VRAM je rozbitý čítač,
-    // ne údaj — zahazuje se dřív, než se vybere pětice.
+    // VRAM procesů hlavního GPU pro sloupec v Tasks. Hodnota nad
+    // celkovou VRAM je rozbitý čítač, ne údaj — u toho procesu None.
+    //
+    // Prázdný seznam = čítač tu není, ještě nedal první platný vzorek,
+    // nebo není známý hlavní adaptér. Pak None u všech: „neznámo" není
+    // nula. S fungujícím čítačem prázdný nebývá — VRAM drží vždycky
+    // aspoň dwm.exe. Proces, který v seznamu chybí, má pod 1 MB (čítač
+    // vrací jen nenulové) → Some(0).
     let vram_strop = state
         .gpu_kmt
         .as_ref()
         .map(|k| k.dedicated_mb)
         .filter(|&mb| mb > 0)
         .or(gpu_detail.and_then(|g| g.vram_total_mb));
-    let gpu_top_mem: Vec<GpuMemUser> = gpu_pdh
-        .mem_by_pid
-        .iter()
-        .filter(|&&(_, mb)| vram_strop.is_none_or(|s| mb <= s))
-        .filter_map(|&(pid, mb)| {
-            let r = rows.iter().find(|r| r.pid == pid)?;
-            Some(GpuMemUser {
-                pid,
-                name: r.name.clone(),
-                app_name: r.app_name.clone(),
-                mb: mb as u32,
-            })
-        })
-        .take(5)
-        .collect();
+    if !gpu_pdh.mem_by_pid.is_empty() {
+        // Řazení podle PID na místě: hledání pak půlením, bez mapy navíc.
+        let vram = &mut gpu_pdh.mem_by_pid;
+        vram.sort_unstable_by_key(|&(pid, _)| pid);
+        for r in rows.iter_mut() {
+            r.vram_mb = match vram.binary_search_by_key(&r.pid, |&(pid, _)| pid) {
+                Ok(i) => Some(vram[i].1)
+                    .filter(|&mb| vram_strop.is_none_or(|s| mb <= s))
+                    .and_then(|mb| u32::try_from(mb).ok()),
+                Err(_) => Some(0),
+            };
+        }
+    }
 
     let snapshot = SystemSnapshot {
         cpu_pct: cpu_pct.clamp(0.0, 100.0),
@@ -567,7 +572,13 @@ pub fn tick(state: &mut State) -> Result<(Vec<ProcRow>, SystemSnapshot), Error> 
         thermal_throttle: cpu_clock_max_mhz > 0
             && cpu_clock_mhz < cpu_clock_max_mhz * 7 / 10
             && cpu_pct > 50.0,
-        gpu_top_mem,
+        // Jen PawnIO, ne celá kaskáda `thermal` (ACPI jde přes WMI).
+        // Sezení s ovladačem se drží otevřené, takže čtení je jedno
+        // IOCTL (mikrosekundy); bez PawnIO jedno neúspěšné CreateFileW
+        // (~1 µs). Na AMD se navíc čeká na `Global\Access_PCI`, když ho
+        // zrovna drží cizí nástroj — nejvýš 5 ms, pak se vzorek vynechá
+        // (a když ho drží pořád, půl minuty se na něj nečeká vůbec).
+        cpu_temp_c: win_sys::pawnio::cpu_temp(),
     };
     Ok((rows, snapshot))
 }

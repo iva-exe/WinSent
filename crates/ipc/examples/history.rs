@@ -44,7 +44,7 @@ fn main() {
     }
 
     match ipc::client::query_detail_at(now - 5) {
-        Ok((ts, cores, disks, gpu)) => println!(
+        Ok((ts, cores, disks, gpu, _)) => println!(
             "detail_at: ts {} jader {} disků {:?} gpu {:?}",
             ts,
             cores.len(),

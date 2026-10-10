@@ -398,7 +398,7 @@
 	let zdrojTeploty = $state(null);
 	let zdrojeChyba = $state('');
 
-	// Přítomnost PawnIO je levná (jedno CreateFileW a registr) a ptá se
+	// Přítomnost PawnIO je levná (dotaz na správce služeb a registr) a ptá se
 	// na ni interval. Jestli se teplota opravdu čte, prozradí jen celý
 	// hardwarový přehled — ten služba při každém dotazu po 5 s skládá
 	// znovu (SMBIOS, zařízení, SMART…), takže se bere jen při otevření

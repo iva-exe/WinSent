@@ -252,8 +252,14 @@
 		['eng_compute', 'výpočty']
 	];
 	const dGpuEnginy = $derived(GPU_ENGINY.filter(([k]) => system?.gpu?.[k] != null));
-	// VRAM podle procesů je jen živě; null = zámek času.
-	const dGpuTop = $derived(pinned == null ? (system?.gpu_top_mem ?? []) : null);
+	// Teplota CPU jen z PawnIO; při zámku z historie (null = tehdy nebyla).
+	const dCpuTemp = $derived(pinned != null ? (histDetail?.cpu_temp_c ?? null) : system?.cpu_temp_c);
+	// Dlaždice teploty CPU se kreslí, jakmile ŽIVÝ vzorek teplotu z PawnIO
+	// jednou přinesl — ne podle každého vzorku. Na AMD se čtení vynechá,
+	// když sběrnici PCI zrovna drží jiný nástroj (LibreHardwareMonitor,
+	// FanControl), a řada dlaždic by pak poskakovala. Zámek času rozložení
+	// taky nemění, hodnota jen přejde na „—", když tehdy teplota nebyla.
+	let cpuTeplotaMeri = $state(false);
 	const dDown = $derived(dIdx != null ? down[dIdx] : system?.net_rx_bps);
 	const dUp = $derived(dIdx != null ? up[dIdx] : system?.net_tx_bps);
 	const dDiskTot = $derived(dIdx != null ? diskTot[dIdx] : diskTot.at(-1));
@@ -386,6 +392,9 @@
 			threads: p.threads ?? null,
 			disk_bps,
 			gpu_pct,
+			// VRAM v MB, bez vyhlazení jako paměť. Jen živě — historie ji
+			// nemá, takže tam null (stejně jako bez čítače).
+			vram_mb: p.vram_mb ?? null,
 			sys_pct: zatezSystemu([cpu_pct, total > 0 ? (p.ws_bytes / total) * 100 : null]),
 			// Identita aplikace (v2). Historie ji nemá → fallback na jméno.
 			identity_key: p.identity_key ?? `name:${p.name}`,
@@ -428,6 +437,7 @@
 					ws_bytes: 0,
 					disk_bps: 0,
 					gpu_pct: null,
+					vram_mb: null,
 					threads: 0,
 					sys_pct: 0
 				};
@@ -438,6 +448,7 @@
 			g.ws_bytes += p.ws_bytes;
 			g.disk_bps += p.disk_bps;
 			if (p.gpu_pct != null) g.gpu_pct = (g.gpu_pct ?? 0) + p.gpu_pct;
+			if (p.vram_mb != null) g.vram_mb = (g.vram_mb ?? 0) + p.vram_mb;
 			g.threads += p.threads ?? 0;
 			if (protRank(p.protection) < protRank(g.protection)) g.protection = p.protection;
 			if (p.confidence === 'guess') g.confidence = 'guess';
@@ -569,6 +580,7 @@
 		try {
 			const s = await invoke('query_system');
 			system = s;
+			if (s.cpu_temp_c != null) cpuTeplotaMeri = true;
 			error = '';
 			const memPct = (s.mem_used_mb / Math.max(s.mem_total_mb, 1)) * 100;
 			const sysPct = zatezSystemu([s.cpu_pct, memPct, s.gpu_pct]);
@@ -876,6 +888,8 @@
 	// „neměří se", takže to vypadalo, že u většiny aplikací GPU chybí.
 	const gpuMeri = $derived(histProcs != null || system?.gpu_pct != null);
 	const fmtGpu = (v) => (!gpuMeri || v == null ? '—' : `${v.toFixed(1)} %`);
+	// VRAM procesu v MB; pomlčka = čítač není, nebo náhled historie.
+	const fmtVram = (mb) => (mb == null ? '—' : fmtMem(mb * 1024 * 1024));
 	function fmtClock(unix) {
 		return new Date(unix * 1000).toLocaleTimeString('cs-CZ');
 	}
@@ -1337,6 +1351,14 @@
 			</div>
 			<!-- Doplňkové údaje (parita se Správcem úloh) -->
 			<div class="tiles info-row">
+				{#if cpuTeplotaMeri}
+					<div class="tile">
+						<span class="label-tech">teplota</span>
+						<span class="tile-val value-mono" style:color={colorForTemp(dCpuTemp)}>
+							<Num value={dCpuTemp} decimals={0} suffix=" °C" />
+						</span>
+					</div>
+				{/if}
 				<div class="tile">
 					<span class="label-tech">takt</span>
 					<span class="tile-val value-mono"><Num value={system?.cpu_clock_mhz} decimals={0} suffix=" MHz" /></span>
@@ -1491,26 +1513,6 @@
 						{/each}
 					</div>
 				{/if}
-				<!-- Prostý text, ne <Num>: řádky se přeskupují a tween by
-				     čísla přeléval mezi různými procesy. -->
-				{#if system?.gpu_top_mem?.length}
-					<div
-						class="info-row"
-						title="VRAM, kterou proces právě drží v paměti karty. Sdílené alokace se počítají u každého procesu, který je používá — součet proto může přesáhnout obsazenou VRAM."
-					>
-						<span class="label-tech">vram podle procesů</span>
-						{#if dGpuTop == null}
-							<p class="empty-note label-tech">rozpis podle procesů je jen živě — do historie se neukládá</p>
-						{:else}
-							<div class="gpu-top">
-								{#each dGpuTop as u (u.pid)}
-									<span class="gpu-top-name">{u.app_name || u.name}</span>
-									<span class="gpu-top-mb value-mono">{(u.mb / 1024).toFixed(2)} GB</span>
-								{/each}
-							</div>
-						{/if}
-					</div>
-				{/if}
 			{:else if pinned != null}
 				<p class="empty-note label-tech">pro zamčený čas nejsou gpu senzory v historii</p>
 			{:else}
@@ -1612,6 +1614,7 @@
 					<col style="width: 62px" />
 					<col style="width: 62px" />
 					<col style="width: 92px" />
+					<col style="width: 92px" />
 					<col style="width: 96px" />
 					<col style="width: 62px" />
 				</colgroup>
@@ -1643,6 +1646,13 @@
 						</th>
 						<th class="t-num" onclick={() => setSort('gpu_pct')} title="Využití GPU procesem (PDH GPU Engine)">
 							GPU {#if sortKey === 'gpu_pct'}{arrow}{/if}
+						</th>
+						<th
+							class="t-num"
+							onclick={() => setSort('vram_mb')}
+							title="VRAM, kterou proces drží v paměti karty. Sdílené alokace se počítají u každého procesu, který je používá. Jen živě — do historie se neukládá."
+						>
+							VRAM {#if sortKey === 'vram_mb'}{arrow}{/if}
 						</th>
 						<th class="t-num" onclick={() => setSort('ws_bytes')}>
 							Paměť {#if sortKey === 'ws_bytes'}{arrow}{/if}
@@ -1697,6 +1707,7 @@
 								<td class="t-num value-mono">{g.sys_pct.toFixed(1)} %</td>
 								<td class="t-num value-mono">{g.cpu_pct.toFixed(1)} %</td>
 								<td class="t-num value-mono">{fmtGpu(g.gpu_pct)}</td>
+								<td class="t-num value-mono">{fmtVram(g.vram_mb)}</td>
 								<td class="t-num value-mono">{fmtMem(g.ws_bytes)}</td>
 								<td class="t-num value-mono">{fmtBps(g.disk_bps)}</td>
 								<td class="t-num value-mono">{g.threads || '—'}</td>
@@ -1711,6 +1722,7 @@
 										<td class="t-num value-mono">{p.sys_pct.toFixed(1)} %</td>
 										<td class="t-num value-mono">{p.cpu_pct.toFixed(1)} %</td>
 										<td class="t-num value-mono">{fmtGpu(p.gpu_pct)}</td>
+										<td class="t-num value-mono">{fmtVram(p.vram_mb)}</td>
 										<td class="t-num value-mono">{fmtMem(p.ws_bytes)}</td>
 										<td class="t-num value-mono">{fmtBps(p.disk_bps)}</td>
 										<td class="t-num value-mono">{p.threads ?? '—'}</td>
@@ -1719,7 +1731,7 @@
 							{/if}
 						{:else}
 							<tr>
-								<td colspan="10" class="empty label-tech">
+								<td colspan="11" class="empty label-tech">
 									{emptyWhy}
 								</td>
 							</tr>
@@ -1755,13 +1767,14 @@
 								<td class="t-num value-mono">{p.sys_pct.toFixed(1)} %</td>
 								<td class="t-num value-mono">{p.cpu_pct.toFixed(1)} %</td>
 								<td class="t-num value-mono">{fmtGpu(p.gpu_pct)}</td>
+								<td class="t-num value-mono">{fmtVram(p.vram_mb)}</td>
 								<td class="t-num value-mono">{fmtMem(p.ws_bytes)}</td>
 								<td class="t-num value-mono">{fmtBps(p.disk_bps)}</td>
 								<td class="t-num value-mono">{p.threads ?? '—'}</td>
 							</tr>
 						{:else}
 							<tr>
-								<td colspan="10" class="empty label-tech">
+								<td colspan="11" class="empty label-tech">
 									{emptyWhy}
 								</td>
 							</tr>
@@ -1998,21 +2011,6 @@
 	.mod-sub {
 		text-transform: none;
 		letter-spacing: 0.02em;
-	}
-	/* VRAM podle procesů: název a GB ve dvou sloupcích u sebe. */
-	.gpu-top {
-		display: grid;
-		grid-template-columns: minmax(0, max-content) max-content;
-		gap: 0.2rem 1.2rem;
-		margin-top: 0.4rem;
-	}
-	.gpu-top-name {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.gpu-top-mb {
-		text-align: right;
 	}
 	.tile-sep {
 		color: var(--text-faint);

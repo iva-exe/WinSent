@@ -258,6 +258,13 @@ const MIGRATIONS: &[&str] = &[
         WHERE kind = 'stall' AND CAST(json_extract(detail, '$.lag_ms') AS INTEGER) > 600000;
     DELETE FROM event
         WHERE kind = 'stall' AND CAST(json_extract(detail, '$.lag_ms') AS INTEGER) > 600000;",
+    // → teplota CPU (PawnIO) i v agregátech.
+    //
+    // system_1s má cpu_temp_c od začátku, jen se do něj nezapisovalo.
+    // Agregáty ho neměly vůbec — zámek času starší než hodina by pak
+    // teplotu CPU ztratil, zatímco teplotu GPU vedle ukazuje.
+    "ALTER TABLE system_10s ADD COLUMN cpu_temp_c REAL;
+    ALTER TABLE system_1m  ADD COLUMN cpu_temp_c REAL;",
 ];
 
 /// Aplikuje všechny dosud neaplikované migrace. Bezpečné volat při
@@ -299,12 +306,22 @@ mod tests {
 mod uklid_tests {
     use super::*;
 
+    /// Index migrace, která obsahuje `znak` — testy nesmí počítat s tím,
+    /// že jejich migrace je poslední, další přibývají za ní.
+    fn index_migrace(znak: &str) -> usize {
+        MIGRATIONS
+            .iter()
+            .position(|m| m.contains(znak))
+            .expect("migrace v seznamu")
+    }
+
     /// Falešné záseky ze spánku zmizí, skutečné zůstanou.
     #[test]
     fn migrace_uklidi_zaseky_ze_spanku() {
         let conn = Connection::open_in_memory().unwrap();
-        // Stav před úklidem: všechno kromě poslední migrace.
-        for sql in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+        // Stav před úklidem: všechno před migrací úklidu.
+        let uklid = index_migrace("DELETE FROM incident");
+        for sql in &MIGRATIONS[..uklid] {
             conn.execute_batch(sql).unwrap();
         }
         conn.execute_batch(
@@ -317,7 +334,7 @@ mod uklid_tests {
                  (2, 'stall', '{"lag_ms":1200}');"#,
         )
         .unwrap();
-        conn.pragma_update(None, "user_version", MIGRATIONS.len() as u32 - 1).unwrap();
+        conn.pragma_update(None, "user_version", uklid as u32).unwrap();
         run(&conn).unwrap();
         let inc: Vec<i64> = conn
             .prepare("SELECT ts FROM incident ORDER BY ts")
@@ -329,5 +346,43 @@ mod uklid_tests {
         assert_eq!(inc, vec![2, 3]);
         let ev: i64 = conn.query_row("SELECT COUNT(*) FROM event", [], |r| r.get(0)).unwrap();
         assert_eq!(ev, 1);
+    }
+}
+
+#[cfg(test)]
+mod teplota_cpu_tests {
+    use super::*;
+
+    /// Databáze ze starší verze: agregáty dostanou sloupec teploty CPU,
+    /// řádky, které v nich už jsou, zůstanou (teplota u nich NULL).
+    #[test]
+    fn migrace_prida_teplotu_cpu_do_agregatu() {
+        let conn = Connection::open_in_memory().unwrap();
+        let nova = MIGRATIONS
+            .iter()
+            .position(|m| m.contains("system_10s ADD COLUMN cpu_temp_c"))
+            .expect("migrace v seznamu");
+        for sql in &MIGRATIONS[..nova] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", nova as u32)
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO system_10s (ts, cpu_pct, mem_used_mb) VALUES (10, 5, 1);
+             INSERT INTO system_1m (ts, cpu_pct, mem_used_mb) VALUES (60, 5, 1);",
+        )
+        .unwrap();
+        run(&conn).unwrap();
+        for t in ["system_10s", "system_1m"] {
+            let (n, teplota): (i64, Option<f64>) = conn
+                .query_row(
+                    &format!("SELECT COUNT(*), MAX(cpu_temp_c) FROM {t}"),
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{t}: řádek se ztratil");
+            assert_eq!(teplota, None, "{t}: starý řádek teplotu nemá");
+        }
     }
 }

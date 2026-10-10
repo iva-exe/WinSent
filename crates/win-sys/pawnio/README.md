@@ -31,6 +31,16 @@ Jen čtení s pevnou adresou:
 - `ioctl_read_msr(0x1A2 / 0x1B1)`: TjMax a teplota pouzdra Intel.
 
 Zápisová funkce `ioctl_write_msr`, kterou moduly také obsahují, se nikdy nevolá.
+`pawnio.rs` je postavený tak, aby to ani nešlo:
+- jména funkcí a adresy jsou uzavřený výčet;
+- moduly se načítají jen po kontrole SHA-256;
+- veřejné API nebere žádný parametr pro ovladač.
+
+Jediný zápis uvnitř čtení: `ioctl_read_smn` nejdřív zapíše adresu do indexového
+registru SMN (PCI 0:0.0, offset 0x60) a pak přečte data z 0x64. Index jen vybírá
+čtený registr a žádné nastavení procesoru nemění; stejně to dělá Linux k10temp.
+Dvojici index/data sdílejí všechny nástroje, proto Winsent čte jen pod mutexem
+`Global\Access_PCI`. Když mutex nemá, čtení vynechá.
 
 ## Licence
 

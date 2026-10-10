@@ -198,9 +198,11 @@ pub fn query_sys_info() -> Result<StaticInfo, Error> {
     }
 }
 
-/// Detaily proměnných v čase (jádra, disky, GPU).
+/// Detaily proměnných v čase (jádra, disky, GPU, teplota CPU).
 #[allow(clippy::type_complexity)]
-pub fn query_detail_at(ts: i64) -> Result<(i64, Vec<f32>, Vec<DiskRate>, Option<GpuInfo>), Error> {
+pub fn query_detail_at(
+    ts: i64,
+) -> Result<(i64, Vec<f32>, Vec<DiskRate>, Option<GpuInfo>, Option<f32>), Error> {
     let mut stream = connect()?;
     match request(&mut stream, &Request::QueryDetailAt { ts })? {
         Response::DetailAt {
@@ -208,7 +210,8 @@ pub fn query_detail_at(ts: i64) -> Result<(i64, Vec<f32>, Vec<DiskRate>, Option<
             cores,
             disks,
             gpu,
-        } => Ok((ts, cores, disks, gpu)),
+            cpu_temp_c,
+        } => Ok((ts, cores, disks, gpu, cpu_temp_c)),
         Response::Error { message } => Err(Error::Remote { message }),
         other => Err(Error::Remote {
             message: format!("nečekaná odpověď: {other:?}"),

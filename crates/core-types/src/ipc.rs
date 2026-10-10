@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// `HardwareReport` přečte razítko času z bajtu příznaku `Option`,
 /// takže vyjde rok 1970 a nikde se nic nezhroutí. Tichý nesmysl je
 /// horší než chybová hláška, protože ho nikdo nenahlásí.
-pub const PROTOCOL_VERSION: u32 = 50;
+pub const PROTOCOL_VERSION: u32 = 51;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -201,6 +201,8 @@ pub enum Response {
         cores: Vec<f32>,
         disks: Vec<crate::proc::DiskRate>,
         gpu: Option<crate::proc::GpuInfo>,
+        /// Teplota CPU z PawnIO; None = tehdy nebyla.
+        cpu_temp_c: Option<f32>,
     },
     /// Body historie disků: (ts, index, r_bps, w_bps).
     DiskHistory(Vec<(i64, u32, u64, u64)>),
@@ -348,14 +350,13 @@ mod wire_shape {
     /// NIKDY nepřepisuj jen čísla tady.
     #[test]
     fn zmena_tvaru_zpravy_vyzaduje_povyseni_protokolu() {
-        // (jméno, naměřeno, zaznamenáno při PROTOCOL_VERSION 47)
+        // (jméno, naměřeno, zaznamenáno při PROTOCOL_VERSION 51)
         let mereno: Vec<(&str, (usize, u64), (usize, u64))> = vec![
-            ("ProcRow", otisk::<ProcRow>(), (23, 2959247389591744881)),
-            ("SystemSnapshot", otisk::<SystemSnapshot>(), (32, 9363335324375932243)),
+            ("ProcRow", otisk::<ProcRow>(), (24, 17595938677206541484)),
+            ("SystemSnapshot", otisk::<SystemSnapshot>(), (32, 14742943376526283089)),
             // GpuInfo jde do SystemSnapshot jako `None` — délka prázdného
             // snapshotu jeho změnu nevidí, proto má otisk zvlášť.
             ("GpuInfo", otisk::<GpuInfo>(), (15, 8208288304695416354)),
-            ("GpuMemUser", otisk::<GpuMemUser>(), (4, 7417733315500433997)),
             ("StaticInfo", otisk::<StaticInfo>(), (11, 16331367557955489898)),
             ("StartupRow", otisk::<StartupRow>(), (12, 5603128357851775481)),
             ("ProtectionReport", otisk::<ProtectionReport>(), (20, 7503998234196962424)),
