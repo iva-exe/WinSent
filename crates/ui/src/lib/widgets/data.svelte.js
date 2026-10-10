@@ -92,7 +92,7 @@ let dopl = false;
 
 /// Dotáhne průběh z historie a slije ho s tím, co už je v paměti.
 async function doplnHistorii() {
-	if (dopl) return;
+	if (dopl || document.hidden) return;
 	dopl = true;
 	try {
 		const to = Math.floor(Date.now() / 1000);
@@ -175,6 +175,8 @@ const stav = new Map(); // klíč → { pocet, timer, bezi }
 async function tik(klic) {
 	const s = stav.get(klic);
 	if (!s || s.bezi) return;
+	// Skryté okno se neptá; po zobrazení všechno dotáhne dohon().
+	if (document.hidden) return;
 	s.bezi = true;
 	try {
 		data[klic] = await SADY[klic].nacti();

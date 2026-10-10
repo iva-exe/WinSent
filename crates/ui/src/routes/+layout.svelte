@@ -97,6 +97,8 @@
 	});
 
 	async function pollBadges() {
+		// Skryté okno (oznamovací oblast) odznaky neukazuje.
+		if (document.hidden) return;
 		try {
 			incRaw = await invoke('query_incidents', { limit: 50 });
 		} catch {
@@ -121,6 +123,7 @@
 	onMount(() => {
 		startDaemonPolling();
 		async function pollUptime() {
+			if (document.hidden) return;
 			try {
 				const s = await invoke('query_system');
 				sysUptime = s.uptime_s;
@@ -133,9 +136,19 @@
 		startUpdateChecks();
 		const t = setInterval(pollUptime, 5000);
 		const t2 = setInterval(pollBadges, 60000);
+		// Po zobrazení okna hned aktuální odznaky a uptime — za skrytí se
+		// nic nesbíralo, takže by jinak až minutu svítil stav z doby,
+		// kdy se okno zavřelo.
+		const probuzeni = () => {
+			if (document.hidden) return;
+			pollUptime();
+			pollBadges();
+		};
+		document.addEventListener('visibilitychange', probuzeni);
 		return () => {
 			clearInterval(t);
 			clearInterval(t2);
+			document.removeEventListener('visibilitychange', probuzeni);
 		};
 	});
 </script>

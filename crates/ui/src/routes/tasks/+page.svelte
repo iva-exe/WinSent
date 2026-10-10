@@ -544,6 +544,13 @@
 	}
 
 	async function pollSystem() {
+		// Skryté okno nesbírá vůbec. Utlumené časovače by jinak během
+		// schování přidávaly vzorek zhruba jednou za minutu a graf by ten
+		// úsek podle pravidla „mezera přes 30 s = neměřeno" vyšrafoval,
+		// přestože služba měřila celou dobu. Po zobrazení se úsek doplní
+		// z databáze služby (dohonHistorii), takže se nic neztratí — a
+		// skryté UI zbytečně nebudí službu ani WebView.
+		if (document.hidden) return;
 		try {
 			const s = await invoke('query_system');
 			system = s;
@@ -595,12 +602,17 @@
 	/// Kdy se okno schovalo do oznamovací oblasti (unix), nebo null.
 	///
 	/// Uspané webview časovače nezastaví úplně, jen je Chromium utlumí —
-	/// za dobu schování jich pár přesto proběhne. V řadě proto nezůstane
-	/// jedna čistá díra, ale řídká změť bodů po minutách. Graf ji podle
-	/// pravidla „mezera přes 30 s = neměřeno" vyšrafuje, přestože služba
-	/// měřila celou dobu, a poslední vzorek je přitom čerstvý, takže se
-	/// dohánění nechytlo („mezi posledním vzorkem a teď není mezera").
-	/// Okamžik schování je jediné, z čeho se ten úsek pozná.
+	/// za dobu schování jich pár přesto proběhne. Proto se při skrytém
+	/// okně vůbec nesbírá (viz pollSystem): v řadě pak zůstane jedna
+	/// čistá díra od posledního vzorku, kterou dohnání po probuzení
+	/// zaplní z databáze. Okamžik schování je tu navíc kvůli dotazu, který
+	/// odešel těsně před schováním a vrátil se až po něm.
+	///
+	/// Samotný okamžik schování nestačil: při tichém startu po přihlášení
+	/// je webview uspané dřív, než se stránka načte, takže událost
+	/// „schovalo se" nikdy nepřišla. Utlumené časovače pak hodiny
+	/// přidávaly vzorek zhruba za minutu a graf celý ten úsek až do
+	/// otevření okna vyšrafoval, přestože služba měřila celou dobu.
 	let skrytoOd = null;
 
 	/// Přeskládá úsek řady z toho, co má v databázi služba.
@@ -773,6 +785,7 @@
 	}
 
 	async function pollProcs() {
+		if (document.hidden) return;
 		try {
 			procs = await invoke('query_procs');
 		} catch {
@@ -859,6 +872,7 @@
 	// Incidenty jako markery na časové ose (v3) — poll 1×/30 s stačí.
 	let incidentMarkers = $state([]);
 	async function pollIncidents() {
+		if (document.hidden) return;
 		try {
 			const rows = await invoke('query_incidents', { limit: 100 });
 			// `id` cestuje do markeru, aby klik na šipku vedl přesně na ten
@@ -918,6 +932,7 @@
 			dohonHistorii();
 			pollSystem();
 			pollProcs();
+			pollIncidents();
 		};
 		document.addEventListener('visibilitychange', probuzeni);
 		return () => {

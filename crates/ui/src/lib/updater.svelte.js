@@ -71,6 +71,18 @@ const INTERVAL_MS = 30 * 1000;
 /// Spustí kontrolu (idempotentní). Při startu hned, pak v intervalu.
 export function startUpdateChecks() {
 	if (timer) return;
+	kontrolaNaPozadi();
+	timer = setInterval(kontrolaNaPozadi, INTERVAL_MS);
+	// Upozornění na novou verzi je vidět jen v okně. Při zobrazení se
+	// proto zkontroluje hned — pokud od poslední kontroly uběhl interval.
+	document.addEventListener('visibilitychange', kontrolaNaPozadi);
+}
+
+/// Kontrola z časovače: jen když je okno vidět. Dřív šel dotaz po síti
+/// každých 30 s i celý den, kdy UI sedělo v oznamovací oblasti a
+/// výsledek nikdo neviděl.
+function kontrolaNaPozadi() {
+	if (document.hidden) return;
+	if (updater.checkedAt != null && Date.now() - updater.checkedAt < INTERVAL_MS) return;
 	checkUpdate();
-	timer = setInterval(checkUpdate, INTERVAL_MS);
 }

@@ -9,6 +9,9 @@ export const daemon = $state({
 });
 
 async function refresh() {
+	// Skryté okno indikátor neukazuje. UI většinu dne sedí v oznamovací
+	// oblasti a ping po 1,5 s by tam jen budil službu i WebView.
+	if (document.hidden) return;
 	try {
 		const pong = await invoke('ping_daemon');
 		daemon.alive = true;
@@ -34,4 +37,8 @@ export function startDaemonPolling() {
 	if (timer) return;
 	refresh();
 	timer = setInterval(refresh, 1500);
+	// Po zobrazení okna hned skutečný stav, ne až za další tik.
+	document.addEventListener('visibilitychange', () => {
+		if (!document.hidden) refresh();
+	});
 }
