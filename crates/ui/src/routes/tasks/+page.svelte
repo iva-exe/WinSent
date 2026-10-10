@@ -347,12 +347,14 @@
 		prevLive = live;
 		return src.map((p) => {
 			const was = prev?.get(p.pid);
-			const ease = (cur, key) => (was ? was[key] + (cur - was[key]) * SMOOTH : cur);
+			const ease = (cur, key) => (was?.[key] != null ? was[key] + (cur - was[key]) * SMOOTH : cur);
 			// Vyhlazují se jen kolísavé veličiny. Paměť a vlákna se mezi
 			// vzorky skoro nehýbou a mají sedět přesně (paměť se porovnává
 			// se Správcem úloh).
 			const cpu_pct = ease(p.cpu_pct, 'cpu_pct');
-			const gpu_pct = ease(p.gpu_pct ?? 0, 'gpu_pct');
+			// null = neznámo (vzorek historie z doby před GPU sloupcem),
+			// ne nula — tabulka to musí rozlišit.
+			const gpu_pct = p.gpu_pct == null ? null : ease(p.gpu_pct, 'gpu_pct');
 			const disk_bps = ease((p.disk_r_bps ?? 0) + (p.disk_w_bps ?? 0), 'disk_bps');
 			return {
 			pid: p.pid,
@@ -412,7 +414,7 @@
 					cpu_pct: 0,
 					ws_bytes: 0,
 					disk_bps: 0,
-					gpu_pct: 0,
+					gpu_pct: null,
 					threads: 0,
 					sys_pct: 0
 				};
@@ -422,7 +424,7 @@
 			g.cpu_pct += p.cpu_pct;
 			g.ws_bytes += p.ws_bytes;
 			g.disk_bps += p.disk_bps;
-			g.gpu_pct += p.gpu_pct;
+			if (p.gpu_pct != null) g.gpu_pct = (g.gpu_pct ?? 0) + p.gpu_pct;
 			g.threads += p.threads ?? 0;
 			if (protRank(p.protection) < protRank(g.protection)) g.protection = p.protection;
 			if (p.confidence === 'guess') g.confidence = 'guess';
@@ -853,6 +855,14 @@
 		return mb >= 1 ? `${mb.toFixed(1)} MB/s` : `${(v / 1024).toFixed(0)} kB/s`;
 	}
 	const fmtPct = (v) => (v == null ? '—' : `${v.toFixed(1)} %`);
+
+	// GPU procesu: pomlčka JEN tam, kde hodnota opravdu není — počítač
+	// čítače GPU nemá (pak chybí i celkové GPU), nebo je vzorek historie
+	// z doby před jejich ukládáním. Dřív se pomlčka psala i za nulu,
+	// zatímco CPU vedle ukazovalo „0,0 %"; pomlčka v aplikaci znamená
+	// „neměří se", takže to vypadalo, že u většiny aplikací GPU chybí.
+	const gpuMeri = $derived(histProcs != null || system?.gpu_pct != null);
+	const fmtGpu = (v) => (!gpuMeri || v == null ? '—' : `${v.toFixed(1)} %`);
 	function fmtClock(unix) {
 		return new Date(unix * 1000).toLocaleTimeString('cs-CZ');
 	}
@@ -1616,9 +1626,9 @@
 								<td class="t-num value-mono">{single ? g.children[0].pid : ''}</td>
 								<td class="t-num value-mono">{g.sys_pct.toFixed(1)} %</td>
 								<td class="t-num value-mono">{g.cpu_pct.toFixed(1)} %</td>
-								<td class="t-num value-mono">{g.gpu_pct > 0.05 ? `${g.gpu_pct.toFixed(1)} %` : '—'}</td>
+								<td class="t-num value-mono">{fmtGpu(g.gpu_pct)}</td>
 								<td class="t-num value-mono">{fmtMem(g.ws_bytes)}</td>
-								<td class="t-num value-mono">{g.disk_bps > 0 ? fmtBps(g.disk_bps) : '—'}</td>
+								<td class="t-num value-mono">{fmtBps(g.disk_bps)}</td>
 								<td class="t-num value-mono">{g.threads || '—'}</td>
 							</tr>
 							{#if !single && open}
@@ -1630,9 +1640,9 @@
 										<td class="t-num value-mono">{p.pid}</td>
 										<td class="t-num value-mono">{p.sys_pct.toFixed(1)} %</td>
 										<td class="t-num value-mono">{p.cpu_pct.toFixed(1)} %</td>
-										<td class="t-num value-mono">{p.gpu_pct > 0.05 ? `${p.gpu_pct.toFixed(1)} %` : '—'}</td>
+										<td class="t-num value-mono">{fmtGpu(p.gpu_pct)}</td>
 										<td class="t-num value-mono">{fmtMem(p.ws_bytes)}</td>
-										<td class="t-num value-mono">{p.disk_bps > 0 ? fmtBps(p.disk_bps) : '—'}</td>
+										<td class="t-num value-mono">{fmtBps(p.disk_bps)}</td>
 										<td class="t-num value-mono">{p.threads ?? '—'}</td>
 									</tr>
 								{/each}
@@ -1674,9 +1684,9 @@
 								<td class="t-num value-mono">{p.pid}</td>
 								<td class="t-num value-mono">{p.sys_pct.toFixed(1)} %</td>
 								<td class="t-num value-mono">{p.cpu_pct.toFixed(1)} %</td>
-								<td class="t-num value-mono">{p.gpu_pct > 0.05 ? `${p.gpu_pct.toFixed(1)} %` : '—'}</td>
+								<td class="t-num value-mono">{fmtGpu(p.gpu_pct)}</td>
 								<td class="t-num value-mono">{fmtMem(p.ws_bytes)}</td>
-								<td class="t-num value-mono">{p.disk_bps > 0 ? fmtBps(p.disk_bps) : '—'}</td>
+								<td class="t-num value-mono">{fmtBps(p.disk_bps)}</td>
 								<td class="t-num value-mono">{p.threads ?? '—'}</td>
 							</tr>
 						{:else}
