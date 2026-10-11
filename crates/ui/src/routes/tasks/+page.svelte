@@ -890,6 +890,40 @@
 	const fmtGpu = (v) => (!gpuMeri || v == null ? '—' : `${v.toFixed(1)} %`);
 	// VRAM procesu v MB; pomlčka = čítač není, nebo náhled historie.
 	const fmtVram = (mb) => (mb == null ? '—' : fmtMem(mb * 1024 * 1024));
+
+	// Barvy čísel v tabulce. Stejné zastávky jako graf (55 / 75 / 90 %),
+	// jen místo zelené zůstává výchozí barva buňky — barevně tak vystoupí
+	// jen to, co už je v oranžové a červené. Nula je zešedlá, ať se oko
+	// zastaví u řádků, které něco dělají.
+	const TEXT_C = [154, 154, 161]; // --text-dim, výchozí barva buňky
+	// Nula tak, jak ji tabulka napíše: „0.0 %", „0.0 MB", „0 kB/s", „0".
+	const NULA = /^0(\.0+)?( |$)/;
+	function barvaBunky(text, pct) {
+		if (NULA.test(text)) return 'var(--text-faint)';
+		if (pct == null || pct <= 55 || text === '—') return null;
+		if (pct <= 75) return rgb(lerpC(TEXT_C, WARN_C, (pct - 55) / 20));
+		if (pct <= 90) return rgb(lerpC(WARN_C, DANGER_C, (pct - 75) / 15));
+		return rgb(DANGER_C);
+	}
+	// Číselné buňky řádku (Sys … Vlákna) s textem i barvou — jedna
+	// funkce pro aplikace, jejich procesy i plochý seznam, ať se tři
+	// varianty řádku nerozejdou. Procenta pro barvu: zátěž přímo, paměť
+	// a VRAM jako podíl z celku (stejně jako graf RAM); I/O a vlákna
+	// žádný celek nemají, ty jen šednou v nule.
+	function bunky(r, skupina) {
+		const pamet = (system?.mem_total_mb ?? 0) * 1024 * 1024;
+		const vram = system?.gpu?.vram_total_mb;
+		const b = (text, pct) => ({ text, barva: barvaBunky(text, pct) });
+		return [
+			b(`${r.sys_pct.toFixed(1)} %`, r.sys_pct),
+			b(`${r.cpu_pct.toFixed(1)} %`, r.cpu_pct),
+			b(fmtGpu(r.gpu_pct), r.gpu_pct),
+			b(fmtVram(r.vram_mb), r.vram_mb != null && vram ? (r.vram_mb / vram) * 100 : null),
+			b(fmtMem(r.ws_bytes), pamet > 0 ? (r.ws_bytes / pamet) * 100 : null),
+			b(fmtBps(r.disk_bps), null),
+			b(String(skupina ? r.threads || '—' : (r.threads ?? '—')), null)
+		];
+	}
 	function fmtClock(unix) {
 		return new Date(unix * 1000).toLocaleTimeString('cs-CZ');
 	}
@@ -1620,11 +1654,11 @@
 				</colgroup>
 				<thead>
 					<tr>
-						<th class="t-dot" onclick={() => setSort('sys_pct')} title="Zátěž systému"></th>
-						<th class="t-name" onclick={() => setSort('name')}>
+						<th class="t-dot" class:serazeno={sortKey === 'sys_pct'} onclick={() => setSort('sys_pct')} title="Zátěž systému"></th>
+						<th class="t-name" class:serazeno={sortKey === 'name'} onclick={() => setSort('name')}>
 							{viewMode === 'apps' ? 'Aplikace' : 'Proces'} {#if sortKey === 'name'}{arrow}{/if}
 						</th>
-						<th class="t-pub" onclick={() => setSort('publisher')}>
+						<th class="t-pub" class:serazeno={sortKey === 'publisher'} onclick={() => setSort('publisher')}>
 							Vydavatel {#if sortKey === 'publisher'}{arrow}{/if}
 						</th>
 						<!-- PID má proces, ne aplikace. V seskupeném pohledu je
@@ -1634,37 +1668,40 @@
 						<th
 							class="t-num"
 							class:dead={viewMode === 'apps'}
+							class:serazeno={sortKey === 'pid' && viewMode !== 'apps'}
 							onclick={() => viewMode !== 'apps' && setSort('pid')}
 						>
 							PID {#if sortKey === 'pid' && viewMode !== 'apps'}{arrow}{/if}
 						</th>
-						<th class="t-num" onclick={() => setSort('sys_pct')}>
+						<th class="t-num" class:serazeno={sortKey === 'sys_pct'} onclick={() => setSort('sys_pct')}>
 							Sys {#if sortKey === 'sys_pct'}{arrow}{/if}
 						</th>
-						<th class="t-num" onclick={() => setSort('cpu_pct')}>
+						<th class="t-num" class:serazeno={sortKey === 'cpu_pct'} onclick={() => setSort('cpu_pct')}>
 							CPU {#if sortKey === 'cpu_pct'}{arrow}{/if}
 						</th>
-						<th class="t-num" onclick={() => setSort('gpu_pct')} title="Využití GPU procesem (PDH GPU Engine)">
+						<th class="t-num" class:serazeno={sortKey === 'gpu_pct'} onclick={() => setSort('gpu_pct')} title="Využití GPU procesem (PDH GPU Engine)">
 							GPU {#if sortKey === 'gpu_pct'}{arrow}{/if}
 						</th>
 						<th
 							class="t-num"
+							class:serazeno={sortKey === 'vram_mb'}
 							onclick={() => setSort('vram_mb')}
 							title="VRAM, kterou proces drží v paměti karty. Sdílené alokace se počítají u každého procesu, který je používá. Jen živě — do historie se neukládá."
 						>
 							VRAM {#if sortKey === 'vram_mb'}{arrow}{/if}
 						</th>
-						<th class="t-num" onclick={() => setSort('ws_bytes')}>
+						<th class="t-num" class:serazeno={sortKey === 'ws_bytes'} onclick={() => setSort('ws_bytes')}>
 							Paměť {#if sortKey === 'ws_bytes'}{arrow}{/if}
 						</th>
 						<th
 							class="t-num"
+							class:serazeno={sortKey === 'disk_bps'}
 							onclick={() => setSort('disk_bps')}
 							title="Veškeré I/O procesu (disk, pipe, zařízení) — jako Správce úloh v detailech"
 						>
 							I/O {#if sortKey === 'disk_bps'}{arrow}{/if}
 						</th>
-						<th class="t-num" onclick={() => setSort('threads')}>
+						<th class="t-num" class:serazeno={sortKey === 'threads'} onclick={() => setSort('threads')}>
 							Vlákna {#if sortKey === 'threads'}{arrow}{/if}
 						</th>
 					</tr>
@@ -1704,13 +1741,9 @@
 									{#if g.publisher}<span class="pub label-tech">{g.publisher}</span>{/if}
 								</td>
 								<td class="t-num value-mono">{single ? g.children[0].pid : ''}</td>
-								<td class="t-num value-mono">{g.sys_pct.toFixed(1)} %</td>
-								<td class="t-num value-mono">{g.cpu_pct.toFixed(1)} %</td>
-								<td class="t-num value-mono">{fmtGpu(g.gpu_pct)}</td>
-								<td class="t-num value-mono">{fmtVram(g.vram_mb)}</td>
-								<td class="t-num value-mono">{fmtMem(g.ws_bytes)}</td>
-								<td class="t-num value-mono">{fmtBps(g.disk_bps)}</td>
-								<td class="t-num value-mono">{g.threads || '—'}</td>
+								{#each bunky(g, true) as b, i (i)}
+									<td class="t-num value-mono" style:color={b.barva}>{b.text}</td>
+								{/each}
 							</tr>
 							{#if !single && open}
 								{#each g.children as p (p.pid)}
@@ -1719,13 +1752,9 @@
 										<td class="t-name child-name">{p.name}</td>
 										<td class="t-pub"></td>
 										<td class="t-num value-mono">{p.pid}</td>
-										<td class="t-num value-mono">{p.sys_pct.toFixed(1)} %</td>
-										<td class="t-num value-mono">{p.cpu_pct.toFixed(1)} %</td>
-										<td class="t-num value-mono">{fmtGpu(p.gpu_pct)}</td>
-										<td class="t-num value-mono">{fmtVram(p.vram_mb)}</td>
-										<td class="t-num value-mono">{fmtMem(p.ws_bytes)}</td>
-										<td class="t-num value-mono">{fmtBps(p.disk_bps)}</td>
-										<td class="t-num value-mono">{p.threads ?? '—'}</td>
+										{#each bunky(p, false) as b, i (i)}
+											<td class="t-num value-mono" style:color={b.barva}>{b.text}</td>
+										{/each}
 									</tr>
 								{/each}
 							{/if}
@@ -1764,13 +1793,9 @@
 									{#if p.publisher}<span class="pub label-tech">{p.publisher}</span>{/if}
 								</td>
 								<td class="t-num value-mono">{p.pid}</td>
-								<td class="t-num value-mono">{p.sys_pct.toFixed(1)} %</td>
-								<td class="t-num value-mono">{p.cpu_pct.toFixed(1)} %</td>
-								<td class="t-num value-mono">{fmtGpu(p.gpu_pct)}</td>
-								<td class="t-num value-mono">{fmtVram(p.vram_mb)}</td>
-								<td class="t-num value-mono">{fmtMem(p.ws_bytes)}</td>
-								<td class="t-num value-mono">{fmtBps(p.disk_bps)}</td>
-								<td class="t-num value-mono">{p.threads ?? '—'}</td>
+								{#each bunky(p, false) as b, i (i)}
+									<td class="t-num value-mono" style:color={b.barva}>{b.text}</td>
+								{/each}
 							</tr>
 						{:else}
 							<tr>
@@ -2102,6 +2127,12 @@
 	}
 	thead th:hover {
 		color: var(--text-dim);
+	}
+	/* Sloupec, podle kterého se teď řadí — bíle, ať je vidět bez hledání
+	   šipky. */
+	thead th.serazeno,
+	thead th.serazeno:hover {
+		color: var(--text);
 	}
 	td {
 		padding: 0.34rem 1rem;

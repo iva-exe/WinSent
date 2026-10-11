@@ -20,8 +20,12 @@
 	// ── teploty ──────────────────────────────────────────────────────
 	let teploty = $derived.by(() => {
 		const out = [];
+		// Procesor živě ze snímku jako grafika (PawnIO, každou sekundu);
+		// hardwarový přehled jen jako záloha (ACPI), ten chodí zřídka.
+		const cpuZiva = data.system?.cpu_temp_c;
 		const cpu = hw?.cpu_thermal;
-		if (cpu?.celsius != null) out.push({ co: 'Procesor', c: cpu.celsius, zdroj: cpu.temp_source });
+		if (cpuZiva != null) out.push({ co: 'Procesor', c: cpuZiva, zdroj: 'PawnIO' });
+		else if (cpu?.celsius != null) out.push({ co: 'Procesor', c: cpu.celsius, zdroj: cpu.temp_source });
 		// Teplota grafiky je z NVML, nebo (AMD/Intel, NVML bez teploty)
 		// z D3DKMT; snímek zdroj nenese, obojí ale čte ovladač karty.
 		const gpu = data.system?.gpu?.temp_c;

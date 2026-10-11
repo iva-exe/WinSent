@@ -475,6 +475,11 @@
 					);
 				}
 			}
+			// Teplota CPU v okamžiku incidentu (jen když ji tehdy dával PawnIO).
+			if (x.detail.cpu_temp_c != null) {
+				L.push('');
+				L.push(`CPU teplota:   ${Math.round(x.detail.cpu_temp_c)} °C`);
+			}
 			if (x.detail.gpu) {
 				const g = x.detail.gpu;
 				L.push('');

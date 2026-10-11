@@ -149,6 +149,8 @@
 	<span class="w-sub">
 		{s?.cpu_clock_mhz ? `${(s.cpu_clock_mhz / 1000).toFixed(2)} GHz` : ''}
 		{#if s?.cpu_clock_max_mhz}<span class="w-dim"> / {(s.cpu_clock_max_mhz / 1000).toFixed(1)}</span>{/if}
+		<!-- Teplota jako u grafiky (jen z PawnIO, jinak se nepíše nic). -->
+		{#if s?.cpu_temp_c != null}· {Math.round(s.cpu_temp_c)} °C{/if}
 	</span>
 	{#if siroka}<MiniGraf values={serie.cpu} vyska={34} barva="var(--ok)" />{/if}
 {:else if typ === 'ram'}

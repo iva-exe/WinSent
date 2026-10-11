@@ -595,7 +595,15 @@
 								     záznamu se řádek naopak vynechává. -->
 								<div>
 									<dt>Teplota</dt>
-									{#if hw?.cpu_thermal?.celsius != null}
+									<!-- Živě ze snímku (PawnIO, každou sekundu) jako teplota
+									     GPU; hardwarový přehled jen jako záloha (ACPI), ten
+									     se skládá jednou za čas. -->
+									{#if sys?.cpu_temp_c != null}
+										<dd>
+											{Math.round(sys.cpu_temp_c)} °C
+											<span class="note-v">zdroj: PawnIO</span>
+										</dd>
+									{:else if hw?.cpu_thermal?.celsius != null}
 										<dd>
 											{Math.round(hw.cpu_thermal.celsius)} °C
 											<span class="note-v">zdroj: {hw.cpu_thermal.temp_source}</span>
@@ -615,6 +623,12 @@
 						</div>
 						<div class="side">
 							<span class="metric">{sys ? Math.round(sys.cpu_pct) : '—'}<small>%</small></span>
+							<!-- Stejná pilulka jako teplota grafiky. -->
+							{#if sys?.cpu_temp_c != null}
+								<span class="pill {tempClass(sys.cpu_temp_c, 75, 88)}"
+									>{Math.round(sys.cpu_temp_c)} °C</span
+								>
+							{/if}
 							{#if hw?.cpu_thermal?.throttling}
 								<span class="pill warn">běží pod maximem</span>
 							{:else}
