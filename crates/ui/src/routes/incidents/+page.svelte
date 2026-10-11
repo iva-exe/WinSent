@@ -19,6 +19,7 @@
 		ChevronRight
 	} from 'lucide-svelte';
 	import Sparkline from '$lib/Sparkline.svelte';
+	import { barvaBunky, TEXT_JASNY, fmtMem, fmtBps } from '$lib/barvy.js';
 
 	let incidents = $state([]);
 	let selected = $state(null);
@@ -43,6 +44,25 @@
 		cpu: 'saturace CPU',
 		unknown: 'neznámá příčina (typicky ovladač/DPC)'
 	};
+
+	// Hodnota u top procesu záseku. Služba ji ukládá jako holé číslo
+	// podle metriky příčiny (svc/incidents.rs, classify_stall): paging =
+	// pracovní sada v bajtech, io = čtení + zápis v B/s, jinak CPU %.
+	// Dřív se psala bez jednotky — „7340032000" u záseku z pagingu
+	// nikomu nic neřeklo.
+	function hodnotaTop(cause, v) {
+		if (v == null) return '—';
+		if (cause === 'paging') return fmtMem(v);
+		if (cause === 'io') return fmtBps(v);
+		return `${v} %`;
+	}
+	// Barva jako v tabulce Tasks: procenta CPU podle zátěže, bajty
+	// a rychlosti celek nemají (paměť z doby záseku neznáme), ty jen
+	// šednou v nule. Výchozí barva seznamu je ale jasná --text, ne
+	// ztlumená buňka Tasks — přechod do oranžové proto začíná z ní.
+	function barvaTop(cause, text, v) {
+		return barvaBunky(text, cause === 'paging' || cause === 'io' ? null : v, TEXT_JASNY);
+	}
 
 	function parseDetail(i) {
 		try {
@@ -419,7 +439,7 @@
 			if (d.top?.length) {
 				L.push('');
 				L.push('Nejnáročnější procesy v okně:');
-				for (const t of d.top) L.push(`  ${String(t.pid).padStart(6)}  ${t.name || '(bez jména)'}  ${t.value}`);
+				for (const t of d.top) L.push(`  ${String(t.pid).padStart(6)}  ${t.name || '(bez jména)'}  ${hodnotaTop(d.cause, t.value)}`);
 			}
 			L.push('');
 			L.push('Surový detail (JSON):');
@@ -431,13 +451,15 @@
 		L.push('-'.repeat(60));
 		const pts = x?.points ?? [];
 		if (pts.length > 1) {
-			L.push('čas                     CPU%   RAM MB   síť dolů B/s   síť nahoru B/s');
+			// GPU% jako v záznamu o počítači; pomlčka = stroj GPU nehlásil.
+			L.push('čas                     CPU%   RAM MB  GPU%   síť dolů B/s   síť nahoru B/s');
 			for (const p of pts) {
 				L.push(
 					[
 						fmtTs(p.ts).padEnd(22),
 						String(Math.round(p.cpu_pct)).padStart(5),
 						String(p.mem_used_mb).padStart(8),
+						String(p.gpu_pct == null ? '—' : Math.round(p.gpu_pct)).padStart(5),
 						String(p.net_rx_bps).padStart(14),
 						String(p.net_tx_bps).padStart(15)
 					].join(' ')
@@ -476,17 +498,21 @@
 				}
 			}
 			// Teplota CPU v okamžiku incidentu (jen když ji tehdy dával PawnIO).
+			// Blok stejného tvaru jako GPU, ať čtenář najde obě teploty
+			// pod stejným popiskem. Zaokrouhleno: starší vzorky jsou průměry
+			// z kaskády a psaly by „45.333332 °C".
 			if (x.detail.cpu_temp_c != null) {
 				L.push('');
-				L.push(`CPU teplota:   ${Math.round(x.detail.cpu_temp_c)} °C`);
+				L.push('CPU:');
+				L.push(`  teplota:     ${Math.round(x.detail.cpu_temp_c)} °C`);
 			}
 			if (x.detail.gpu) {
 				const g = x.detail.gpu;
 				L.push('');
 				L.push('GPU:');
-				L.push(`  teplota:     ${g.temp_c ?? '—'} °C`);
+				L.push(`  teplota:     ${g.temp_c != null ? Math.round(g.temp_c) : '—'} °C`);
 				L.push(`  VRAM:        ${g.vram_used_mb ?? '—'} / ${g.vram_total_mb ?? '—'} MB`);
-				L.push(`  spotřeba:    ${g.power_w ?? '—'} W`);
+				L.push(`  spotřeba:    ${g.power_w != null ? g.power_w.toFixed(1) : '—'} W`);
 				L.push(`  takt:        ${g.clock_mhz ?? '—'} MHz`);
 			}
 		}
@@ -496,7 +522,8 @@
 			L.push('VŠECHNY PROCESY V OKAMŽIKU INCIDENTU');
 			L.push('-'.repeat(60));
 			L.push(`(vzorek z ${fmtTs(x.procsTs ?? row.ts)}, ${x.procs.length} procesů)`);
-			L.push('   PID  název                          CPU%      RAM MB   čtení B/s  zápis B/s');
+			// GPU% jako v Tasks při zámku času; VRAM historie neukládá.
+			L.push('   PID  název                          CPU%   GPU%      RAM MB   čtení B/s  zápis B/s');
 			for (const p of x.procs) {
 				L.push(
 					[
@@ -504,6 +531,7 @@
 						'  ',
 						(p.name ?? '').padEnd(30).slice(0, 30),
 						String((p.cpu_pct ?? 0).toFixed(1)).padStart(5),
+						(p.gpu_pct == null ? '—' : p.gpu_pct.toFixed(1)).padStart(7),
 						String(Math.round((p.ws_bytes ?? 0) / 1048576)).padStart(12),
 						String(p.disk_r_bps ?? 0).padStart(12),
 						String(p.disk_w_bps ?? 0).padStart(11)
@@ -548,9 +576,12 @@
 				const podMax = h.cpu_thermal.throttling
 					? ' — takt je teď pod maximem (v klidu běžné úsporné řízení, o přehřívání to nic neříká)'
 					: '';
-				L.push(
-					`Teplota CPU: ${h.cpu_thermal.celsius ?? '—'} °C (zdroj: ${h.cpu_thermal.temp_source}), takt ${h.cpu_thermal.clock_mhz ?? '?'}/${h.cpu_thermal.max_mhz ?? '?'} MHz${podMax}`
-				);
+				// Teplota jen když ji někdo hlásí, zaokrouhlená — stejně jako
+				// v záznamu o počítači (pcreport.js). „— °C" nebyl údaj, jen šum.
+				const c = h.cpu_thermal;
+				const teplota =
+					c.celsius != null ? `teplota ${Math.round(c.celsius)} °C (zdroj: ${c.temp_source}), ` : '';
+				L.push(`CPU: ${teplota}takt ${c.clock_mhz ?? '?'}/${c.max_mhz ?? '?'} MHz${podMax}`);
 			}
 			for (const d of h.disks ?? []) {
 				L.push(
@@ -669,9 +700,21 @@
 		}
 	}
 
+	// Celková RAM pro graf v detailu. Body historie celek nenesou, takže
+	// jednou živý snímek, jako to dělá Tasks; mezi incidenty se nemění.
+	let memTotalMb = $state(null);
+	async function loadMemTotal() {
+		try {
+			memTotalMb = (await invoke('query_system'))?.mem_total_mb || null;
+		} catch {
+			/* bez celku se škáluje k maximu okna jako dřív */
+		}
+	}
+
 	onMount(() => {
 		load();
 		loadCrashes();
+		loadMemTotal();
 		const want = Number(new URLSearchParams(window.location.search).get('id'));
 		if (Number.isFinite(want) && want > 0) {
 			history.replaceState(null, '', '/incidents');
@@ -896,10 +939,11 @@
 						<h3 class="sec">Top procesy v okně</h3>
 						<ul class="top">
 							{#each d.top as t (t.pid)}
+								{@const text = hodnotaTop(d.cause, t.value)}
 								<li>
 									<span class="mono dim">{t.pid}</span>
 									<span>{t.name || '(bez jména)'}</span>
-									<span class="mono">{t.value}</span>
+									<span class="mono" style:color={barvaTop(d.cause, text, t.value)}>{text}</span>
 								</li>
 							{/each}
 						</ul>
@@ -908,7 +952,11 @@
 
 					<h3 class="sec">Co dělal počítač v tu chvíli</h3>
 					{#if windowPoints.length > 1}
-						{@const maxMem = Math.max(...windowPoints.map((p) => p.mem_used_mb), 1)}
+						<!-- RAM v procentech z celé paměti, jako graf RAM v Tasks.
+						     Maximum okna je jen záloha, když celek nepřišel: s ním
+						     vrchol okna vždycky došel na 100 % a zčervenal, i když
+						     byla paměť obsazená z pětiny. -->
+						{@const memCelek = memTotalMb || Math.max(...windowPoints.map((p) => p.mem_used_mb), 1)}
 						{@const maxNet = Math.max(
 							...windowPoints.map((p) => p.net_rx_bps + p.net_tx_bps),
 							1
@@ -924,19 +972,23 @@
 						<div class="spark">
 							<span class="spark-l">RAM</span>
 							<Sparkline
-								values={windowPoints.map((p) => (p.mem_used_mb / maxMem) * 100)}
+								values={windowPoints.map((p) => (p.mem_used_mb / memCelek) * 100)}
 								height={48}
 								marker={markerIdx}
 							/>
 						</div>
 						<div class="spark">
 							<span class="spark-l">Síť</span>
+							<!-- Síť zátěž není (nemá strop), škáluje se k maximu okna —
+							     proto jednou barvou stahování, ne gradientem, který by
+							     vrchol okna vždycky namaloval červeně. -->
 							<Sparkline
 								values={windowPoints.map(
 									(p) => ((p.net_rx_bps + p.net_tx_bps) / maxNet) * 100
 								)}
 								height={48}
 								marker={markerIdx}
+								barva="var(--net-down)"
 							/>
 						</div>
 						<div class="spark-range">

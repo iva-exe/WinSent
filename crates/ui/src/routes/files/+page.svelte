@@ -22,6 +22,7 @@
 	import SystemBadge from '$lib/SystemBadge.svelte';
 	import { systemPathInfo } from '$lib/mandatory.js';
 	import { prefs } from '$lib/prefs.svelte.js';
+	import { tempTrida, barvaTeploty } from '$lib/barvy.js';
 
 	let volumes = $state([]);
 	let health = $state([]);
@@ -51,6 +52,12 @@
 		if (h?.critical) return 'var(--danger)';
 		if ((h?.used_pct ?? 0) >= 80) return 'var(--warn)';
 		return 'var(--ok)';
+	}
+	// Teplota disku ze SMART — stejná stupnice jako Hardware a Home, ale
+	// barva až od varování. Řádek vedle je klidný údaj, ne ukazatel:
+	// zelená by tu jen přidala barvu k číslu, které je v pořádku.
+	function barvaTeplotyDisku(c) {
+		return tempTrida(c, 'disk') === 'cool' ? null : barvaTeploty(c, 'disk');
 	}
 
 	// Karty: fyzický disk + jeho svazky (spojené přes disk_index).
@@ -317,7 +324,7 @@
 							<Activity size={15} />
 							{100 - Math.min(d.health.used_pct ?? 0, 100)} % životnosti
 						</span>
-						<span class="d-h-item"><Thermometer size={15} /> {d.health.temp_c} °C</span>
+						<span class="d-h-item" style:color={barvaTeplotyDisku(d.health.temp_c)}><Thermometer size={15} /> {d.health.temp_c} °C</span>
 						<span class="d-h-item dim">{d.health.power_on_hours} h provozu</span>
 					{:else if d.key !== 'orphan'}
 						<span class="d-h-item dim">SMART nedostupný (SATA — doplní se)</span>

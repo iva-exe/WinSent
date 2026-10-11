@@ -29,7 +29,10 @@
 	// nahoře), takže výška bodu odpovídá jeho barvě.
 	// `marker` = index bodu, na kterém se vykreslí svislá linka (zámek
 	// času) — okno dat se předává tak, aby byl bod uprostřed.
-	let { values = [], height = 26, marker = null } = $props();
+	// `barva` (např. 'var(--net-down)') nahradí gradient jednou barvou
+	// pro křivky, které zátěž nejsou: síť nemá strop, a gradient by
+	// každou špičku okna maloval červeně, i kdyby šlo o pár kB/s.
+	let { values = [], height = 26, marker = null, barva = null } = $props();
 
 	let canvas;
 
@@ -59,13 +62,20 @@
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		if (values.length < 2) return;
 
-		// Gradient odspoda (0 %) nahoru (100 %) — zastávky jako hlavní graf.
-		const g = ctx.createLinearGradient(0, h, 0, 0);
-		g.addColorStop(0, cssVar('--ok') || '#4ade80');
-		g.addColorStop(0.55, cssVar('--ok') || '#4ade80');
-		g.addColorStop(0.75, cssVar('--warn') || '#f59e0b');
-		g.addColorStop(0.9, cssVar('--danger') || '#ef4444');
-		g.addColorStop(1, cssVar('--danger') || '#ef4444');
+		let g;
+		if (barva) {
+			// Plná barva; `var(--x)` se čte z :root přes tutéž paměť.
+			const b = String(barva).trim();
+			g = b.startsWith('var(') ? cssVar(b.slice(4, -1).trim()) || '#888' : b;
+		} else {
+			// Gradient odspoda (0 %) nahoru (100 %) — zastávky jako hlavní graf.
+			g = ctx.createLinearGradient(0, h, 0, 0);
+			g.addColorStop(0, cssVar('--ok') || '#4ade80');
+			g.addColorStop(0.55, cssVar('--ok') || '#4ade80');
+			g.addColorStop(0.75, cssVar('--warn') || '#f59e0b');
+			g.addColorStop(0.9, cssVar('--danger') || '#ef4444');
+			g.addColorStop(1, cssVar('--danger') || '#ef4444');
+		}
 
 		ctx.beginPath();
 		const n = values.length;

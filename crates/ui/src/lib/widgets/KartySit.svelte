@@ -12,6 +12,7 @@
 	import { ikony, chciIkonu } from './ikony.svelte.js';
 	import { openMenu, akceKopirovat } from '$lib/itemmenu.svelte.js';
 	import { bps, pocet } from './pomoc.js';
+	import { barvaBunky } from '$lib/barvy.js';
 
 	// Rozměry přicházejí v jednotkách mřížky: šířka ve sloupcích,
 	// výška v řádcích (řádek je nízký, viz registr.js). Obsah se podle
@@ -35,6 +36,10 @@
 	$effect(() => {
 		for (const r of stahuji) chciIkonu(r.identity_key);
 	});
+	// Nula zešedne jako v tabulce Tasks, jinak zůstává barva směru.
+	// Aplikace, která jen odesílá, měla dřív ve sloupci stahování modrou
+	// „0", jako by něco stahovala. Celek síť nemá, takže jen tohle.
+	const barvaSmeru = (text, smer) => barvaBunky(text, null) ?? smer;
 
 	let souhrnSpojeni = $derived.by(() => ({
 		established: site.reduce((a, r) => a + r.established, 0),
@@ -117,12 +122,14 @@
 {:else if typ === 'stahuje'}
 	<ul class="w-list scroll">
 		{#each stahuji as r (r.identity_key)}
+			{@const rx = bps(r.rx_bps)}
+			{@const tx = bps(r.tx_bps)}
 			<li>
 				<button class="w-klik w-row" onclick={() => goto('/network?q=' + encodeURIComponent(r.app_name))}>
 					<AppIcon src={ikony[r.identity_key]} name={r.app_name} size={15} />
 					<span class="w-name">{r.app_name}</span>
-					<span class="w-mono" style:color="var(--net-down)">{bps(r.rx_bps)}</span>
-					{#if velka}<span class="w-mono" style:color="var(--net-up)">{bps(r.tx_bps)}</span>{/if}
+					<span class="w-mono" style:color={barvaSmeru(rx, 'var(--net-down)')}>{rx}</span>
+					{#if velka}<span class="w-mono" style:color={barvaSmeru(tx, 'var(--net-up)')}>{tx}</span>{/if}
 				</button>
 			</li>
 		{/each}

@@ -12,6 +12,7 @@
 	import { ikony, chciIkonu } from './ikony.svelte.js';
 	import { barvaZateze, bps, velikost, doba } from './pomoc.js';
 	import { zatezSystemu } from '$lib/sysload.js';
+	import { barvaBunky, fmtMem, fmtBps, ROZPOCET } from '$lib/barvy.js';
 
 	// Rozměry přicházejí v jednotkách mřížky: šířka ve sloupcích,
 	// výška v řádcích (řádek je nízký, viz registr.js). Obsah se podle
@@ -93,8 +94,11 @@
 		// „Systém" je totéž číslo, jaké má sloupec SYS v Tasks: procesor
 		// a podíl na paměti svázané dohromady. Aplikace, která drží osm
 		// gigabajtů a nepočítá, je pro stroj taky zátěž.
+		// Podíl na paměti zůstává na řádku i pro barvu hodnoty — paměť
+		// se barví podle celku jako v Tasks, ne podle gigabajtů.
 		for (const a of m.values()) {
-			a.sys = zatezSystemu([a.cpu, celkemB > 0 ? (a.ram / celkemB) * 100 : null]);
+			a.ramPct = celkemB > 0 ? (a.ram / celkemB) * 100 : null;
+			a.sys = zatezSystemu([a.cpu, a.ramPct]);
 		}
 		const out = [...m.values()].sort((a, b) => b[podle] - a[podle]);
 		// Kolik řádků se vejde, tolik se jich ukáže: dlaždice se dá
@@ -108,12 +112,22 @@
 		for (const a of zrouti) chciIkonu(a.key);
 	});
 
+	// Čísla ve stejném tvaru jako tabulka v Tasks — tatáž aplikace tam
+	// i tady musí mít totéž číslo (dřív GPU bez desetin a paměť
+	// desítkově, takže „1.6 GB" vedle tamních „1.50 GB").
 	function hodnotaZrouta(a) {
 		if (podle === 'sys') return `${a.sys.toFixed(1)} %`;
 		if (podle === 'cpu') return `${a.cpu.toFixed(1)} %`;
-		if (podle === 'ram') return velikost(a.ram);
-		if (podle === 'disk') return bps(a.disk);
-		return `${a.gpu.toFixed(0)} %`;
+		if (podle === 'ram') return fmtMem(a.ram);
+		if (podle === 'disk') return fmtBps(a.disk);
+		return `${a.gpu.toFixed(1)} %`;
+	}
+	// Barva jako buňka tabulky v Tasks: pod 55 % výchozí, výš do
+	// oranžové a červené, nula zešedne. Paměť podle podílu z celku,
+	// disk celek nemá — ten jen šedne v nule.
+	function barvaZrouta(a, text) {
+		const pct = podle === 'ram' ? a.ramPct : podle === 'disk' ? null : a[podle];
+		return barvaBunky(text, pct) ?? 'var(--text-dim)';
 	}
 
 	// ── disky ────────────────────────────────────────────────────────
@@ -172,7 +186,7 @@
 			{#if s.gpu?.vram_used_mb != null && s.gpu?.vram_total_mb}
 				{(s.gpu.vram_used_mb / 1024).toFixed(1)} / {(s.gpu.vram_total_mb / 1024).toFixed(0)} GB VRAM
 			{/if}
-			{#if s.gpu?.temp_c != null}· {s.gpu.temp_c} °C{/if}
+			{#if s.gpu?.temp_c != null}· {Math.round(s.gpu.temp_c)} °C{/if}
 		</span>
 		{#if siroka}<MiniGraf values={serie.gpu} vyska={34} barva="var(--warn)" />{/if}
 	{/if}
@@ -226,12 +240,13 @@
 	</div>
 	<ul class="w-list scroll">
 		{#each zrouti as a (a.key)}
+			{@const text = hodnotaZrouta(a)}
 			<li>
 				<button class="w-klik w-row" onclick={() => goto('/tasks?q=' + encodeURIComponent(a.name))}>
 					<AppIcon src={ikony[a.key]} name={a.name} size={15} />
 					<span class="w-name">{a.name}</span>
-					<span class="w-mono" style:color={podle === 'cpu' ? barvaZateze(a.cpu) : 'var(--text-dim)'}>
-						{hodnotaZrouta(a)}
+					<span class="w-mono" style:color={barvaZrouta(a, text)}>
+						{text}
 					</span>
 				</button>
 			</li>
@@ -275,11 +290,17 @@
 	</ul>
 {:else if typ === 'samotny'}
 	{@const u = data.samotny}
-	<span class="w-big" style:color={barvaZateze(u?.cpu_pct)}>
-		{u ? `${u.cpu_pct.toFixed(1)} %` : '—'}
+	<!-- Barva jen nad rozpočtem, jako v Nastavení. Gradient zátěže sem
+	     nepatří: Winsent na 2 % by byl „zelený", přitom je čtyřikrát
+	     nad tím, co slibuje. Čísla proto v tvaru z Nastavení (CPU na dvě
+	     desetiny, služba v binárních MB): s jednou desetinou a desítkovými
+	     MB by totéž „0.5 %" nebo „52 MB" bylo jednou bílé, jednou oranžové.
+	     Bez vzorku zůstává pomlčka ztlumená jako dřív. -->
+	<span class="w-big" style:color={u ? (u.cpu_pct > ROZPOCET.cpu_pct ? 'var(--warn)' : null) : 'var(--text-dim)'}>
+		{u ? `${u.cpu_pct.toFixed(2)} %` : '—'}
 	</span>
 	<span class="w-sub">
-		{#if u}služba {velikost(u.ws_bytes)} · databáze {velikost(u.db_bytes)}{/if}
+		{#if u}<span style:color={u.ws_bytes > ROZPOCET.ws_bytes ? 'var(--warn)' : null}>služba {fmtMem(u.ws_bytes)}</span> · databáze {velikost(u.db_bytes)}{/if}
 	</span>
 {/if}
 

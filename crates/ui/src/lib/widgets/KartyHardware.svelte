@@ -8,6 +8,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { data } from './data.svelte.js';
 	import { doba } from './pomoc.js';
+	import { barvaTeploty } from '$lib/barvy.js';
 
 	// Rozměry přicházejí v jednotkách mřížky: šířka ve sloupcích,
 	// výška v řádcích (řádek je nízký, viz registr.js). Obsah se podle
@@ -24,22 +25,20 @@
 		// hardwarový přehled jen jako záloha (ACPI), ten chodí zřídka.
 		const cpuZiva = data.system?.cpu_temp_c;
 		const cpu = hw?.cpu_thermal;
-		if (cpuZiva != null) out.push({ co: 'Procesor', c: cpuZiva, zdroj: 'PawnIO' });
-		else if (cpu?.celsius != null) out.push({ co: 'Procesor', c: cpu.celsius, zdroj: cpu.temp_source });
+		if (cpuZiva != null) out.push({ co: 'Procesor', c: cpuZiva, zdroj: 'PawnIO', druh: 'cpu' });
+		else if (cpu?.celsius != null) out.push({ co: 'Procesor', c: cpu.celsius, zdroj: cpu.temp_source, druh: 'cpu' });
 		// Teplota grafiky je z NVML, nebo (AMD/Intel, NVML bez teploty)
 		// z D3DKMT; snímek zdroj nenese, obojí ale čte ovladač karty.
 		const gpu = data.system?.gpu?.temp_c;
-		if (gpu != null) out.push({ co: 'Grafika', c: gpu, zdroj: 'ovladač GPU' });
+		if (gpu != null) out.push({ co: 'Grafika', c: gpu, zdroj: 'ovladač GPU', druh: 'gpu' });
 		for (const d of data.volumes?.health ?? []) {
-			if (d.temp_c != null) out.push({ co: d.model, c: d.temp_c, zdroj: 'SMART' });
+			if (d.temp_c != null) out.push({ co: d.model, c: d.temp_c, zdroj: 'SMART', druh: 'disk' });
 		}
 		return out;
 	});
-	function barvaTeploty(c) {
-		if (c >= 85) return 'var(--danger)';
-		if (c >= 70) return 'var(--warn)';
-		return 'var(--ok)';
-	}
+	// Barva podle druhu součástky ($lib/barvy.js) — disk má 60 °C už
+	// teplých, procesor ne. Dřív tu platilo 70/85 pro všechno a NVMe
+	// na 65 °C svítil zeleně, zatímco Hardware ho měl oranžově.
 
 	// ── obrazovky ────────────────────────────────────────────────────
 	// Jméno monitoru je u většiny sestav jen „Generic PnP Monitor",
@@ -98,7 +97,7 @@
 				<li class="w-row">
 					<span class="w-name">{t.co}</span>
 					<span class="w-sub">{t.zdroj}</span>
-					<span class="w-mono" style:color={barvaTeploty(t.c)}>{Math.round(t.c)} °C</span>
+					<span class="w-mono" style:color={barvaTeploty(t.c, t.druh)}>{Math.round(t.c)} °C</span>
 				</li>
 			{/each}
 		</ul>

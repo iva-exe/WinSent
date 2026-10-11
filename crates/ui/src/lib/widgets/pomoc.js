@@ -4,12 +4,14 @@
 // pět „1,2 GB" a šestá „1234 MB" — a rozdíl by nešel vysvětlit ničím
 // jiným než tím, kdo který widget psal.
 
-/// Barva podle zátěže v procentech. Stejné hranice jako v Tasks.
+import { colorForLoad } from '$lib/barvy.js';
+
+/// Barva podle zátěže v procentech — opravdu tentýž gradient jako
+/// v Tasks (55 / 75 / 90 %). Dřív tu byly vlastní schody bez zastávky
+/// na 75 % a komentář tvrdil shodu, kterou nic nehlídalo: 60 % bylo na
+/// Home plně oranžové, v Tasks ještě skoro zelené.
 export function barvaZateze(v) {
-	if (v == null) return 'var(--text-dim)';
-	if (v <= 55) return 'var(--ok)';
-	if (v <= 90) return 'var(--warn)';
-	return 'var(--danger)';
+	return colorForLoad(v);
 }
 
 /// Rychlost přenosu.

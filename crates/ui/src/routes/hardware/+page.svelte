@@ -22,6 +22,7 @@
 	import { describeProblem } from '$lib/devproblem.js';
 	import { CATEGORIES, categoryOf, hasVidPid } from '$lib/devcategory.js';
 	import { mergeSame } from '$lib/mergesame.js';
+	import { tempTrida } from '$lib/barvy.js';
 	import CategoryNav from '$lib/CategoryNav.svelte';
 	import {
 		AudioLines,
@@ -333,9 +334,8 @@
 		return (hw?.volumes ?? []).filter((v) => v.disk_index === index);
 	}
 
-	function tempClass(c, warn, hot) {
-		return c >= hot ? 'hot' : c >= warn ? 'warm' : 'cool';
-	}
+	// Třída teploty (cool/warm/hot) je z $lib/barvy.js — tytéž hranice
+	// jako dlaždice v Tasks a widget Teploty na Home.
 
 	// Rozbalené skupiny zařízení (klíč skupiny).
 	let openDevices = $state(new Set());
@@ -625,7 +625,7 @@
 							<span class="metric">{sys ? Math.round(sys.cpu_pct) : '—'}<small>%</small></span>
 							<!-- Stejná pilulka jako teplota grafiky. -->
 							{#if sys?.cpu_temp_c != null}
-								<span class="pill {tempClass(sys.cpu_temp_c, 75, 88)}"
+								<span class="pill {tempTrida(sys.cpu_temp_c, 'cpu')}"
 									>{Math.round(sys.cpu_temp_c)} °C</span
 								>
 							{/if}
@@ -720,7 +720,7 @@
 								<span class="metric">{Math.round(sys.gpu_pct)}<small>%</small></span>
 							{/if}
 							{#if live && sys?.gpu?.temp_c != null}
-								<span class="pill {tempClass(sys.gpu.temp_c, 75, 88)}"
+								<span class="pill {tempTrida(sys.gpu.temp_c, 'gpu')}"
 									>{Math.round(sys.gpu.temp_c)} °C</span
 								>
 							{:else if r.dev.problem_code}
@@ -767,7 +767,7 @@
 						</div>
 						<div class="side">
 							{#if r.disk.temp_c != null}
-								<span class="metric small {tempClass(r.disk.temp_c, 55, 70)}"
+								<span class="metric small {tempTrida(r.disk.temp_c, 'disk')}"
 									>{r.disk.temp_c}<small>°C</small></span
 								>
 							{/if}

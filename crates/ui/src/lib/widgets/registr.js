@@ -108,7 +108,7 @@ const SEZNAM = [
 	}),
 
 	// -- Tasks --------------------------------------------------------
-	w('cpu', 'CPU', 'Tasks', '/tasks', Cpu, 'vytížení procesoru a takt', KartyTasks, ['system'], [1, 2]),
+	w('cpu', 'CPU', 'Tasks', '/tasks', Cpu, 'vytížení procesoru, takt a teplota', KartyTasks, ['system'], [1, 2]),
 	w('ram', 'Paměť', 'Tasks', '/tasks', MemoryStick, 'kolik RAM je obsazené', KartyTasks, ['system'], [1, 2]),
 	w('gpu', 'GPU', 'Tasks', '/tasks', Zap, 'vytížení grafiky, VRAM a teplota', KartyTasks, ['system'], [1, 2]),
 	w('graf', 'Živý průběh', 'Tasks', '/tasks', ChartLine, 'posledních pár minut systému, CPU, RAM, GPU nebo sítě', KartyTasks, ['system'], [4, 4], { min: [2, 3] }),

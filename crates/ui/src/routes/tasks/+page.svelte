@@ -1,6 +1,7 @@
 <script>
 	import { invoke } from '@tauri-apps/api/core';
 	import { zatezSystemu } from '$lib/sysload.js';
+	import { colorForLoad, colorForTemp, barvaBunky, fmtMem, fmtBps } from '$lib/barvy.js';
 	import { openMenu, akceKopirovat, oddelovac } from '$lib/itemmenu.svelte.js';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
@@ -236,6 +237,13 @@
 				}
 			: system?.gpu
 	);
+	// VRAM jako podíl z celku — dlaždice se barví stejně jako „použito"
+	// u RAM. Celek historie nenese, bere se ze živého adaptéru (viz dGpu);
+	// null = celek neznámý, pak zůstane výchozí barva.
+	const dVramPct = $derived.by(() => {
+		const celkem = dGpu?.vram_total_mb ?? system?.gpu?.vram_total_mb;
+		return dGpu?.vram_used_mb != null && celkem ? (dGpu.vram_used_mb / celkem) * 100 : null;
+	});
 	// Hodnoty dlaždic System/RAM/Síť při zámku z hlavních bufferů.
 	const dIdx = $derived(pinned != null ? focusIdx : null);
 	const dCpuPct = $derived(dIdx != null ? cpu[dIdx] : system?.cpu_pct);
@@ -298,32 +306,6 @@
 	let coresHist = $state([]);
 	let peakDown = $state(0);
 	let peakUp = $state(0);
-
-	// Barva podle zátěže (0–100) — stejné zastávky jako gradient grafu.
-	const OK_C = [74, 222, 128];
-	const WARN_C = [245, 158, 11];
-	const DANGER_C = [239, 68, 68];
-	const TEMP_COLD = [124, 192, 255];
-
-	const lerpC = (c1, c2, t) => c1.map((v, i) => Math.round(v + (c2[i] - v) * t));
-	const rgb = (c) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
-
-	function colorForLoad(v) {
-		if (v == null) return 'var(--text-dim)';
-		if (v <= 55) return rgb(OK_C);
-		if (v <= 75) return rgb(lerpC(OK_C, WARN_C, (v - 55) / 20));
-		if (v <= 90) return rgb(lerpC(WARN_C, DANGER_C, (v - 75) / 15));
-		return rgb(DANGER_C);
-	}
-
-	// Teplota: světle modrá (chladno) → oranžová (střed) → červená (moc).
-	function colorForTemp(t) {
-		if (t == null) return 'var(--text-dim)';
-		if (t <= 35) return rgb(TEMP_COLD);
-		if (t <= 60) return rgb(lerpC(TEMP_COLD, WARN_C, (t - 35) / 25));
-		if (t <= 80) return rgb(lerpC(WARN_C, DANGER_C, (t - 60) / 20));
-		return rgb(DANGER_C);
-	}
 
 	// ── Tabulka: seřazené procesy (pořadí = vyhlazené hodnoty) ──
 	let displayRows = $state([]);
@@ -870,15 +852,6 @@
 		for (const k of keys) if (!iconUrls[k]) fetchIcon(k);
 	}
 
-	function fmtMem(bytes) {
-		const mb = bytes / (1024 * 1024);
-		return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`;
-	}
-	function fmtBps(v) {
-		if (v == null) return '—';
-		const mb = v / (1024 * 1024);
-		return mb >= 1 ? `${mb.toFixed(1)} MB/s` : `${(v / 1024).toFixed(0)} kB/s`;
-	}
 	const fmtPct = (v) => (v == null ? '—' : `${v.toFixed(1)} %`);
 
 	// GPU procesu: pomlčka JEN tam, kde hodnota opravdu není — počítač
@@ -891,20 +864,8 @@
 	// VRAM procesu v MB; pomlčka = čítač není, nebo náhled historie.
 	const fmtVram = (mb) => (mb == null ? '—' : fmtMem(mb * 1024 * 1024));
 
-	// Barvy čísel v tabulce. Stejné zastávky jako graf (55 / 75 / 90 %),
-	// jen místo zelené zůstává výchozí barva buňky — barevně tak vystoupí
-	// jen to, co už je v oranžové a červené. Nula je zešedlá, ať se oko
-	// zastaví u řádků, které něco dělají.
-	const TEXT_C = [154, 154, 161]; // --text-dim, výchozí barva buňky
-	// Nula tak, jak ji tabulka napíše: „0.0 %", „0.0 MB", „0 kB/s", „0".
-	const NULA = /^0(\.0+)?( |$)/;
-	function barvaBunky(text, pct) {
-		if (NULA.test(text)) return 'var(--text-faint)';
-		if (pct == null || pct <= 55 || text === '—') return null;
-		if (pct <= 75) return rgb(lerpC(TEXT_C, WARN_C, (pct - 55) / 20));
-		if (pct <= 90) return rgb(lerpC(WARN_C, DANGER_C, (pct - 75) / 15));
-		return rgb(DANGER_C);
-	}
+	// Barvy čísel v tabulce (barvaBunky v $lib/barvy.js): zastávky jako
+	// graf, jen pod 55 % výchozí barva buňky a nula zešedlá.
 	// Číselné buňky řádku (Sys … Vlákna) s textem i barvou — jedna
 	// funkce pro aplikace, jejich procesy i plochý seznam, ať se tři
 	// varianty řádku nerozejdou. Procenta pro barvu: zátěž přímo, paměť
@@ -1404,7 +1365,7 @@
 				{#if cpuTeplotaMeri}
 					<div class="tile">
 						<span class="label-tech">teplota</span>
-						<span class="tile-val value-mono" style:color={colorForTemp(dCpuTemp)}>
+						<span class="tile-val value-mono" style:color={colorForTemp(dCpuTemp, 'cpu')}>
 							<Num value={dCpuTemp} decimals={0} suffix=" °C" />
 						</span>
 					</div>
@@ -1501,7 +1462,7 @@
 				<div class="tiles">
 					<div class="tile">
 						<span class="label-tech">teplota</span>
-						<span class="tile-val value-mono" style:color={colorForTemp(dGpu.temp_c)}>
+						<span class="tile-val value-mono" style:color={colorForTemp(dGpu.temp_c, 'gpu')}>
 							<Num value={dGpu.temp_c} decimals={0} suffix=" °C" />
 						</span>
 					</div>
@@ -1516,7 +1477,7 @@
 					</div>
 					<div class="tile">
 						<span class="label-tech">vram</span>
-						<span class="tile-val value-mono">
+						<span class="tile-val value-mono" style:color={dVramPct != null ? colorForLoad(dVramPct) : null}>
 							{#if dGpu.vram_used_mb != null}
 								<Num value={dGpu.vram_used_mb / 1024} suffix=" GB" /> / {((dGpu.vram_total_mb ?? system?.gpu?.vram_total_mb ?? 0) / 1024).toFixed(0)} GB
 							{:else}—{/if}

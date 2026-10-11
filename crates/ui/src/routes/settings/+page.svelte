@@ -7,6 +7,7 @@
 	import Num from '$lib/Num.svelte';
 	import { prefs, setPref, prepniSekci } from '$lib/prefs.svelte.js';
 	import { SEKCE } from '$lib/sections.js';
+	import { ROZPOCET } from '$lib/barvy.js';
 
 	// Spouštění po přihlášení. Stav se čte ZE SYSTÉMU, ne z uloženého
 	// nastavení: uživatel může položku vypnout ve Správci úloh a
@@ -834,13 +835,13 @@
 			<div class="tiles">
 				<div class="tile">
 					<span class="label-tech">cpu</span>
-					<span class="val value-mono" class:over={usage.cpu_pct > 0.5}>
+					<span class="val value-mono" class:over={usage.cpu_pct > ROZPOCET.cpu_pct}>
 						<Num value={usage.cpu_pct} decimals={2} suffix=" %" />
 					</span>
 				</div>
 				<div class="tile">
 					<span class="label-tech">ram</span>
-					<span class="val value-mono" class:over={usage.ws_bytes > 50 * 1024 * 1024}>
+					<span class="val value-mono" class:over={usage.ws_bytes > ROZPOCET.ws_bytes}>
 						<Num value={usage.ws_bytes} format={fmtBytes} />
 					</span>
 				</div>

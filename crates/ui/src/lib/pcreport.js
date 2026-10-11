@@ -546,14 +546,20 @@ export function reportText(d) {
 	if (d.system) {
 		const s = d.system;
 		H('AKTUÁLNÍ ZATÍŽENÍ');
-		L.push(`CPU:        ${(s.cpu_pct ?? 0).toFixed(1)} %`);
+		// Živá teplota CPU u zátěže, jako ji má grafika o kus níž — dřív tu
+		// byla jen teplota grafiky. Jen když přišla: „— °C" by byl šum
+		// (viz HARDWARE). Sekce HARDWARE píše hodnotu z kaskády, obvykle
+		// tutéž o pár sekund jinde.
+		const cpuTeplota =
+			s.cpu_temp_c != null ? `, teplota ${Math.round(s.cpu_temp_c)} °C (PawnIO)` : '';
+		L.push(`CPU:        ${(s.cpu_pct ?? 0).toFixed(1)} %${cpuTeplota}`);
 		L.push(
 			`RAM:        ${s.mem_used_mb} / ${s.mem_total_mb} MB (${(((s.mem_used_mb ?? 0) / (s.mem_total_mb || 1)) * 100).toFixed(1)} %)`
 		);
 		L.push(`GPU:        ${s.gpu_pct != null ? s.gpu_pct.toFixed(1) + ' %' : '—'}`);
 		if (s.gpu) {
 			L.push(
-				`GPU detail: teplota ${s.gpu.temp_c ?? '—'} °C, VRAM ${s.gpu.vram_used_mb ?? '—'}/${s.gpu.vram_total_mb ?? '—'} MB, příkon ${s.gpu.power_w != null ? s.gpu.power_w.toFixed(1) : '—'} W, takt ${s.gpu.clock_mhz ?? '—'} MHz`
+				`GPU detail: teplota ${s.gpu.temp_c != null ? Math.round(s.gpu.temp_c) : '—'} °C, VRAM ${s.gpu.vram_used_mb ?? '—'}/${s.gpu.vram_total_mb ?? '—'} MB, příkon ${s.gpu.power_w != null ? s.gpu.power_w.toFixed(1) : '—'} W, takt ${s.gpu.clock_mhz ?? '—'} MHz`
 			);
 		}
 		L.push(`Síť:        ↓ ${s.net_rx_bps ?? 0} B/s   ↑ ${s.net_tx_bps ?? 0} B/s`);
@@ -1040,11 +1046,12 @@ export function reportText(d) {
 	// ── Procesy teď ──
 	if (d.procs?.length) {
 		H(`BĚŽÍCÍ PROCESY (${d.procs.length})`);
-		L.push('   PID  rodič  název                          CPU%    GPU%    RAM MB   čtení B/s   zápis B/s  vláken  aplikace');
+		// VRAM hned za GPU% jako v Tasks; pomlčka = čítač VRAM procesu není.
+		L.push('   PID  rodič  název                          CPU%    GPU%  VRAM MB    RAM MB   čtení B/s   zápis B/s  vláken  aplikace');
 		const sorted = [...d.procs].sort((a, b) => (b.cpu_pct ?? 0) - (a.cpu_pct ?? 0));
 		for (const p of sorted) {
 			L.push(
-				`${String(p.pid).padStart(6)} ${String(p.parent_pid).padStart(6)}  ${pad(p.name, 30)} ${num(p.cpu_pct, 6, 1)} ${num(p.gpu_pct, 6, 1)} ${num((p.ws_bytes ?? 0) / 1048576, 9, 0)} ${num(p.disk_r_bps, 11)} ${num(p.disk_w_bps, 11)} ${num(p.threads, 7)}  ${p.app_name ?? ''}`
+				`${String(p.pid).padStart(6)} ${String(p.parent_pid).padStart(6)}  ${pad(p.name, 30)} ${num(p.cpu_pct, 6, 1)} ${num(p.gpu_pct, 6, 1)} ${num(p.vram_mb, 8)} ${num((p.ws_bytes ?? 0) / 1048576, 9, 0)} ${num(p.disk_r_bps, 11)} ${num(p.disk_w_bps, 11)} ${num(p.threads, 7)}  ${p.app_name ?? ''}`
 			);
 		}
 	}
