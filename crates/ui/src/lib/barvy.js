@@ -56,6 +56,8 @@ export function colorForLoad(v) {
 //
 // Nula tak, jak ji tabulka napíše: „0.0 %", „0.0 MB", „0 kB/s", „0".
 const NULA = /^0(\.0+)?( |$)/;
+/// Je tenhle text tabulky nula? (Pro volbu „nula jako pomlčka".)
+export const jeNula = (text) => NULA.test(text);
 /// `null` = nechat výchozí barvu buňky. `pct` je zátěž přímo, u paměti
 /// podíl z celku; kde celek není (I/O, síť), stačí null — pak jen šedne nula.
 /// `zaklad` je tatáž výchozí barva v RGB. Přechod do oranžové musí začít

@@ -1,7 +1,8 @@
 <script>
 	import { invoke } from '@tauri-apps/api/core';
 	import { zatezSystemu } from '$lib/sysload.js';
-	import { colorForLoad, colorForTemp, barvaBunky, fmtMem, fmtBps } from '$lib/barvy.js';
+	import { colorForLoad, colorForTemp, barvaBunky, jeNula, fmtMem, fmtBps } from '$lib/barvy.js';
+	import { prefs } from '$lib/prefs.svelte.js';
 	import { openMenu, akceKopirovat, oddelovac } from '$lib/itemmenu.svelte.js';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
@@ -873,7 +874,11 @@
 	// žádný celek nemají, ty jen šednou v nule.
 	function bunky(r, skupina) {
 		const { pamet, vram } = podily(r);
-		const b = (text, pct) => ({ text, barva: barvaBunky(text, pct) });
+		// Volba z Nastavení: nula jako pomlčka (zešedlá jako nula).
+		const b = (text, pct) =>
+			prefs.nulaJakoPomlcka && jeNula(text)
+				? { text: '—', barva: 'var(--text-faint)' }
+				: { text, barva: barvaBunky(text, pct) };
 		return [
 			b(`${r.sys_pct.toFixed(1)} %`, r.sys_pct),
 			b(`${r.cpu_pct.toFixed(1)} %`, r.cpu_pct),
@@ -1459,6 +1464,9 @@
 			{/if}
 		{:else if mode === 'gpu'}
 			{#if dGpu}
+				<!-- Mřížka kvůli zarovnání: řada enginů končí tam, kde horní
+				     řada dlaždic (viz .gpu-mrizka). -->
+				<div class="gpu-mrizka">
 				<div class="tiles">
 					<div class="tile">
 						<span class="label-tech">teplota</span>
@@ -1515,7 +1523,8 @@
 					</div>
 				</div>
 				{#if dGpuEnginy.length}
-					<div class="tiles info-row">
+					<div class="gpu-oddelovac"></div>
+					<div class="tiles gpu-enginy">
 						{#each dGpuEnginy as [k, nazev] (k)}
 							<div class="tile">
 								<span class="label-tech">{nazev}</span>
@@ -1524,6 +1533,7 @@
 						{/each}
 					</div>
 				{/if}
+				</div>
 			{:else if pinned != null}
 				<p class="empty-note label-tech">pro zamčený čas nejsou gpu senzory v historii</p>
 			{:else}
@@ -2023,6 +2033,28 @@
 		margin-top: 0.8rem;
 		padding-top: 0.8rem;
 		border-top: 1px dotted var(--border-strong);
+	}
+	/* Detail GPU: řada enginů má stejnou šířku jako horní řada dlaždic.
+	   První sloupec mřížky se přizpůsobí horní řadě (fit-content, při
+	   úzkém okně nejvýš celá šířka) a dlaždice enginů ho rovným dílem
+	   vyplní. Oddělovač jde přes celou šířku jako u ostatních detailů. */
+	.gpu-mrizka {
+		display: grid;
+		grid-template-columns: fit-content(100%) 1fr;
+	}
+	.gpu-mrizka > .tiles {
+		grid-column: 1;
+	}
+	.gpu-oddelovac {
+		grid-column: 1 / -1;
+		margin-top: 0.8rem;
+		border-top: 1px dotted var(--border-strong);
+	}
+	.gpu-enginy {
+		padding-top: 0.8rem;
+	}
+	.gpu-enginy > .tile {
+		flex: 1 1 0;
 	}
 	.mod-sub {
 		text-transform: none;

@@ -539,6 +539,27 @@
 			</span>
 		</div>
 
+		<div class="row">
+			<span class="row-main">
+				<span class="row-name">Nuly v seznamu Tasks</span>
+				<span class="row-why">
+					Jako číslo, nebo pomlčkou — pak jsou na první pohled vidět jen procesy, které něco dělají.
+				</span>
+			</span>
+			<span class="row-act zoomy">
+				<button
+					class="zoom"
+					class:on={!prefs.nulaJakoPomlcka}
+					onclick={() => setPref('nulaJakoPomlcka', false)}>0.0 %</button
+				>
+				<button
+					class="zoom"
+					class:on={prefs.nulaJakoPomlcka}
+					onclick={() => setPref('nulaJakoPomlcka', true)}>—</button
+				>
+			</span>
+		</div>
+
 		<button
 			class="row opt"
 			role="switch"

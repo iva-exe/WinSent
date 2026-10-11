@@ -24,6 +24,12 @@ const DEFAULTS = {
 	// k náhledu.
 	showSystemStartup: false,
 
+	// Nulové hodnoty v seznamu Tasks: „0.0 %" (výchozí, jako Správce
+	// úloh), nebo pomlčka — pak jsou na první pohled vidět jen procesy,
+	// které něco dělají. Jen zobrazení; řazení i součty jdou dál
+	// z čísel.
+	nulaJakoPomlcka: false,
+
 	// Sekce, které se v aplikaci neukazují (cesty jako '/network').
 	// Je to čistě zobrazení: nic se tím nevypíná, služba měří dál
 	// a data zůstávají — jen se to, co uživatel nepoužívá, neplete
