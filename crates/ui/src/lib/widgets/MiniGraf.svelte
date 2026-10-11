@@ -22,6 +22,8 @@
 	// Škála: procentní režim má pevných 0–100 (jinak by 3% špička
 	// vypadala jako vytížený stroj), síťový režim se přizpůsobuje
 	// maximu v okně, protože absolutní strop u linky neexistuje.
+	import { GRADIENT_ZATEZE } from '$lib/barvy.js';
+
 	let {
 		/// Hodnoty zleva doprava; poslední je „teď". `null` = metrika,
 		/// kterou stroj v tom vzorku nehlásil.
@@ -36,7 +38,13 @@
 		/// dá natáhnout, takže pevná čísla by se rozešla).
 		vyska = 44,
 		/// Vyplnit plochu pod křivkou?
-		vypln = true
+		vypln = true,
+		/// Série je zátěž v procentech (CPU, RAM, GPU, systém): čára
+		/// i výplň v gradientu podle zátěže jako grafy v Tasks, `barva`
+		/// se nepoužije. Jedna barva na metriku dřív říkala něco jiného
+		/// než výška křivky — grafika byla oranžová i v klidu. Jen pro
+		/// skala 'pct': gradient leží na pevné ose 0–100.
+		zatez = false
 	} = $props();
 
 	let canvas;
@@ -64,6 +72,29 @@
 		return b || '#888';
 	}
 
+	// Gradient zátěže přes osu 0–100 %: od y hodnoty 0 (h − 1) k y
+	// hodnoty 100 (1), stejný převod jako u bodů křivky — barva čáry
+	// v každém místě odpovídá její výšce. Zastávky z $lib/barvy.js,
+	// průhlednost jako v LiveChart (čára plná, výplň 0.07).
+	function gradientZateze(ctx, h, alfa) {
+		const g = ctx.createLinearGradient(0, h - 1, 0, 1);
+		for (const [poloha, jmeno] of GRADIENT_ZATEZE) {
+			g.addColorStop(poloha, sAlfou(cssBarva(`var(--${jmeno})`), alfa));
+		}
+		return g;
+	}
+
+	// Hex z app.css (i tříznakový náhradní „#888") jako rgba. Připojit
+	// průhlednost za hex nejde u „#888" — z pěti znaků by byla neplatná
+	// barva a addColorStop by vyhodil výjimku.
+	function sAlfou(hex, alfa) {
+		if (alfa >= 1) return hex;
+		const v = hex.replace('#', '');
+		const n = parseInt(v.length === 3 ? v.replace(/./g, (c) => c + c) : v, 16);
+		return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alfa})`;
+	}
+
+	// `barvaCss` = null → gradient zátěže místo jedné barvy.
 	function krivka(ctx, data, w, h, max, barvaCss, plnit) {
 		if (data.length < 2) return;
 		const dx = w / (data.length - 1);
@@ -73,7 +104,7 @@
 			if (i === 0) ctx.moveTo(0, y);
 			else ctx.lineTo(i * dx, y);
 		});
-		ctx.strokeStyle = barvaCss;
+		ctx.strokeStyle = barvaCss ?? gradientZateze(ctx, h, 1);
 		ctx.lineWidth = 1.5;
 		ctx.lineJoin = 'round';
 		ctx.stroke();
@@ -81,10 +112,14 @@
 		ctx.lineTo(w, h);
 		ctx.lineTo(0, h);
 		ctx.closePath();
-		const g = ctx.createLinearGradient(0, 0, 0, h);
-		g.addColorStop(0, barvaCss + '38');
-		g.addColorStop(1, barvaCss + '00');
-		ctx.fillStyle = g;
+		if (barvaCss == null) {
+			ctx.fillStyle = gradientZateze(ctx, h, 0.07);
+		} else {
+			const g = ctx.createLinearGradient(0, 0, 0, h);
+			g.addColorStop(0, barvaCss + '38');
+			g.addColorStop(1, barvaCss + '00');
+			ctx.fillStyle = g;
+		}
 		ctx.fill();
 	}
 
@@ -124,7 +159,7 @@
 			max = Math.max(1, ...vse.map((v) => v ?? 0)) * 1.15;
 		}
 		if (values2) krivka(ctx, values2, w, h, max, cssBarva(barva2), false);
-		krivka(ctx, values, w, h, max, cssBarva(barva), vypln);
+		krivka(ctx, values, w, h, max, zatez ? null : cssBarva(barva), vypln);
 	});
 </script>
 

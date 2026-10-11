@@ -1,4 +1,5 @@
-// Barvy zátěže a teplot — a formát čísel, ze kterého se barva čte.
+// Barvy zátěže, teplot a stavu (disky, signál) — a formát čísel, ze
+// kterého se barva čte.
 //
 // Dřív si každé místo neslo vlastní stupnici: Home měl schody bez
 // zastávky na 75 %, Tasks gradient, a teplota procesoru 72 °C vyšla
@@ -19,12 +20,32 @@ export const TEXT_JASNY = [236, 236, 239];
 const lerpC = (c1, c2, t) => c1.map((v, i) => Math.round(v + (c2[i] - v) * t));
 const rgb = (c) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
 
+// ── zátěž ────────────────────────────────────────────────────────
+// Zastávky v procentech: do první zelená, ke druhé přechod do oranžové,
+// ke třetí do červené, nad ní červená. Čtou je čísla (colorForLoad,
+// barvaBunky) i grafy (GRADIENT_ZATEZE) — křivka má v dané výšce tutéž
+// barvu jako číslo se stejnou hodnotou. Dřív měl každý graf zastávky
+// opsané zvlášť a malé grafy na Home žádné.
+export const ZATEZ = [55, 75, 90];
+const [Z_OK, Z_WARN, Z_DANGER] = ZATEZ;
+
+/// Zastávky svislého gradientu grafů zátěže: [poloha na ose 0–100 %
+/// jako 0–1, barva]. Barva je jméno proměnné z app.css bez „--" — každý
+/// graf si ji čte po svém (průhlednost výplně se liší).
+export const GRADIENT_ZATEZE = [
+	[0, 'ok'],
+	[Z_OK / 100, 'ok'],
+	[Z_WARN / 100, 'warn'],
+	[Z_DANGER / 100, 'danger'],
+	[1, 'danger']
+];
+
 /// Barva podle zátěže (0–100) — stejné zastávky jako gradient grafu.
 export function colorForLoad(v) {
 	if (v == null) return 'var(--text-dim)';
-	if (v <= 55) return rgb(OK_C);
-	if (v <= 75) return rgb(lerpC(OK_C, WARN_C, (v - 55) / 20));
-	if (v <= 90) return rgb(lerpC(WARN_C, DANGER_C, (v - 75) / 15));
+	if (v <= Z_OK) return rgb(OK_C);
+	if (v <= Z_WARN) return rgb(lerpC(OK_C, WARN_C, (v - Z_OK) / (Z_WARN - Z_OK)));
+	if (v <= Z_DANGER) return rgb(lerpC(WARN_C, DANGER_C, (v - Z_WARN) / (Z_DANGER - Z_WARN)));
 	return rgb(DANGER_C);
 }
 
@@ -41,9 +62,9 @@ const NULA = /^0(\.0+)?( |$)/;
 /// z ní: v jasném seznamu by jinak 56 % vypadalo tmavší než 54 %.
 export function barvaBunky(text, pct, zaklad = TEXT_C) {
 	if (NULA.test(text)) return 'var(--text-faint)';
-	if (pct == null || pct <= 55 || text === '—') return null;
-	if (pct <= 75) return rgb(lerpC(zaklad, WARN_C, (pct - 55) / 20));
-	if (pct <= 90) return rgb(lerpC(WARN_C, DANGER_C, (pct - 75) / 15));
+	if (pct == null || pct <= Z_OK || text === '—') return null;
+	if (pct <= Z_WARN) return rgb(lerpC(zaklad, WARN_C, (pct - Z_OK) / (Z_WARN - Z_OK)));
+	if (pct <= Z_DANGER) return rgb(lerpC(WARN_C, DANGER_C, (pct - Z_WARN) / (Z_DANGER - Z_WARN)));
 	return rgb(DANGER_C);
 }
 
@@ -71,6 +92,67 @@ export function barvaTeploty(c, druh) {
 export function colorForTemp(c, druh = 'cpu') {
 	if (c == null) return 'var(--text-dim)';
 	return barvaTeploty(c, druh);
+}
+
+// ── stav: ok / warn / bad ────────────────────────────────────────
+// Plnost svazku, opotřebení SSD a síla signálu nejsou zátěž, ale stav:
+// tři schody bez přechodu. Třídy jsou tytéž, jaké mají stránky v CSS
+// (pilulky v Hardwaru, Connection), a barva se z nich bere z jedné
+// tabulky — pruh, pilulka i odznak v postranním panelu tak u téže
+// hodnoty říkají totéž. Dřív měl každý své hranice: odznak svítil
+// u 90% svazku oranžově vedle červeného pruhu, signál 65 % byl
+// v Connection zelený a na Home oranžový.
+const BARVA_STAVU = { ok: 'var(--ok)', warn: 'var(--warn)', bad: 'var(--danger)' };
+const PORADI_STAVU = ['ok', 'warn', 'bad'];
+
+/// 'ok' | 'warn' | 'bad' → barva.
+export function barvaStavu(t) {
+	return BARVA_STAVU[t];
+}
+
+/// Horší ze dvou stavů — odznak s plným svazkem i opotřebeným diskem
+/// svítí podle toho horšího.
+export function horsiStav(a, b) {
+	return PORADI_STAVU.indexOf(a) >= PORADI_STAVU.indexOf(b) ? a : b;
+}
+
+/// Plnost svazku v %: [varování, plno].
+export const ZAPLNENI = [75, 90];
+
+export function zaplneniTrida(pct) {
+	return pct >= ZAPLNENI[1] ? 'bad' : pct >= ZAPLNENI[0] ? 'warn' : 'ok';
+}
+
+export function barvaZaplneni(pct) {
+	return barvaStavu(zaplneniTrida(pct));
+}
+
+/// Opotřebení SSD ze SMART (used_pct, výrobcem odhadnutá spotřebovaná
+/// životnost): [varování, vyčerpáno]. `critical` jsou bity kritického
+/// varování NVMe — cokoli nenulového je problém bez ohledu na procenta.
+export const OPOTREBENI = [80, 100];
+
+/// `h` je záznam zdraví disku ze služby; chybějící údaj = v pořádku,
+/// jako dřív na všech místech.
+export function opotrebeniTrida(h) {
+	const u = h?.used_pct ?? 0;
+	return h?.critical || u >= OPOTREBENI[1] ? 'bad' : u >= OPOTREBENI[0] ? 'warn' : 'ok';
+}
+
+export function barvaOpotrebeni(h) {
+	return barvaStavu(opotrebeniTrida(h));
+}
+
+/// Síla signálu WiFi v %: [dobrý od, slabý pod]. Hranice jsou ze
+/// stránky Connection, která signál ukazuje jako hlavní údaj.
+export const SIGNAL = [60, 35];
+
+export function signalTrida(pct) {
+	return pct >= SIGNAL[0] ? 'ok' : pct >= SIGNAL[1] ? 'warn' : 'bad';
+}
+
+export function barvaSignalu(pct) {
+	return barvaStavu(signalTrida(pct));
 }
 
 // ── formát ───────────────────────────────────────────────────────

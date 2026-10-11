@@ -32,7 +32,12 @@
 	// `barva` (např. 'var(--net-down)') nahradí gradient jednou barvou
 	// pro křivky, které zátěž nejsou: síť nemá strop, a gradient by
 	// každou špičku okna maloval červeně, i kdyby šlo o pár kB/s.
+	import { GRADIENT_ZATEZE } from '$lib/barvy.js';
+
 	let { values = [], height = 26, marker = null, barva = null } = $props();
+
+	// Náhradní barvy, kdyby styly ještě nebyly načtené (hodnoty z app.css).
+	const NAHRADNI = { ok: '#4ade80', warn: '#f59e0b', danger: '#ef4444' };
 
 	let canvas;
 
@@ -68,13 +73,12 @@
 			const b = String(barva).trim();
 			g = b.startsWith('var(') ? cssVar(b.slice(4, -1).trim()) || '#888' : b;
 		} else {
-			// Gradient odspoda (0 %) nahoru (100 %) — zastávky jako hlavní graf.
+			// Gradient odspoda (0 %) nahoru (100 %) — zastávky z $lib/barvy.js,
+			// tytéž jako hlavní graf a malé grafy na Home.
 			g = ctx.createLinearGradient(0, h, 0, 0);
-			g.addColorStop(0, cssVar('--ok') || '#4ade80');
-			g.addColorStop(0.55, cssVar('--ok') || '#4ade80');
-			g.addColorStop(0.75, cssVar('--warn') || '#f59e0b');
-			g.addColorStop(0.9, cssVar('--danger') || '#ef4444');
-			g.addColorStop(1, cssVar('--danger') || '#ef4444');
+			for (const [poloha, jmeno] of GRADIENT_ZATEZE) {
+				g.addColorStop(poloha, cssVar(`--${jmeno}`) || NAHRADNI[jmeno]);
+			}
 		}
 
 		ctx.beginPath();

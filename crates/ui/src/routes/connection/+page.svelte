@@ -10,6 +10,8 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { openMenu, akceKopirovat, akceOtevritUmisteni, oddelovac } from '$lib/itemmenu.svelte.js';
 	import { Cable, Globe, Lock, LockOpen, Network, Wifi, WifiOff } from 'lucide-svelte';
+	// Hranice síly signálu (60 / 35 %) sdílí s dlaždicí na Home.
+	import { signalTrida } from '$lib/barvy.js';
 
 	let report = $state(null);
 	let loadError = $state('');
@@ -91,10 +93,6 @@
 	function sortIps(ips) {
 		return [...ips].sort((a, b) => a.includes(':') - b.includes(':'));
 	}
-
-	function signalClass(pct) {
-		return pct >= 60 ? 'ok' : pct >= 35 ? 'warn' : 'bad';
-	}
 </script>
 
 <div class="page">
@@ -163,7 +161,7 @@
 							</div>
 						</div>
 						<div class="side">
-							<span class="metric-sm {signalClass(c.signal_pct)}">{c.signal_pct} %</span>
+							<span class="metric-sm {signalTrida(c.signal_pct)}">{c.signal_pct} %</span>
 							<span class="pill quiet">signál</span>
 						</div>
 					</article>
@@ -185,7 +183,7 @@
 										{#if n.connected}<span class="tag">připojeno</span>{/if}
 									</td>
 									<td>
-										<span class="sig {signalClass(n.signal_pct)}">{n.signal_pct} %</span>
+										<span class="sig {signalTrida(n.signal_pct)}">{n.signal_pct} %</span>
 									</td>
 									<td class="dim">
 										{#if n.secured}

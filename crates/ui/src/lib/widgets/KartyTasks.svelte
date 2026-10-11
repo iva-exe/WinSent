@@ -46,12 +46,15 @@
 		serie.cpu.map((c, i) => zatezSystemu([c, ramPct[i], serie.gpu[i]]))
 	);
 	let sysTed = $derived(s ? zatezSystemu([s.cpu_pct, memPct, s.gpu_pct]) : null);
+	// Procentní metriky v gradientu zátěže jako grafy v Tasks (dřív
+	// každá svou barvou — CPU modře, grafika oranžově i v klidu). Síť
+	// zátěž není: drží barvu směru, jako všude jinde.
 	let grafData = $derived.by(() => {
-		if (metrika === 'sys') return { v: sysSerie, v2: null, skala: 'pct', barva: 'var(--ok)' };
-		if (metrika === 'cpu') return { v: serie.cpu, v2: null, skala: 'pct', barva: 'var(--net-down)' };
-		if (metrika === 'ram') return { v: ramPct, v2: null, skala: 'pct', barva: 'var(--net-up)' };
-		if (metrika === 'gpu') return { v: serie.gpu, v2: null, skala: 'pct', barva: 'var(--warn)' };
-		return { v: serie.rx, v2: serie.tx, skala: 'auto', barva: 'var(--net-down)' };
+		if (metrika === 'sys') return { v: sysSerie, v2: null, skala: 'pct', zatez: true };
+		if (metrika === 'cpu') return { v: serie.cpu, v2: null, skala: 'pct', zatez: true };
+		if (metrika === 'ram') return { v: ramPct, v2: null, skala: 'pct', zatez: true };
+		if (metrika === 'gpu') return { v: serie.gpu, v2: null, skala: 'pct', zatez: true };
+		return { v: serie.rx, v2: serie.tx, skala: 'auto', barva: 'var(--net-down)', zatez: false };
 	});
 	let grafTeď = $derived.by(() => {
 		if (metrika === 'sys') return sysTed != null ? `${sysTed.toFixed(0)} %` : '—';
@@ -166,7 +169,7 @@
 		<!-- Teplota jako u grafiky (jen z PawnIO, jinak se nepíše nic). -->
 		{#if s?.cpu_temp_c != null}· {Math.round(s.cpu_temp_c)} °C{/if}
 	</span>
-	{#if siroka}<MiniGraf values={serie.cpu} vyska={34} barva="var(--ok)" />{/if}
+	{#if siroka}<MiniGraf values={serie.cpu} vyska={34} zatez />{/if}
 {:else if typ === 'ram'}
 	<span class="w-big" style:color={barvaZateze(memPct)}>
 		{#if memPct != null}<Num value={memPct} format={(v) => v.toFixed(0) + ' %'} />{:else}—{/if}
@@ -174,7 +177,7 @@
 	<span class="w-sub">
 		{s ? `${(s.mem_used_mb / 1024).toFixed(1)} z ${(s.mem_total_mb / 1024).toFixed(0)} GB` : ''}
 	</span>
-	{#if siroka}<MiniGraf values={ramPct} vyska={34} barva="var(--net-up)" />{/if}
+	{#if siroka}<MiniGraf values={ramPct} vyska={34} zatez />{/if}
 {:else if typ === 'gpu'}
 	{#if s?.gpu_pct == null}
 		<span class="w-empty">Grafika využití nehlásí — bez NVML se nedá odhadovat.</span>
@@ -188,7 +191,7 @@
 			{/if}
 			{#if s.gpu?.temp_c != null}· {Math.round(s.gpu.temp_c)} °C{/if}
 		</span>
-		{#if siroka}<MiniGraf values={serie.gpu} vyska={34} barva="var(--warn)" />{/if}
+		{#if siroka}<MiniGraf values={serie.gpu} vyska={34} zatez />{/if}
 	{/if}
 {:else if typ === 'graf'}
 	<div class="w-segs">
@@ -207,6 +210,7 @@
 			values2={grafData.v2}
 			skala={grafData.skala}
 			barva={grafData.barva}
+			zatez={grafData.zatez}
 			vyska={null}
 		/>
 	</div>

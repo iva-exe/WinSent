@@ -22,7 +22,9 @@
 	import SystemBadge from '$lib/SystemBadge.svelte';
 	import { systemPathInfo } from '$lib/mandatory.js';
 	import { prefs } from '$lib/prefs.svelte.js';
-	import { tempTrida, barvaTeploty } from '$lib/barvy.js';
+	// Pruh svazku a životnost disku na téže stupnici jako dlaždice na Home,
+	// Hardware a odznak Files v postranním panelu.
+	import { tempTrida, barvaTeploty, barvaZaplneni, barvaOpotrebeni } from '$lib/barvy.js';
 
 	let volumes = $state([]);
 	let health = $state([]);
@@ -42,16 +44,6 @@
 	}
 	function usedPct(v) {
 		return v.total_bytes ? ((v.total_bytes - v.free_bytes) / v.total_bytes) * 100 : 0;
-	}
-	function barColor(pct) {
-		if (pct >= 90) return 'var(--danger)';
-		if (pct >= 75) return 'var(--warn)';
-		return 'var(--ok)';
-	}
-	function healthColor(h) {
-		if (h?.critical) return 'var(--danger)';
-		if ((h?.used_pct ?? 0) >= 80) return 'var(--warn)';
-		return 'var(--ok)';
 	}
 	// Teplota disku ze SMART — stejná stupnice jako Hardware a Home, ale
 	// barva až od varování. Řádek vedle je klidný údaj, ne ukazatel:
@@ -320,7 +312,7 @@
 					<HardDrive size={18} />
 					<span class="d-model">{d.model}</span>
 					{#if d.health}
-						<span class="d-health" style:color={healthColor(d.health)}>
+						<span class="d-health" style:color={barvaOpotrebeni(d.health)}>
 							<Activity size={15} />
 							{100 - Math.min(d.health.used_pct ?? 0, 100)} % životnosti
 						</span>
@@ -337,7 +329,7 @@
 						<span class="vol-label">{v.label || 'Místní disk'}</span>
 						<span class="vol-fs label-tech">{v.fs}</span>
 						<span class="bar"
-							><span class="bar-fill" style:width="{pct}%" style:background={barColor(pct)}
+							><span class="bar-fill" style:width="{pct}%" style:background={barvaZaplneni(pct)}
 							></span></span
 						>
 						<span class="vol-nums mono"

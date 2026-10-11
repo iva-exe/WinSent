@@ -1730,7 +1730,16 @@
 							{#if !single && open}
 								{#each g.children as p (p.pid)}
 									<tr class="child" class:hl={hlKey === g.key} class:crit={p.protection === "critical"} oncontextmenu={(e) => menuProc(e, p, false)}>
-										<td class="t-dot"></td>
+										<!-- Tečka i u procesu ve stromu, jako v plochém
+										     seznamu: rozbalená skupina má ukázat, který
+										     z procesů ji táhne. Odsazení zůstává na jménu. -->
+										<td class="t-dot">
+											<span
+												class="load-dot"
+												style:background={colorForLoad(vrcholRadku(p))}
+												style:box-shadow={`0 0 5px ${colorForLoad(vrcholRadku(p))}`}
+											></span>
+										</td>
 										<td class="t-name child-name">{p.name}</td>
 										<td class="t-pub"></td>
 										<td class="t-num value-mono">{p.pid}</td>

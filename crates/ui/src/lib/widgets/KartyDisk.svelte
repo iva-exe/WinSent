@@ -7,6 +7,9 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { data, zmizele } from './data.svelte.js';
 	import { velikost, zaplneno, pred } from './pomoc.js';
+	// Plnost a opotřebení na téže stupnici jako Files, Hardware a odznak
+	// v postranním panelu — dřív tu opotřebení neznalo kritické varování.
+	import { barvaZaplneni, barvaOpotrebeni } from '$lib/barvy.js';
 
 	// Rozměry přicházejí v jednotkách mřížky: šířka ve sloupcích,
 	// výška v řádcích (řádek je nízký, viz registr.js). Obsah se podle
@@ -22,12 +25,6 @@
 
 	function otevri(path) {
 		invoke('open_path', { path }).catch(() => {});
-	}
-
-	function barvaZaplneni(p) {
-		if (p >= 90) return 'var(--danger)';
-		if (p >= 75) return 'var(--warn)';
-		return 'var(--ok)';
 	}
 
 	// ── SMART ────────────────────────────────────────────────────────
@@ -129,7 +126,7 @@
 				<span class="w-name">{h.model}</span>
 				{#if h.zna}
 					{#if h.used_pct != null}
-						<span class="w-mono" style:color={h.used_pct >= 80 ? 'var(--warn)' : 'var(--ok)'}>
+						<span class="w-mono" style:color={barvaOpotrebeni(h)}>
 							{100 - Math.min(h.used_pct, 100)} % života
 						</span>
 					{/if}

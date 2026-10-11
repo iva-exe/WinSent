@@ -18,6 +18,8 @@
 	import { SEKCE } from '$lib/sections.js';
 	import { prefs, prvniViditelnaSekce } from '$lib/prefs.svelte.js';
 	import { jeSkryty, klicIncidentu } from '$lib/hidden.svelte.js';
+	import { ZAPLNENI, zaplneniTrida, opotrebeniTrida, horsiStav, barvaStavu } from '$lib/barvy.js';
+	import { zaplneno } from '$lib/widgets/pomoc.js';
 	import { Settings, Download, Minus, Square, X } from 'lucide-svelte';
 
 	let { children } = $props();
@@ -108,12 +110,16 @@
 		}
 		try {
 			const v = await invoke('query_volumes');
-			const full = v.volumes.some(
-				(x) => x.total_bytes && (x.total_bytes - x.free_bytes) / x.total_bytes >= 0.9
-			);
-			const worn = v.health.some((h) => (h.used_pct ?? 0) >= 80 || h.critical);
-			volBadge =
-				full || worn ? { count: null, color: worn ? 'var(--danger)' : 'var(--warn)' } : null;
+			// Svítí od plného svazku (od hranice, kdy je jeho pruh v Files
+			// červený) nebo od opotřebeného či kriticky hlásícího disku.
+			// Barva je horší z obou a ze stejných funkcí jako pruh a údaj
+			// o životnosti — dřív svítil 90% svazek oranžově vedle
+			// červeného pruhu a disk na 80 % červeně vedle oranžového údaje.
+			const plny = Math.max(0, ...v.volumes.map(zaplneno));
+			let stav = 'ok';
+			if (plny >= ZAPLNENI[1]) stav = zaplneniTrida(plny);
+			for (const h of v.health) stav = horsiStav(stav, opotrebeniTrida(h));
+			volBadge = stav === 'ok' ? null : { count: null, color: barvaStavu(stav) };
 		} catch {
 			volBadge = null;
 		}

@@ -12,7 +12,9 @@
 	import { ikony, chciIkonu } from './ikony.svelte.js';
 	import { openMenu, akceKopirovat } from '$lib/itemmenu.svelte.js';
 	import { bps, pocet } from './pomoc.js';
-	import { barvaBunky } from '$lib/barvy.js';
+	// Signál na stupnici stránky Connection (dřív tu 70/40 proti tamním
+	// 60/35, takže 65 % bylo jednou zelené a jednou oranžové).
+	import { barvaBunky, barvaSignalu } from '$lib/barvy.js';
 
 	// Rozměry přicházejí v jednotkách mřížky: šířka ve sloupcích,
 	// výška v řádcích (řádek je nízký, viz registr.js). Obsah se podle
@@ -86,12 +88,6 @@
 	let vDosahu = $derived(
 		[...(conn?.wifi_networks ?? [])].sort((a, b) => b.signal_pct - a.signal_pct).slice(0, velka ? 6 : 3)
 	);
-
-	function barvaSignalu(p) {
-		if (p >= 70) return 'var(--ok)';
-		if (p >= 40) return 'var(--warn)';
-		return 'var(--danger)';
-	}
 
 	function menuAdresy(e, a) {
 		openMenu(e, {

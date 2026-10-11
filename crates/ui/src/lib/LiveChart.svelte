@@ -15,6 +15,7 @@
 	import uPlot from 'uplot';
 	import 'uplot/dist/uPlot.min.css';
 	import { onMount, untrack } from 'svelte';
+	import { ZATEZ, GRADIENT_ZATEZE } from '$lib/barvy.js';
 
 	let {
 		ts = [],
@@ -74,25 +75,25 @@
 	// proběhnout build() znovu.
 	let barvy;
 
+	// Zastávky zátěže z $lib/barvy.js — tytéž jako čísla v tabulkách
+	// a malé grafy na Home. Barva zůstává tady jako rgba z :root, kvůli
+	// průhlednosti výplně.
+	const [Z_OK, Z_WARN, Z_DANGER] = ZATEZ;
+
 	function colorForLoad(v) {
 		const { ok, warn, danger } = barvy;
 		if (v == null) return rgba(ok, 1);
-		if (v <= 55) return rgba(ok, 1);
-		if (v <= 75) return rgba(lerp(ok, warn, (v - 55) / 20), 1);
-		if (v <= 90) return rgba(lerp(warn, danger, (v - 75) / 15), 1);
+		if (v <= Z_OK) return rgba(ok, 1);
+		if (v <= Z_WARN) return rgba(lerp(ok, warn, (v - Z_OK) / (Z_WARN - Z_OK)), 1);
+		if (v <= Z_DANGER) return rgba(lerp(warn, danger, (v - Z_WARN) / (Z_DANGER - Z_WARN)), 1);
 		return rgba(danger, 1);
 	}
 
 	function loadGradient(uu, alpha) {
-		const { ok, warn, danger } = barvy;
 		const yMin = uu.valToPos(0, 'y', true);
 		const yMax = uu.valToPos(100, 'y', true);
 		const g = uu.ctx.createLinearGradient(0, yMin, 0, yMax);
-		g.addColorStop(0, rgba(ok, alpha));
-		g.addColorStop(0.55, rgba(ok, alpha));
-		g.addColorStop(0.75, rgba(warn, alpha));
-		g.addColorStop(0.9, rgba(danger, alpha));
-		g.addColorStop(1, rgba(danger, alpha));
+		for (const [poloha, jmeno] of GRADIENT_ZATEZE) g.addColorStop(poloha, rgba(barvy[jmeno], alpha));
 		return g;
 	}
 

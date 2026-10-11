@@ -22,7 +22,7 @@
 	import { describeProblem } from '$lib/devproblem.js';
 	import { CATEGORIES, categoryOf, hasVidPid } from '$lib/devcategory.js';
 	import { mergeSame } from '$lib/mergesame.js';
-	import { tempTrida } from '$lib/barvy.js';
+	import { tempTrida, colorForLoad, opotrebeniTrida } from '$lib/barvy.js';
 	import CategoryNav from '$lib/CategoryNav.svelte';
 	import {
 		AudioLines,
@@ -335,7 +335,10 @@
 	}
 
 	// Třída teploty (cool/warm/hot) je z $lib/barvy.js — tytéž hranice
-	// jako dlaždice v Tasks a widget Teploty na Home.
+	// jako dlaždice v Tasks a widget Teploty na Home. Odtud je i barva
+	// vytížení (colorForLoad) a pilulka opotřebení disku (opotrebeniTrida):
+	// totéž číslo má v Hardwaru stejnou barvu jako v Tasks, na Home
+	// a ve Files. Barví se jen tahle čísla, zbytek stránky zůstává klidný.
 
 	// Rozbalené skupiny zařízení (klíč skupiny).
 	let openDevices = $state(new Set());
@@ -622,7 +625,9 @@
 							</dl>
 						</div>
 						<div class="side">
-							<span class="metric">{sys ? Math.round(sys.cpu_pct) : '—'}<small>%</small></span>
+							<span class="metric" style:color={sys?.cpu_pct != null ? colorForLoad(sys.cpu_pct) : null}
+								>{sys ? Math.round(sys.cpu_pct) : '—'}<small>%</small></span
+							>
 							<!-- Stejná pilulka jako teplota grafiky. -->
 							{#if sys?.cpu_temp_c != null}
 								<span class="pill {tempTrida(sys.cpu_temp_c, 'cpu')}"
@@ -670,7 +675,9 @@
 							</dl>
 						</div>
 						<div class="side">
-							<span class="metric">{ramPct ?? '—'}<small>%</small></span>
+							<span class="metric" style:color={ramPct != null ? colorForLoad(ramPct) : null}
+								>{ramPct ?? '—'}<small>%</small></span
+							>
 							<span class="pill dim">{gb(sys?.mem_used_mb)} z {gb(sys?.mem_total_mb)}</span>
 						</div>
 					{:else if r.kind === 'gpu'}
@@ -717,7 +724,9 @@
 						</div>
 						<div class="side">
 							{#if live}
-								<span class="metric">{Math.round(sys.gpu_pct)}<small>%</small></span>
+								<span class="metric" style:color={colorForLoad(sys.gpu_pct)}
+									>{Math.round(sys.gpu_pct)}<small>%</small></span
+								>
 							{/if}
 							{#if live && sys?.gpu?.temp_c != null}
 								<span class="pill {tempTrida(sys.gpu.temp_c, 'gpu')}"
@@ -774,7 +783,7 @@
 							{#if r.disk.critical}
 								<span class="pill bad">SMART hlásí problém</span>
 							{:else if r.disk.used_pct != null}
-								<span class="pill {r.disk.used_pct >= 80 ? 'warn' : 'ok'}"
+								<span class="pill {opotrebeniTrida(r.disk)}"
 									>opotřebení {r.disk.used_pct} %</span
 								>
 							{:else}
