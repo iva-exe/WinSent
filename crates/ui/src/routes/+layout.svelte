@@ -265,11 +265,8 @@
 		<div class="upd" transition:fade={{ duration: 200 }}>
 			<Download size={17} />
 			<div class="upd-text">
+				<!-- Jen že je nová a tlačítko — čísla verzí jsou v Nastavení. -->
 				<b>Je dostupná nová verze</b>
-				<span class="upd-ver">
-					máš <span class="mono">{updater.current}</span> · nová
-					<span class="mono">{updater.latest}</span>
-				</span>
 				{#if updater.runError}
 					<span class="upd-err">{updater.runError}</span>
 				{/if}
@@ -312,13 +309,6 @@
 		gap: 2px;
 		min-width: 0;
 		font-size: var(--fs-sm);
-	}
-	.upd-ver {
-		color: var(--text-dim);
-		font-size: var(--fs-xs);
-	}
-	.upd-ver .mono {
-		font-family: var(--font-mono);
 	}
 	.upd-err {
 		color: var(--danger);
