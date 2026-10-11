@@ -13,6 +13,7 @@ pub mod devices;
 pub mod disk;
 pub mod etw;
 pub mod evtlog;
+pub mod fspath;
 pub mod gpu;
 pub mod gpubasic;
 pub mod gpukmt;

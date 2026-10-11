@@ -238,10 +238,22 @@ pub struct AppRow {
     /// takovou položku často nechá v systému viset.
     pub missing_install: bool,
     /// Odinstalátor, který registr slibuje, na disku není. Doplňuje
-    /// ho služba (`validate::uninstall_exe_index`) — bez toho by UI
+    /// ho služba (`validate::uninstall_index`) — bez toho by UI
     /// u hry smazané ze Steamu nabídlo úklid registru, přestože ji
     /// Steam pořád odinstalovat umí.
     pub uninstaller_missing: bool,
+    /// `NoRemove=1` v registru — Windows odinstalaci nenabízejí ani
+    /// v Nastavení (ESET, doplňky Office). Validace ji odmítne.
+    pub no_remove: bool,
+    /// Aktualizace jiného programu (ParentKeyName, ReleaseType nebo
+    /// „(KB…)" ve jménu). Samostatně se neodinstalovává.
+    pub is_update: bool,
+    /// Balíček ze Storu, který je součástí Windows (podpis System,
+    /// záložně prefix rodiny — `win_sys::msix::is_system_family`).
+    pub system_package: bool,
+    /// V instalační složce leží binárka bezpečnostního produktu
+    /// registrovaného v Security Center (antivir, firewall).
+    pub security_product: bool,
 }
 
 /// Proces, který drží soubor (v8, SPEC kap. 18.1 — Restart Manager).
@@ -354,6 +366,11 @@ pub struct StartupRow {
     pub identity_key: Option<String>,
     pub app_name: Option<String>,
     pub publisher: Option<String>,
+    /// Varování u položky, kterou vypnout JDE, ale něco důležitého s ní
+    /// přestane fungovat (doprovodná služba ovladače, Office, aktualizace
+    /// WebView2). Česky, jde rovnou do UI; `None` = nic zvláštního.
+    /// Počítá ho `validate::startup_caution`.
+    pub caution: Option<String>,
 }
 
 /// Incident (zásek s viníkem, pád aplikace, BSOD) — SPEC kap. 16.

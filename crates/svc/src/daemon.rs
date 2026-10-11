@@ -1441,23 +1441,57 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 let conn = read_conn.lock().expect("read conn lock poisoned");
                 match store::apps::list_apps(&conn) {
                     Ok(mut rows) => {
+                        // Instalační cesty pro rozpoznání antiviru — jedním
+                        // dotazem, dokud držíme spojení.
+                        let instalace = store::apps::install_paths(&conn).unwrap_or_default();
                         drop(conn);
                         // Jestli odinstalátor na disku je, ví jen registr
                         // + disk. Index se čte JEDNOU pro celý inventář —
                         // ptát se zvlášť za každou z pěti stovek aplikací
                         // by znamenalo projít registr pětsetkrát.
-                        let idx = validate::uninstall_exe_index();
+                        let idx = validate::uninstall_index();
+                        // Antiviry ze Security Center (drží se minutu —
+                        // WMI by jinak zdrželo každý výpis programů).
+                        let bezpecnost = validate::security_dirs();
+                        let antiviry: std::collections::HashSet<&str> = instalace
+                            .iter()
+                            .filter(|(_, path)| {
+                                let p =
+                                    path.trim_end_matches(char::from(92u8)).to_ascii_lowercase();
+                                // Kořen svazku nebo Program Files by
+                                // „obsahoval" každý antivir.
+                                p.matches(char::from(92u8)).count() >= 2
+                                    && bezpecnost.iter().any(|d| {
+                                        d == &p
+                                            || (d.starts_with(&p)
+                                                && d.as_bytes().get(p.len()) == Some(&b'\\'))
+                                    })
+                            })
+                            .map(|(k, _)| k.as_str())
+                            .collect();
                         for r in rows.iter_mut() {
                             let key = r.display_name.trim().to_ascii_lowercase();
-                            r.uninstaller_missing = match idx.get(&key) {
+                            let info = idx.get(&key);
+                            r.uninstaller_missing = match info {
                                 // Záznam v registru je, ale binárka chybí.
-                                Some(Some(exe)) => !std::path::Path::new(exe).exists(),
+                                Some(validate::UninstallInfo { exe: Some(exe), .. }) => {
+                                    !std::path::Path::new(exe).exists()
+                                }
                                 // Záznam bez odinstalačního příkazu.
-                                Some(None) => true,
+                                Some(_) => true,
                                 // Aplikace v Uninstall klíčích vůbec není
                                 // (Store aplikace) — tam se úklid nenabízí.
                                 None => false,
                             };
+                            r.no_remove = info.is_some_and(|i| i.no_remove);
+                            r.is_update = info.is_some_and(|i| i.is_update)
+                                || (r.kind == "desktop"
+                                    && validate::is_update_entry(&r.display_name, None, None));
+                            r.system_package = r.kind == "msix"
+                                && r.identity_key
+                                    .strip_prefix("msix:")
+                                    .is_some_and(win_sys::msix::is_system_family);
+                            r.security_product = antiviry.contains(r.identity_key.as_str());
                         }
                         Response::Apps(rows)
                     }
@@ -1965,6 +1999,20 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 identity_key,
                 detail,
             } => Response::ActionResult(orch.report_uninstall(audit_id, &identity_key, &detail)),
+            // Mazání krok 2 (v11): znovu zvalidovat a vydat ověřené
+            // cesty — do koše je přesune UI pod účtem uživatele.
+            Request::AuthorizeDelete { plan_id } => match orch.authorize_delete(plan_id) {
+                Ok((paths, audit_id)) => Response::DeleteAuthorized { paths, audit_id },
+                Err(res) => Response::ActionResult(res),
+            },
+            // Mazání krok 3: UI přesun dokončilo — ověřit disk a doplnit
+            // výsledek k auditu.
+            Request::ReportDelete {
+                audit_id,
+                ok,
+                recycled,
+                detail,
+            } => Response::ActionResult(orch.report_delete(audit_id, ok, recycled, &detail)),
             // Stav auto-úklidu (v4E) — progres indexace + výsledek.
             Request::QueryCleanup => {
                 let c = cleanup_state.lock().expect("cleanup lock");
@@ -2030,16 +2078,27 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                 // za stovky služeb — memo drží odpovědi po dobu jednoho
                 // skenu, jinak by se stejná cesta zjišťovala pořád dokola.
                 let mut owners = validate::OwnerMemo::new();
+                // Adresáře antivirů ze Security Center (drží se minutu).
+                let bezpecnost = validate::security_dirs();
                 let rows = items
                     .into_iter()
                     .map(|it| {
                         // Verdikt „patří Windows" počítá validační vrstva,
                         // aby UI i zákaz přepnutí viděly TOTÉŽ rozhodnutí.
+                        // Antivir se nepřepíná taky — vypíná se ve svém
+                        // nastavení; vrstva přepnutí stejně odmítne.
                         let system_reason = validate::system_startup_reason(
                             &it.id,
                             Some(&it.command),
                             Some(&mut owners),
-                        );
+                        )
+                        .or_else(|| {
+                            validate::security_startup_reason(
+                                &it.id,
+                                Some(&it.command),
+                                &bezpecnost,
+                            )
+                        });
                         // Aplikace, pod jejíž instalační cestu .exe spadá.
                         // Nejdelší SHODNÝ prefix vyhrává (nejspecifičtější
                         // instalace, ne aplikace s nejdelší cestou vůbec).
@@ -2093,6 +2152,11 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                                     .to_string()
                             })
                         });
+                        let toggleable = it.source.toggleable() && !je_system && !vlastni;
+                        // Varování má smysl jen tam, kde přepínač je.
+                        let caution = toggleable
+                            .then(|| validate::startup_caution(&it.id, Some(&it.command)))
+                            .flatten();
                         core_types::proc::StartupRow {
                             id: it.id,
                             name: it.name,
@@ -2100,12 +2164,13 @@ pub fn run(stop: Arc<AtomicBool>) -> Result<(), Error> {
                             command: it.command,
                             enabled: it.enabled,
                             running: it.running,
-                            toggleable: it.source.toggleable() && !je_system && !vlastni,
+                            toggleable,
                             system: je_system,
                             system_reason: duvod,
                             identity_key: key,
                             app_name: app.map(|a| a.display_name.clone()),
                             publisher: app.and_then(|a| a.publisher.clone()),
+                            caution,
                         }
                     })
                     .collect();

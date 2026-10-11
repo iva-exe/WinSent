@@ -106,6 +106,149 @@ fn av_products() -> Vec<AvProduct> {
     .collect()
 }
 
+/// Binárky bezpečnostních produktů, které se registrovaly v Security
+/// Center (antivir, antispyware, firewall): `pathToSignedProductExe`
+/// a `pathToSignedReportingExe`, rozbalené a malými písmeny.
+///
+/// Slouží k jedné věci — poznat, co Winsent nesmí ukončit, vypnout po
+/// spuštění ani nabídnout k odinstalaci bez varování. Antivir se
+/// vypíná ve svém vlastním nastavení; zvenčí to buď zablokuje jeho
+/// sebeobrana, nebo se to povede a počítač zůstane bez ochrany.
+///
+/// Registrace bez binárky na disku (zbytek po odinstalaci) se
+/// vynechává; Defender se hlásí URI (`windowsdefender://`), to cesta
+/// není. COM se na vlákně inicializuje tady (idempotentní). WMI —
+/// volá se na vyžádání, nikdy ve vzorkovací smyčce.
+pub fn product_exes() -> Vec<String> {
+    crate::wic::init_com_for_thread();
+    let mut out: Vec<String> = Vec::new();
+    for class in ["AntiVirusProduct", "AntiSpywareProduct", "FirewallProduct"] {
+        let rows = crate::wmi::query(
+            r"root\SecurityCenter2",
+            &format!("SELECT pathToSignedProductExe, pathToSignedReportingExe FROM {class}"),
+            &["pathToSignedProductExe", "pathToSignedReportingExe"],
+        );
+        for r in rows {
+            for prop in ["pathToSignedProductExe", "pathToSignedReportingExe"] {
+                let Some(raw) = r.get(prop) else { continue };
+                let p = expand_env(raw.trim());
+                if !looks_like_file_path(&p) || product_gone(Some(&p)) {
+                    continue;
+                }
+                let lc = p.replace('/', "\\").to_ascii_lowercase();
+                if !out.contains(&lc) {
+                    out.push(lc);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Adresáře bezpečnostních produktů (malými písmeny, bez koncového
+/// lomítka): rodičovské složky z `product_exes`. Co v nich leží, patří
+/// antiviru.
+///
+/// Mělké a sdílené složky se zahazují. Produkt, který by svou binárku
+/// nechal přímo v `C:\Program Files` nebo v System32, by jinak udělal
+/// „antivir" ze všeho vedle ní. Co leží ve Windows, chrání pravidla
+/// pro Windows; tahle množina je jen na cizí produkty.
+pub fn product_dirs() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for exe in product_exes() {
+        let Some((dir, _)) = exe.rsplit_once(char::from(92u8)) else {
+            continue;
+        };
+        if product_dir_ok(dir) && !out.iter().any(|d| d == dir) {
+            out.push(dir.to_string());
+        }
+    }
+    out
+}
+
+/// `product_dirs` nejvýš `max_age` stará. Sada antivirů se mění jen
+/// instalací a odinstalací, kdežto WMI dotaz stojí desítky milisekund —
+/// a ptá se na ni každé ukončení procesu, přepnutí po spuštění
+/// (rozpočet T0 je pod 50 ms) i výpis programů.
+pub fn product_dirs_cached(max_age: std::time::Duration) -> Vec<String> {
+    use std::sync::Mutex;
+    use std::time::Instant;
+    static CACHE: Mutex<Option<(Instant, Vec<String>)>> = Mutex::new(None);
+    if let Ok(g) = CACHE.lock() {
+        if let Some((t, dirs)) = g.as_ref() {
+            if t.elapsed() <= max_age {
+                return dirs.clone();
+            }
+        }
+    }
+    // Dotaz běží mimo zámek — souběžný volající ho klidně udělá taky,
+    // ale nikdo nečeká na cizí WMI.
+    let dirs = product_dirs();
+    if let Ok(mut g) = CACHE.lock() {
+        *g = Some((Instant::now(), dirs.clone()));
+    }
+    dirs
+}
+
+/// Je adresář dost konkrétní, aby celý patřil jednomu produktu?
+fn product_dir_ok(dir_lc: &str) -> bool {
+    let sep = char::from(92u8);
+    let dir = dir_lc.trim_end_matches(sep);
+    // `c:\vendor\produkt` = aspoň dvě úrovně pod kořenem svazku.
+    if dir.matches(sep).count() < 2 {
+        return false;
+    }
+    let sysroot = std::env::var("SystemRoot")
+        .unwrap_or_else(|_| r"C:\Windows".into())
+        .to_ascii_lowercase();
+    let sysroot = sysroot.trim_end_matches(sep);
+    if dir == sysroot || dir.starts_with(&format!("{sysroot}{sep}")) {
+        return false;
+    }
+    // Sdílené kontejnery dvě úrovně hluboko.
+    let jmeno = dir.rsplit(sep).next().unwrap_or_default();
+    !matches!(jmeno, "common files" | "microsoft" | "windowsapps")
+}
+
+/// Vypadá řetězec jako cesta k souboru (`X:\…`)? URI schéma ne.
+fn looks_like_file_path(p: &str) -> bool {
+    p.len() > 3
+        && p.as_bytes().get(1) == Some(&b':')
+        && p.as_bytes()[0].is_ascii_alphabetic()
+        && (p.contains(char::from(92u8)) || p.contains('/'))
+}
+
+/// `%ProgramFiles%\…` → skutečná cesta. Neznámou proměnnou nechá být
+/// (pak cesta neexistuje a registrace se vynechá).
+fn expand_env(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('%') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        match after.find('%') {
+            Some(j) => {
+                let key = &after[..j];
+                match std::env::var(key) {
+                    Ok(v) => out.push_str(&v),
+                    Err(_) => {
+                        out.push('%');
+                        out.push_str(key);
+                        out.push('%');
+                    }
+                }
+                rest = &after[j + 1..];
+            }
+            None => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Je registrace osiřelá — binárka, kterou uvádí, na disku není?
 ///
 /// Defender se registruje jako `windowsdefender://`, což cesta k souboru
@@ -273,5 +416,36 @@ mod tests {
         // UAC klíč existuje vždy.
         // (enabled může být false — to je zjištění, ne chyba čtení)
         let _ = p.uac;
+    }
+
+    #[test]
+    fn adresar_produktu_jen_konkretni() {
+        assert!(product_dir_ok(r"c:\program files\eset\eset security"));
+        assert!(product_dir_ok(r"c:\program files\avast software\avast"));
+        assert!(product_dir_ok(r"d:\vendor\produkt"));
+        for d in [
+            r"c:\program files",
+            r"c:\eset",
+            r"c:\",
+            r"c:\program files\common files",
+            r"c:\programdata\microsoft",
+        ] {
+            assert!(!product_dir_ok(d), "{d} je moc obecný");
+        }
+        let sysroot = std::env::var("SystemRoot")
+            .unwrap_or_else(|_| r"C:\Windows".into())
+            .to_ascii_lowercase();
+        assert!(!product_dir_ok(&format!(r"{sysroot}\system32")));
+    }
+
+    // Čtení Security Center nesmí spadnout a vrací jen existující cesty.
+    #[test]
+    fn produkty_jsou_existujici_cesty() {
+        for exe in product_exes() {
+            assert!(std::path::Path::new(&exe).exists(), "{exe} neexistuje");
+        }
+        for dir in product_dirs() {
+            assert!(product_dir_ok(&dir), "{dir} neměl projít");
+        }
     }
 }

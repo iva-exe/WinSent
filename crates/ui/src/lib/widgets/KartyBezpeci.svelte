@@ -2,7 +2,8 @@
 	// Dlaždice ze sekcí Security, Incidents, On start, Users a Historie.
 	//
 	// Jediná akce, která se odsud dělá, je přepnutí položky po startu —
-	// vratná, oficiální cesta Windows a totéž, co dělá Správce úloh.
+	// vratná, oficiální cesta Windows a totéž, co dělá Správce úloh —
+	// a jen u položek, na kterých nic dalšího nevisí (viz prepinatelne).
 	// Nic se nemaže a nic se neodinstalovává: nevratné věci patří tam,
 	// kde je vidět plán a co přesně zmizí.
 	import { invoke } from '@tauri-apps/api/core';
@@ -90,18 +91,27 @@
 	let zaMesicCelkem = $derived(Object.values(zaMesic).reduce((a, b) => a + b, 0));
 
 	// ── po startu ────────────────────────────────────────────────────
+	// Položky s varováním ze služby (součást ovladače, služba Office,
+	// aktualizace WebView2…) sem nepatří: přepínač na přehledu je jedno
+	// kliknutí bez kontextu, takže by se vypnuly, aniž by kdo viděl, co
+	// tím přestane fungovat. Přepnout jdou v sekci On start, kde se
+	// varování ukáže v řádku i v potvrzení.
 	let prepinatelne = $derived.by(() => {
-		const rows = (data.startup ?? []).filter((r) => !r.system && r.toggleable);
+		const rows = (data.startup ?? []).filter((r) => !r.system && r.toggleable && !r.caution);
 		return [...rows]
 			.sort((a, b) => Number(b.enabled) - Number(a.enabled) || (a.app_name ?? a.name).localeCompare(b.app_name ?? b.name, 'cs'))
 			.slice(0, velka ? 7 : 4);
 	});
 	let startSouhrn = $derived.by(() => {
 		const rows = data.startup ?? [];
+		// Antivirus služba zamyká jako `system` (vypíná se v jeho vlastním
+		// nastavení), ale Windows to není — do „nepatří Windows" patří.
+		// Pozná se jen podle důvodu ze služby, stejně jako v On start.
+		const bezpecnostni = (r) => (r.system_reason ?? '').startsWith('bezpečnostní software');
 		return {
 			vse: rows.length,
 			zapnute: rows.filter((r) => r.enabled).length,
-			moje: rows.filter((r) => !r.system).length,
+			moje: rows.filter((r) => !r.system || bezpecnostni(r)).length,
 			sluzby: rows.filter((r) => r.source === 'service').length
 		};
 	});

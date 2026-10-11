@@ -53,11 +53,15 @@
 			subtitle: [vyrobce, d.version].filter(Boolean).join(' · '),
 			hledat: [zarizeni, vyrobce],
 			items: [
+				// Vestavěný ovladač Windows aktualizuje Windows Update —
+				// hledat ho na webu nemá smysl a vede na weby „driver
+				// updaterů", které bývají past. U ovladače od výrobce
+				// nápověda připomene, odkud ho jedině stahovat.
 				{
 					label: 'Hledat novější ovladač',
 					icon: 'web',
-					hint: d.version ?? '',
-					disabled: !zarizeni,
+					hint: d.third_party ? 'jen od výrobce' : 'z Windows Update',
+					disabled: !zarizeni || !d.third_party,
 					run: () =>
 						invoke('search_web', {
 							query: `${zarizeni} ${vyrobce} driver download`.trim()
@@ -307,7 +311,9 @@
 				Winsent ovladače jen čte. Instalovat ani vracet je neumí — od toho je Windows Update,
 				který to má vyzkoušené na milionech strojů a v případě problému se umí vrátit zpátky.
 				„Od výrobce" znamená, že ovladač doinstaloval někdo zvenčí (soubor <code>oem*.inf</code>);
-				u grafiky, zvukovky nebo síťovky je to obvyklé a správné. Stáří je zvednutý prst,
+				u grafiky, zvukovky nebo síťovky je to obvyklé a správné. Novější ovladač stahuj
+				jen ze stránek výrobce zařízení — weby a programy, které nabízejí „aktualizovat
+				všechny ovladače", bývají past. Stáří je zvednutý prst,
 				ne poplach: ovladač čipsetu z roku 2019 může být poslední, který kdy vyšel. Počítá se jen u ovladačů od výrobců — Windows dávají všem svým vestavěným jedno a totéž datum 21. 6. 2006 bez ohledu na to, kdy vznikly.
 			</p>
 		</div>

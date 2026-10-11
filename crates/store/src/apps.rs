@@ -132,8 +132,24 @@ pub fn list_apps(conn: &Connection) -> Result<Vec<AppRow>, rusqlite::Error> {
             },
             // Doplní služba — store do registru nesahá.
             uninstaller_missing: false,
+            no_remove: false,
+            is_update: false,
+            system_package: false,
+            security_product: false,
         })
     })?;
+    rows.collect()
+}
+
+/// Instalační cesty všech aplikací jedním dotazem: (identity_key, cesta).
+/// Pro rozhodnutí, která aplikace je antivir — po jedné by to byl dotaz
+/// na každou z pěti stovek aplikací.
+pub fn install_paths(conn: &Connection) -> Result<Vec<(String, String)>, rusqlite::Error> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT a.identity_key, p.path FROM app_path p JOIN app a ON a.id = p.app_id
+         WHERE p.role = 'install'",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
     rows.collect()
 }
 
@@ -218,7 +234,12 @@ mod tests {
         assert_eq!(map.len(), 1, "C:\\B měla zmizet");
         assert_eq!(map[0].size_bytes, Some(12345), "velikost přežije rescan");
 
+        // Instalační cesty jedním dotazem — jen role install.
+        let paths = install_paths(&conn).unwrap();
+        assert_eq!(paths, vec![("app:test".to_string(), "C:\\A".to_string())]);
+
         replace_inventory(&mut conn, &[]).unwrap();
         assert!(list_apps(&conn).unwrap().is_empty(), "odinstalace maže");
+        assert!(install_paths(&conn).unwrap().is_empty());
     }
 }

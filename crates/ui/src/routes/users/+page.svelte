@@ -106,6 +106,21 @@
 		});
 	}
 
+	// Účty, které Windows zakládají samy. Pozná se to podle RID —
+	// posledního čísla SID místního účtu — ne podle jména: jméno se dá
+	// přejmenovat (a na české instalaci je Administrator i Guest jinak),
+	// RID ne. Vypnuté bývají schválně a mazat se nemají; vypadají ale
+	// jako zapomenutý cizí účet, a proto je u nich věta navíc.
+	const VESTAVENE_RID = new Set(['500', '501', '503', '504']);
+	function vestavenyUcet(u) {
+		const m = /^S-1-5-21-\d+-\d+-\d+-(\d+)$/i.exec(u.sid ?? '');
+		if (m && VESTAVENE_RID.has(m[1])) return 'vestavěný účet Windows — nemaž ho, vypnutý je v pořádku';
+		// Dočasný účet z prvního spuštění Windows. Číslo za jménem se
+		// mezi instalacemi liší (defaultuser0, defaultuser100000).
+		if (/^defaultuser\d+$/i.test(u.name ?? '')) return 'zbytek po instalaci Windows';
+		return null;
+	}
+
 	function icoOf(u) {
 		if (u.disabled) return UserX;
 		if (u.admin) return UserCog;
@@ -137,6 +152,7 @@
 			{#each users as u (u.sid || u.name)}
 				{@const Ico = icoOf(u)}
 				{@const me = u.name.toLowerCase() === (report.current_user ?? '').toLowerCase()}
+				{@const vestaveny = vestavenyUcet(u)}
 				<article class="item" class:off={u.disabled} oncontextmenu={(e) => menuUcet(e, u)}>
 					<div class="ico"><Ico size={19} /></div>
 					<div class="info">
@@ -148,6 +164,7 @@
 							{/if}
 						</h3>
 						{#if u.comment}<p class="vendor">{u.comment}</p>{/if}
+						{#if vestaveny}<p class="builtin">{vestaveny}</p>{/if}
 						<div class="facts">
 							<!-- Poslední přihlášení Windows nesdílejí mezi počítači,
 							     takže se to musí říct — jinak by číslo lhalo o tom,
@@ -339,6 +356,13 @@
 		margin: 3px 0 0;
 		font-size: var(--fs-md);
 		color: var(--text-dim);
+	}
+	/* Vestavěný účet Windows — vysvětlení, ne poplach. Modrá jako
+	   ostatní „patří Windows" v aplikaci. */
+	.builtin {
+		margin: 3px 0 0;
+		font-size: var(--fs-sm);
+		color: var(--net-down);
 	}
 	.facts {
 		display: flex;

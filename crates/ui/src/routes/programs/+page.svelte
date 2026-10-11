@@ -24,8 +24,13 @@
 		Eraser
 	} from 'lucide-svelte';
 	import SystemBadge from '$lib/SystemBadge.svelte';
-	import { isSystemApp } from '$lib/mandatory.js';
+	import { roleProSoubor, systemPathInfo, titulek } from '$lib/mandatory.js';
+	import { infoProgramu, odinstalace, patriWindows } from '$lib/programy.js';
 	import AppIcon from '$lib/AppIcon.svelte';
+
+	// Popisek štítku „součást Windows" v Programs — mluví o tom, co se
+	// tady s položkou dá dělat.
+	const NEODINSTALOVAVAT = 'Součást Windows — neodinstalovávat';
 
 
 	let apps = $state([]);
@@ -83,10 +88,22 @@
 		install: { label: 'Instalace', icon: HardDrive },
 		data: { label: 'Data', icon: Database },
 		config: { label: 'Konfigurace', icon: Settings2 },
-		cache: { label: 'Cache', icon: Archive },
+		cache: { label: 'Mezipaměť', icon: Archive },
 		logs: { label: 'Logy', icon: ScrollText },
 		registry: { label: 'Registry', icon: BookKey }
 	};
+
+	// Role cesty v mapě a co o ní ví sdílená klasifikace souborů (táž
+	// jako ve Files). „Mezipaměť" smí stát jen u toho, co za ni považuje
+	// klasifikace — tam jsou jen položky, u kterých to výrobce potvrzuje.
+	// Inventář dává roli `cache` podle slova v názvu složky, a tak dřív
+	// „Cache" svítilo i u Package Cache, bez které nejde program opravit
+	// ani odinstalovat. Takovou cestu `roleProSoubor` vrátí jako data.
+	function rolePolozky(p) {
+		const { role, info } = roleProSoubor(p.path, p.role);
+		return { r: roles[role] ?? roles.data, info };
+	}
+
 	const sources = {
 		msi: 'MSI',
 		msix: 'MSIX',
@@ -187,6 +204,29 @@
 		}
 		return groups;
 	});
+
+	// Co je program zač a smí se odinstalovat — jednou na načtení
+	// inventáře, ne při každém překreslení seznamu o stovkách řádků.
+	let klasifikace = $derived.by(() => {
+		const m = new Map();
+		for (const a of apps) m.set(a.identity_key, spocti(a));
+		return m;
+	});
+	function spocti(a) {
+		const info = infoProgramu(a);
+		return {
+			info,
+			odin: odinstalace(a),
+			// Runtime z Microsoftu (Visual C++, .NET) sdílená definice
+			// počítá k Windows kvůli zámku, ale štítek „součást Windows"
+			// by lhal — dostane místo něj „runtime".
+			windows: patriWindows(a) && info?.druh !== 'runtime'
+		};
+	}
+	const klas = (a) => klasifikace.get(a.identity_key) ?? spocti(a);
+
+	/// Úlomek popisu („ovladač hardwaru — …") jako věta do detailu.
+	const veta = (s) => (s ? s[0].toUpperCase() + s.slice(1) + '.' : '');
 
 	let counts = $derived.by(() => ({
 		desktop: apps.filter((a) => a.kind === 'desktop').length,
@@ -342,6 +382,10 @@
 	// samotné jméno obecné („Launcher", „Update"). O tom rozhoduje
 	// `openMenu` podle pořadí kandidátů.
 	function menuProgram(e, a, run) {
+		// Zámky odpovídají tomu, co odmítne služba: Store aplikace,
+		// aktualizace, zákaz výrobce (NoRemove) a Windows. Dřív svítilo
+		// „Odinstalovat" i u nich a končilo na „zamítnuto".
+		const { odin } = klas(a);
 		openMenu(e, {
 			title: a.display_name,
 			subtitle: a.publisher ?? '',
@@ -351,8 +395,8 @@
 					label: 'Odinstalovat',
 					icon: 'trash',
 					danger: true,
-					disabled: isSystemApp(a),
-					hint: isSystemApp(a) ? 'patří Windows' : '',
+					disabled: !odin.smi,
+					hint: odin.kratce,
 					run: () => askUninstall(a)
 				},
 				run
@@ -650,6 +694,7 @@
 					{/if}
 					{#each g.items as a (a.identity_key)}
 						{@const run = running.get(a.identity_key) ?? 0}
+						{@const k = klas(a)}
 						<li>
 							<button
 								class="row"
@@ -661,7 +706,12 @@
 								<span class="row-main">
 									<span class="row-title">
 										{a.display_name}
-										{#if isSystemApp(a)}<SystemBadge compact />{/if}
+										{#if k.windows}<SystemBadge compact title={NEODINSTALOVAVAT} />{/if}
+										{#if k.info}
+											<span class="info-badge" data-druh={k.info.druh} title={veta(k.info.popis)}>
+												{k.info.stitek}
+											</span>
+										{/if}
 										{#if a.missing_install}
 											<span
 												class="ghost-badge"
@@ -693,12 +743,16 @@
 						<p>Vyber aplikaci vlevo — uvidíš, kde všude na disku žije.</p>
 					</div>
 				{:else}
+					{@const ks = klas(selected)}
 					<div class="d-head">
 						<AppIcon src={iconUrls[selected.identity_key]} name={selected.display_name} size={30} />
 						<div class="d-title">
 							<h2>
 								{selected.display_name}
-								{#if isSystemApp(selected)}<SystemBadge />{/if}
+								{#if ks.windows}<SystemBadge title={NEODINSTALOVAVAT} />{/if}
+								{#if ks.info}
+									<span class="info-badge big" data-druh={ks.info.druh}>{ks.info.stitek}</span>
+								{/if}
 								{#if selected.missing_install && selected.uninstaller_missing}
 									<span class="ghost-badge big">
 										<PackageX size={16} /> instalace chybí na disku
@@ -724,7 +778,7 @@
 							<Scale size={15} />
 							{sizing ? 'počítám velikosti…' : totalSize != null ? fmtSize(totalSize) : '—'}
 						</span>
-						{#if selected.kind === 'desktop' && !isSystemApp(selected)}
+						{#if selected.kind === 'desktop' && !patriWindows(selected)}
 							{#if selected.missing_install && selected.uninstaller_missing}
 								<!-- Program na disku není a chybí i odinstalátor,
 								     zbyl po něm jen zápis v registru. Není co spustit,
@@ -741,7 +795,7 @@
 								>
 									<Eraser size={15} /> Smazat z registru
 								</button>
-							{:else}
+							{:else if ks.odin.smi}
 								<button
 									class="uninst-btn"
 									disabled={uninstBusy}
@@ -753,15 +807,35 @@
 							{/if}
 						{/if}
 					</div>
+					<!-- Co je program zač a proč tu případně chybí
+					     Odinstalovat. U Windows to říká už štítek
+					     v nadpisu, tam se věta neopakuje. -->
+					{#if ks.info || (!ks.odin.smi && !ks.windows)}
+						<p class="d-info" data-druh={ks.info?.druh ?? ''}>
+							{#if ks.info}{veta(ks.info.popis)}{/if}
+							{#if !ks.odin.smi && !ks.windows}{ks.odin.duvod}{/if}
+						</p>
+					{/if}
 
 					{#if map.length === 0}
 						<p class="empty">Mapa souborů je prázdná (portable aplikace bez stop?).</p>
 					{:else}
 						<ul class="map">
 							{#each map as p (p.path)}
-								{@const r = roles[p.role] ?? roles.data}
+								{@const { r, info } = rolePolozky(p)}
 								<li class="map-row" class:guess={p.confidence === 'guess'}>
-									<span class="m-role"><r.icon size={15} /> {r.label}</span>
+									<span class="m-role">
+										<r.icon size={15} />
+										{r.label}
+										{#if info}
+											<SystemBadge
+												compact
+												level={info.level}
+												certainty={info.certainty}
+												title={titulek(info)}
+											/>
+										{/if}
+									</span>
 									{#if p.role === 'registry'}
 										<span class="m-path mono" title={p.path}>{p.path}</span>
 									{:else}
@@ -803,12 +877,21 @@
 						<button class="d-btn" onclick={() => (uninstPlan = null)}>Zavřít</button>
 					</div>
 				{:else}
+					{@const infoOdin = klas(uninstPlan.app).info}
 					<h2>Odinstalovat {uninstPlan.app.display_name}?</h2>
 					<ul class="d-steps">
 						{#each uninstPlan.plan.steps as s, i (i)}
 							<li>{s.description}</li>
 						{/each}
 					</ul>
+					<!-- Co se po odinstalaci stane mimo samotný program
+					     (zařízení, jiné programy, ochrana). Až tady, těsně
+					     před potvrzením — tam se to opravdu přečte. -->
+					{#if infoOdin?.varovani}
+						<p class="d-warn" class:silne={infoOdin.druh === 'zabezpeceni'}>
+							{infoOdin.varovani}
+						</p>
+					{/if}
 					<p class="d-note">
 						Odinstalátor je od výrobce aplikace — jeho okno a dialogy jsou jeho, ne naše.
 						Otevře se pod tvým účtem, stejně jako když ho spustíš z Ovládacích panelů; může
@@ -963,12 +1046,24 @@
 					</p>
 					<ul class="d-steps">
 						{#each uninstResult.leftovers as p (p)}
+							{@const info = systemPathInfo(p)}
+							<!-- Zbytky se mažou ručně, a tak u nich musí být
+							     totéž, co ví Files: že jde o mezipaměť, data
+							     nebo věc, na kterou se nesahá. -->
 							<li>
 								<button
 									class="left-path mono"
 									onclick={() => openPath(p)}
 									title="Otevřít v Průzkumníku">{p}</button
 								>
+								{#if info}
+									<SystemBadge
+										compact
+										level={info.level}
+										certainty={info.certainty}
+										title={titulek(info)}
+									/>
+								{/if}
 							</li>
 						{/each}
 					</ul>
@@ -1278,6 +1373,53 @@
 	.ghost-badge.big {
 		font-size: var(--fs-xs);
 		padding: 2px 9px;
+	}
+	/* Co program je (runtime, ovladač, aktualizace…). Informace, ne
+	   poplach — tlumeně, jen bezpečnostní software jantarově: jeho
+	   odinstalace má následky pro celý počítač. */
+	.info-badge {
+		display: inline-flex;
+		align-items: center;
+		font-size: var(--fs-2xs);
+		color: var(--text-dim);
+		border: 1px solid var(--border-strong);
+		border-radius: 999px;
+		padding: 0 7px;
+		margin-left: 5px;
+		vertical-align: 1px;
+		white-space: nowrap;
+	}
+	.info-badge.big {
+		font-size: var(--fs-xs);
+		font-weight: 400;
+		padding: 2px 9px;
+		margin-left: 8px;
+		vertical-align: 2px;
+	}
+	.info-badge[data-druh='zabezpeceni'] {
+		color: var(--warn);
+		border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+	}
+	/* Věta pod nadpisem detailu: co to je a proč chybí Odinstalovat. */
+	.d-info {
+		margin: -4px 0 14px;
+		font-size: var(--fs-md);
+		color: var(--text-dim);
+		line-height: 1.5;
+	}
+	.d-info[data-druh='zabezpeceni'] {
+		color: var(--warn);
+	}
+	/* Následky odinstalace v potvrzovacím dialogu. */
+	.d-warn {
+		font-size: var(--fs-md);
+		color: var(--warn);
+		margin-bottom: 12px;
+		line-height: 1.5;
+	}
+	.d-warn.silne {
+		color: var(--danger);
+		font-size: var(--fs-lg);
 	}
 
 	.mand {

@@ -89,20 +89,18 @@ pub fn resolve(pid: u32, image_name: &str, path: Option<&str>, tables: &Tables) 
     //    platnost nekontrolovala vůbec — stačil vlastní certifikát
     //    s CN „Microsoft Corporation". Katalog se ověřuje jen u souborů
     //    bez embedded podpisu, ať se neplatí dvakrát.
-    if under_system_root(path) {
-        let is_ms = match signer.subject.as_deref() {
-            Some(s) => signer.valid && is_microsoft_signer(s),
-            None => win_sys::trust::catalog_signer(std::path::Path::new(path))
-                .is_some_and(|s| is_microsoft_signer(&s)),
+    //
+    //    Test je sdílený s validací ukončení (validate::kill_deny_reason):
+    //    co je tady „os:windows", to služba neukončí — a nic víc.
+    if under_system_root(path)
+        && win_sys::trust::microsoft_signed(std::path::Path::new(path), &signer)
+    {
+        return Identity {
+            identity_key: "os:windows".into(),
+            app_name: "Windows".into(),
+            publisher: Some("Microsoft Windows".into()),
+            confidence: Confidence::Exact,
         };
-        if is_ms {
-            return Identity {
-                identity_key: "os:windows".into(),
-                app_name: "Windows".into(),
-                publisher: Some("Microsoft Windows".into()),
-                confidence: Confidence::Exact,
-            };
-        }
     }
 
     // 3. Uninstall — nejdelší InstallLocation, který je prefixem cesty.
@@ -158,17 +156,6 @@ pub fn resolve(pid: u32, image_name: &str, path: Option<&str>, tables: &Tables) 
     }
 }
 
-/// Podepisuje tímhle jménem Microsoft soubory Windows? Celé jméno, ne
-/// podřetězec: „Microsoft Windows Hardware Compatibility Publisher"
-/// podepisuje katalogy ovladačů TŘETÍCH stran (WHQL), takže by z nich
-/// udělal Windows, a podřetězec by pustil i „Not Microsoft s.r.o.".
-fn is_microsoft_signer(subject: &str) -> bool {
-    matches!(
-        subject.trim(),
-        "Microsoft Windows" | "Microsoft Windows Publisher" | "Microsoft Corporation"
-    )
-}
-
 /// Zpřehlední MSIX PackageFamilyName na čitelné jméno (část před `_`).
 fn msix_display(family: &str) -> String {
     family.split('_').next().unwrap_or(family).to_string()
@@ -207,15 +194,5 @@ mod tests {
         ] {
             assert!(own_identity_in(cizi, dir).is_none(), "{cizi}");
         }
-    }
-
-    #[test]
-    fn microsoft_signer_is_exact_name() {
-        assert!(is_microsoft_signer("Microsoft Windows"));
-        assert!(is_microsoft_signer("Microsoft Corporation"));
-        assert!(!is_microsoft_signer(
-            "Microsoft Windows Hardware Compatibility Publisher"
-        ));
-        assert!(!is_microsoft_signer("Not Microsoft Corporation s.r.o."));
     }
 }

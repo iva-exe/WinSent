@@ -10,6 +10,10 @@ publish.workspace = true
 core-types = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# Jen kvůli `#[implement]` (recycle: posluchač IFileOperation) — makro
+# generuje cesty `::windows_core::…`. Tatáž verze, kterou už táhne
+# `windows`, takže nic nového se nestahuje ani nepřibývá v binárce.
+windows-core = "0.61"
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

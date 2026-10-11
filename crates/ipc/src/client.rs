@@ -527,6 +527,51 @@ pub fn report_uninstall(
     }
 }
 
+/// Schválení mazání do koše (v11): služba plán znovu validuje a vrátí
+/// ověřené cesty v kanonickém tvaru — přesune je volající VE SVÉ relaci,
+/// do koše uživatele. Při zamítnutí vrací `ActionResult` s důvodem.
+#[allow(clippy::type_complexity)]
+pub fn authorize_delete(
+    plan_id: u64,
+) -> Result<Result<(Vec<String>, i64), core_types::action::ActionResult>, Error> {
+    let mut stream = connect()?;
+    match request(&mut stream, &Request::AuthorizeDelete { plan_id })? {
+        Response::DeleteAuthorized { paths, audit_id } => Ok(Ok((paths, audit_id))),
+        Response::ActionResult(r) => Ok(Err(r)),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
+/// Hlášení výsledku přesunu do koše (v11) — služba ověří disk a doplní
+/// výsledek do auditu. `recycled` = kolik položek podle Windows skončilo
+/// v koši (jen u nich historie nabídne „obnovit z koše").
+pub fn report_delete(
+    audit_id: i64,
+    ok: bool,
+    recycled: u32,
+    detail: String,
+) -> Result<core_types::action::ActionResult, Error> {
+    let mut stream = connect()?;
+    match request(
+        &mut stream,
+        &Request::ReportDelete {
+            audit_id,
+            ok,
+            recycled,
+            detail,
+        },
+    )? {
+        Response::ActionResult(r) => Ok(r),
+        Response::Error { message } => Err(Error::Remote { message }),
+        other => Err(Error::Remote {
+            message: format!("nečekaná odpověď: {other:?}"),
+        }),
+    }
+}
+
 /// Stav auto-úklidu (v4E): indexace, běh analýzy, výsledek.
 #[allow(clippy::type_complexity)]
 pub fn query_cleanup() -> Result<

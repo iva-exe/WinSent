@@ -36,6 +36,59 @@ pub fn terminate(pid: u32) -> Result<(), crate::Error> {
     }
 }
 
+/// Ukončí proces, ale JEN tu instanci, která vznikla v `create_time`
+/// (FILETIME ze snapshotu). `Ok(false)` = pod tím PID teď běží něco
+/// jiného (nebo už nic) a nic se neukončilo.
+///
+/// Čas vzniku se čte z TÉHOŽ handle, kterým se pak ukončuje. Kontrola
+/// snapshotem a teprve potom `terminate(pid)` nechává okno, ve kterém
+/// původní proces skončí a jeho PID dostane jiný — a padl by ten cizí.
+/// Otevřený handle drží objekt procesu, takže mezi kontrolou
+/// a ukončením se PID recyklovat nemůže.
+pub fn terminate_instance(pid: u32, create_time: i64) -> Result<bool, crate::Error> {
+    use windows::Win32::Foundation::{E_INVALIDARG, FILETIME};
+    use windows::Win32::System::Threading::{GetProcessTimes, TerminateProcess, PROCESS_TERMINATE};
+    // SAFETY: handle zavírá OwnedHandle; výstupní FILETIME jsou lokální.
+    unsafe {
+        let h = match OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+            false,
+            pid,
+        ) {
+            Ok(h) => OwnedHandle(h),
+            // Neplatný PID = proces mezitím skončil, není co ukončit.
+            Err(e) if e.code() == E_INVALIDARG => return Ok(false),
+            Err(e) => {
+                return Err(crate::Error::Win32 {
+                    call: "OpenProcess(TERMINATE)",
+                    code: e.code().0,
+                })
+            }
+        };
+        let mut vznik = FILETIME::default();
+        let (mut konec, mut jadro, mut uziv) = (
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+        );
+        GetProcessTimes(h.0, &mut vznik, &mut konec, &mut jadro, &mut uziv).map_err(|e| {
+            crate::Error::Win32 {
+                call: "GetProcessTimes",
+                code: e.code().0,
+            }
+        })?;
+        let ct = ((vznik.dwHighDateTime as i64) << 32) | vznik.dwLowDateTime as i64;
+        if ct != create_time {
+            return Ok(false);
+        }
+        TerminateProcess(h.0, 1).map_err(|e| crate::Error::Win32 {
+            call: "TerminateProcess",
+            code: e.code().0,
+        })?;
+        Ok(true)
+    }
+}
+
 // NtQueryInformationProcess — nedokumentované třídy pro ochranné třídy.
 #[link(name = "ntdll")]
 extern "system" {
@@ -82,7 +135,8 @@ struct ExtendedBasicInfo {
 /// Ochranná třída procesu (SPEC kap. 4.3) — zatím jen pro zobrazení.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protection {
-    /// Kill způsobí BSOD. Zakázáno, šedě + zámek.
+    /// Kill shodí systém (BSOD) nebo přihlášenou relaci (obraz,
+    /// přihlašování). Zakázáno, šedě + zámek.
     Critical,
     /// PPL — kill technicky nemožný.
     Protected,
@@ -92,18 +146,46 @@ pub enum Protection {
     User,
 }
 
-/// Pojistka pro případ, kdy dotaz na kritičnost selže (SPEC 4.3:
-/// nespoléhat jen na seznam, ale mít ho jako fallback).
-const CRITICAL_NAMES: &[&str] = &[
+/// Procesy, jejichž ukončení systém neustojí — nezávisle na tom, co
+/// hlásí příznaky OS (BreakOnTermination ani PPL nejsou zapnuté všude:
+/// lsass bez RunAsPPL je obyčejný proces SYSTEMu, a přesto je jeho
+/// konec okamžitý restart). Patří sem i to, bez čeho se rozpadne
+/// přihlášená relace: dwm (obraz), fontdrvhost (písma), LogonUI
+/// a userinit (přihlášení).
+///
+/// JEDEN seznam pro zobrazení (`protection`) i pro validační vrstvu.
+/// Dřív byly dva a rozešly se: UI u lsass nabízelo „Ukončit", protože
+/// ho tenhle seznam neznal, a odmítla to až služba po potvrzení.
+///
+/// Malými písmeny; porovnává se bez ohledu na velikost. svchost.exe
+/// tu záměrně není — kritická je jen ta instance, která to sama hlásí
+/// (BreakOnTermination), ne všech šedesát.
+pub const CRITICAL_NAMES: &[&str] = &[
+    "system",
+    "registry",
+    "memory compression",
+    "memcompression",
+    "secure system",
+    "idle",
+    "smss.exe",
     "csrss.exe",
     "wininit.exe",
     "winlogon.exe",
-    "smss.exe",
     "services.exe",
-    "System",
-    "Registry",
-    "Memory Compression",
+    "lsass.exe",
+    "lsaiso.exe",
+    "ntoskrnl.exe",
+    "dwm.exe",
+    "fontdrvhost.exe",
+    "logonui.exe",
+    "userinit.exe",
 ];
+
+/// Je jméno procesu na tvrdém seznamu kritických?
+pub fn is_critical_name(name: &str) -> bool {
+    let n = name.trim();
+    CRITICAL_NAMES.iter().any(|c| c.eq_ignore_ascii_case(n))
+}
 
 /// Otevře proces pro čtení metadat. None = nedostupný (zanikl, práva).
 fn open(pid: u32) -> Option<OwnedHandle> {
@@ -169,7 +251,7 @@ pub fn protection(pid: u32, name: &str) -> Protection {
     }
     let Some(h) = open(pid) else {
         // Nedostupný proces: pojistka podle jména.
-        if CRITICAL_NAMES.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+        if is_critical_name(name) {
             return Protection::Critical;
         }
         return Protection::System;
@@ -191,7 +273,7 @@ pub fn protection(pid: u32, name: &str) -> Protection {
         {
             return Protection::Critical;
         }
-        if CRITICAL_NAMES.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+        if is_critical_name(name) {
             return Protection::Critical;
         }
 
@@ -296,6 +378,69 @@ mod tests {
     }
 
     #[test]
+    fn kriticka_jmena_jeden_seznam() {
+        for n in [
+            "lsass.exe",
+            "csrss.exe",
+            "WinLogon.exe",
+            "System",
+            "Secure System",
+            "Memory Compression",
+            "dwm.exe",
+            "fontdrvhost.exe",
+            " LogonUI.exe ",
+        ] {
+            assert!(is_critical_name(n), "{n} musí být na tvrdém seznamu");
+        }
+        // svchost rozhoduje BreakOnTermination, ne jméno.
+        for n in ["notepad.exe", "svchost.exe", "explorer.exe", ""] {
+            assert!(!is_critical_name(n), "{n} na seznamu být nemá");
+        }
+    }
+
+    // Jiná instance pod týmž PID se neukončí: vlastní dítě s vymyšleným
+    // časem vzniku musí přežít, se skutečným časem skončit.
+    #[test]
+    fn terminate_instance_hlida_cas_vzniku() {
+        let windir = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        use std::os::windows::process::CommandExt;
+        let exe = std::path::Path::new(&windir).join(r"System32\PING.EXE");
+        // CREATE_NO_WINDOW: ani probliknutí konzole na ploše.
+        let Ok(mut child) = std::process::Command::new(&exe)
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+        else {
+            return;
+        };
+        let pid = child.id();
+        let mut buf = Vec::new();
+        let ct = crate::proc::snapshot_processes(&mut buf)
+            .ok()
+            .and_then(|ps| ps.iter().find(|p| p.pid == pid).map(|p| p.create_time));
+        let Some(ct) = ct else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        };
+        let cizi = terminate_instance(pid, ct + 1);
+        let prezil = child.try_wait().ok().flatten().is_none();
+        let prava = terminate_instance(pid, ct);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            matches!(cizi, Ok(false)),
+            "cizí instance se nesmí ukončit: {cizi:?}"
+        );
+        assert!(prezil, "dítě s jiným časem vzniku mělo přežít");
+        assert!(
+            matches!(prava, Ok(true)),
+            "pravá instance se má ukončit: {prava:?}"
+        );
+    }
+
+    #[test]
     fn bezny_32bitovy_proces_neni_chraneny() {
         // Vlastní dítě testu z SysWOW64; na stroji bez WoW64 se přeskočí.
         let windir = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
@@ -303,9 +448,12 @@ mod tests {
         if !exe.exists() {
             return;
         }
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW: test nesmí na ploše probliknout konzolí.
         let Ok(mut child) = std::process::Command::new(&exe)
             .args(["/c", "ping", "-n", "3", "127.0.0.1"])
             .stdout(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
             .spawn()
         else {
             return;

@@ -241,13 +241,23 @@
 		if (r.kind === 'board') {
 			const b = hw?.board;
 			const model = [b?.manufacturer, b?.product].filter(Boolean).join(' ');
+			// Aktualizace BIOSu je jediná věc z celé sekce, která umí
+			// počítač zničit: výpadek proudu uprostřed zápisu nechá desku
+			// bez firmwaru a soubor z cizího webu může být pro jinou revizi
+			// nebo podvržený. Proto obě věty přímo u akce — nápověda vpravo
+			// je na ně úzká, druhá jde jako neaktivní informační řádek.
 			return spolecne('Základní deska', [model || 'základní deska', b?.product], model, [
 				{
 					label: 'Hledat aktualizaci BIOSu',
 					icon: 'search',
-					hint: b?.bios_version ?? '',
+					hint: 'jen od výrobce',
 					disabled: !model,
 					run: () => invoke('search_web', { query: `${model} BIOS update` })
+				},
+				{
+					label: 'Výpadek proudu při ní může zničit desku',
+					icon: 'info',
+					disabled: true
 				}
 			]);
 		}

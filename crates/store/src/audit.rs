@@ -54,6 +54,21 @@ pub fn set_outcome(
     Ok(())
 }
 
+/// Doplní cestu zpět k existujícímu záznamu. Mazání do koše ji zná až
+/// po přesunu: kolik položek doopravdy skončilo v koši (zbytek mohl
+/// uživatel na dotaz Windows smazat natrvalo, nebo přesun zrušit).
+pub fn set_reversible(
+    conn: &Connection,
+    id: i64,
+    reversible: Option<&str>,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE audit SET reversible = ?2 WHERE id = ?1",
+        params![id, reversible],
+    )?;
+    Ok(())
+}
+
 /// Poslední auditní záznamy (nejnovější první).
 pub fn recent(conn: &Connection, limit: u32) -> Result<Vec<AuditRow>, rusqlite::Error> {
     let mut stmt = conn.prepare_cached(
@@ -116,5 +131,36 @@ mod tests {
         assert_eq!(rows[0].verdict, "allow");
         assert_eq!(rows[1].verdict, "deny");
         assert_eq!(rows[1].deny_reason.as_deref(), Some("cíl neexistuje"));
+    }
+
+    // Cesta zpět se doplní až po výsledku — a jen k danému záznamu.
+    #[test]
+    fn reversible_se_doplni_pozdeji() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::migrations::run(&conn).unwrap();
+        let mazani = |ts| {
+            insert(
+                &conn,
+                ts,
+                "delete_files",
+                "a.txt",
+                "T2",
+                "allow",
+                None,
+                Some("running"),
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        let a = mazani(200);
+        let b = mazani(201);
+        set_outcome(&conn, a, "ok", "hotovo").unwrap();
+        set_reversible(&conn, a, Some("obnovit z koše (1 položek)")).unwrap();
+        set_outcome(&conn, b, "failed", "zrušeno").unwrap();
+        let rows = recent(&conn, 10).unwrap();
+        assert_eq!(rows[1].id, a);
+        assert_eq!(rows[1].reversible.as_deref(), Some("obnovit z koše (1 položek)"));
+        assert_eq!(rows[0].reversible, None, "zrušené mazání nic neslibuje");
     }
 }

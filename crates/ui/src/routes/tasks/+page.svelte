@@ -14,6 +14,7 @@
 	import Num from '$lib/Num.svelte';
 	import SystemBadge from '$lib/SystemBadge.svelte';
 	import { isSystemApp } from '$lib/mandatory.js';
+	import { ukonceniProcesu, nejprisnejsi, VAROVANI_SLUZBA } from '$lib/procesy.js';
 	import {
 		Cpu,
 		MemoryStick,
@@ -385,7 +386,17 @@
 			// '' místo null → řazení podle vydavatele funguje stringově.
 			publisher: p.publisher ?? '',
 			protection: p.protection ?? 'user',
-			confidence: p.confidence ?? 'exact'
+			confidence: p.confidence ?? 'exact',
+			// Smí se nabídnout ukončení? Počítá se jednou za vzorek, ne
+			// při každém vykreslení — z verdiktu žije menu i štítek
+			// „součást Windows" u řádku. Identita jde dovnitř SUROVÁ
+			// (null u historie bez identit), ne náhradní `name:` klíč
+			// z řádku výš: ten by jinak vypadal jako proces bez souboru.
+			ukonceni: ukonceniProcesu({
+				protection: p.protection ?? 'user',
+				identity_key: p.identity_key ?? null,
+				name: p.name
+			})
 			};
 		});
 	}
@@ -440,6 +451,8 @@
 		const total = (system?.mem_total_mb ?? 0) * 1024 * 1024;
 		for (const g of map.values()) {
 			g.sys_pct = zatezSystemu([g.cpu_pct, total > 0 ? (g.ws_bytes / total) * 100 : null]);
+			// Ukončení skupiny se řídí jejím nejpřísnějším procesem.
+			g.ukonceni = nejprisnejsi(g.children.map((c) => c.ukonceni));
 		}
 		return [...map.values()];
 	}
@@ -999,6 +1012,10 @@
 
 	const arrow = $derived(sortDir === -1 ? '↓' : '↑');
 
+	// Popisek štítku „součást Windows" v Tasks. Výchozí text štítku mluví
+	// o odinstalaci, tady jde o ukončení.
+	const NEUKONCOVAT = 'Součást Windows — neukončovat';
+
 	// ── Ukončení procesu (v7): plán → potvrzení → provedení. Nevratné,
 	// takže vždy s dialogem; zamítnutí vrstvy se ukáže i s důvodem.
 	let killPlan = $state(null); // { plan, target } | { deny, target }
@@ -1022,7 +1039,10 @@
 	// bez potomků — a nabídka „Ukončit skupinu (8 procesů)" ukončila
 	// jeden. Strom od jediného kořene pokryje celou skupinu; když kořenů
 	// je víc (nezávislé instance) nebo rodič není známý, skupinu jedním
-	// stromem ukončit nejde a nabídka to nesmí slibovat.
+	// stromem ukončit nejde a nabídka to nesmí slibovat. Dřív se v tom
+	// případě nabízel aspoň strom procesu, který se zrovna řadil první —
+	// na skupině „Windows" tak „Ukončit proces se stromem" mířilo na
+	// explorer nebo dwm a s nimi na všechno, co uživatel spustil.
 	function korenSkupiny(g) {
 		const deti = g?.children ?? [];
 		if (!deti.length || deti.some((c) => c.parent_pid == null)) return null;
@@ -1031,44 +1051,86 @@
 		return koreny.length === 1 ? koreny[0] : null;
 	}
 
-	function menuProc(e, p, tree, g = null) {
-		if (!p) return;
-		const jmeno = p.name ?? '';
+	// Položka ukončení v nabídce — nebo místo ní neaktivní řádek, proč
+	// ukončit nejde. Co se ukončit nesmí, se NENABÍZÍ vůbec (ani jako
+	// šedá „Ukončit"): vypadalo by to, že stačí jiný postup, a u procesu
+	// Windows žádný správný postup neexistuje.
+	function polozkaUkonceni(p, tree, g) {
 		const app = p.app_name ?? '';
 		const skupina = g && tree && g.children.length > 1;
 		const koren = skupina ? korenSkupiny(g) : null;
 		// Cíl ukončení: u skupiny s jedním kořenem kořen, jinak řádek sám.
 		const cil = koren ?? p;
-		const kritickeVeSkupine = !!koren && g.protection === 'critical';
+		// U skupiny rozhoduje nejpřísnější z jejích procesů — stačí jeden
+		// kritický a strom se z UI nenabízí.
+		const v = skupina
+			? (g.ukonceni ?? nejprisnejsi(g.children.map((c) => c.ukonceni)))
+			: (p.ukonceni ?? ukonceniProcesu(p));
+		// Skupina Windows se jako celek neukončuje nikdy, i kdyby v ní
+		// zrovna byl jen Poznámkový blok — ten jde zavřít z rozbalené
+		// skupiny po jednom.
+		if (
+			skupina &&
+			(g.key === 'os:windows' ||
+				isSystemApp({ identity_key: g.key, display_name: g.app_name, publisher: g.publisher ?? '' }))
+		) {
+			return {
+				duvod: 'procesy Windows — bez nich přestane fungovat část systému',
+				polozka: { label: 'Součást Windows — Winsent ji neukončuje', icon: 'shield', disabled: true }
+			};
+		}
+		if (v.trida === 'never') {
+			return { duvod: v.duvod, polozka: { label: v.popisek, icon: 'shield', disabled: true } };
+		}
+		// Řádek z historie (bez času vzniku) kořen nemá nikdy — tam platí
+		// obecné „jen u běžícího procesu" níž, ne tahle věta.
+		if (skupina && !koren && cil.create_time) {
+			return {
+				duvod: '',
+				polozka: {
+					label: 'Skupinu najednou ukončit nejde',
+					icon: 'info',
+					disabled: true,
+					hint: 'rozbal ji'
+				}
+			};
+		}
 		// Počet procesů do popisku nepatří: služba ukončí strom kořene podle
 		// parent_pid, takže i potomky z jiných aplikací (hra spuštěná ze
 		// Steamu je dítě steam.exe, terminály dětmi VS Code). „Ukončit
 		// skupinu (12 procesů)" pak slibovalo dvanáct a plán jich měl víc.
 		// Kolik a čeho přesně, ukáže až potvrzovací dialog z kroků plánu.
-		const popisek = koren
-			? `Ukončit ${app || 'skupinu'} se stromem`
-			: tree
-				? 'Ukončit proces se stromem'
-				: 'Ukončit proces';
+		return {
+			duvod: '',
+			polozka: {
+				label: koren ? `Ukončit ${app || 'skupinu'} se stromem` : 'Ukončit proces',
+				icon: 'kill',
+				danger: true,
+				// Bez času vzniku (řádek z historie) se ukončit nedá —
+				// služba by proces neměla jak ověřit.
+				disabled: !cil.create_time,
+				hint: !cil.create_time ? 'jen u běžícího procesu' : v.trida === 'warn' ? v.duvod : '',
+				run: () => askKill(cil, tree, koren ? g : null, v)
+			}
+		};
+	}
+
+	function menuProc(e, p, tree, g = null) {
+		if (!p) return;
+		const jmeno = p.name ?? '';
+		const app = p.app_name ?? '';
+		const { duvod, polozka } = polozkaUkonceni(p, tree, g);
 		openMenu(e, {
 			title: app && app !== jmeno ? `${app} — ${jmeno}` : jmeno,
-			subtitle: p.publisher ?? '',
+			// Proč ukončit nejde, patří do hlavičky: řádek v nabídce je na
+			// celou větu úzký (nápověda vpravo se ořízne). U procesu
+			// Windows se tím ztratí jen vydavatel „Microsoft Windows",
+			// který říká titulek tak jako tak.
+			subtitle: duvod || (p.publisher ?? ''),
 			hledat: [jmeno, app, p.publisher],
 			kontext: 'proces',
 			items: [
-				{
-					label: popisek,
-					icon: 'kill',
-					danger: true,
-					disabled: !cil.create_time || cil.protection === 'critical' || kritickeVeSkupine,
-					hint:
-						cil.protection === 'critical' || kritickeVeSkupine
-							? 'kritický pro systém'
-							: skupina && !koren
-								? `jen strom PID ${cil.pid} — skupina nemá jeden kořen`
-								: '',
-					run: () => askKill(cil, tree, koren ? g : null)
-				},
+				polozka,
 				oddelovac,
 				akceKopirovat(jmeno, 'Kopírovat název procesu'),
 				akceKopirovat(String(p.pid), `Kopírovat PID (${p.pid})`),
@@ -1108,11 +1170,20 @@
 		const pidy = new Set((g.children ?? []).map((c) => c.pid));
 		return plan.steps.filter((s) => {
 			const pid = pidKroku(s);
-			return pid != null && !pidy.has(pid);
+			return !jePonechano(s) && pid != null && !pidy.has(pid);
 		});
 	}
 
-	async function askKill(p, tree, g = null) {
+	// Krok „ponechány: …" ukončení není: služba v něm vypisuje procesy ze
+	// stromu, které neukončí (součást Windows — skončí samy s rodičem).
+	// Nesmí se proto počítat mezi ukončené ani mezi „z jiných aplikací".
+	function jePonechano(s) {
+		return /^ponechán/i.test((s?.description ?? '').trim());
+	}
+
+	// `v` = verdikt z procesy.js; u služby od jiného výrobce nese dialog
+	// navíc varování, že ukončením nic natrvalo nevypne.
+	async function askKill(p, tree, g = null, v = null) {
 		if (!p?.create_time) return;
 		killBusy = true;
 		try {
@@ -1134,7 +1205,8 @@
 					// Indexy, ne objekty kroků: $state kroky obalí proxy a
 					// Set s původními objekty by je pak nepoznal.
 					cizi: new Set(cizi.map((s) => r.steps.indexOf(s))),
-					ciziJmena: [...new Set(cizi.map(jmenoKroku))]
+					ciziJmena: [...new Set(cizi.map(jmenoKroku))],
+					varovani: v?.trida === 'warn' ? VAROVANI_SLUZBA : ''
 				};
 			} else killPlan = { deny: r, target: p, tree };
 		} catch (e) {
@@ -1199,14 +1271,21 @@
 				{/if}
 				<ul class="k-steps">
 					{#each killPlan.plan.steps as s, i (i)}
-						<li class:cizi={killPlan.cizi?.has(i)}>{s.description}</li>
+						<li class:cizi={killPlan.cizi?.has(i)} class:ponechano={jePonechano(s)}>
+							{s.description}
+						</li>
 					{/each}
 				</ul>
+				{#if killPlan.varovani}
+					<p class="k-warn k-sluzba">{killPlan.varovani}</p>
+				{/if}
 				<p class="k-warn">Neuložená data se ztratí. Ukončení nejde vzít zpět.</p>
 				<div class="k-actions">
 					<button class="k-btn" onclick={() => (killPlan = null)}>Zrušit</button>
 					<button class="k-btn danger" disabled={killBusy} onclick={confirmKill}>
-						{killBusy ? 'ukončuji…' : `Ukončit (${killPlan.plan.steps.length})`}
+						{killBusy
+							? 'ukončuji…'
+							: `Ukončit (${killPlan.plan.steps.filter((s) => !jePonechano(s)).length})`}
 					</button>
 				</div>
 			{/if}
@@ -1719,7 +1798,9 @@
 											<span class="app-icon placeholder"></span>
 										{/if}
 										<span class="app-name" class:guess={g.confidence === 'guess'}>{g.app_name}</span>
-										{#if isSystemApp({ identity_key: g.key, display_name: g.app_name, publisher: g.publisher ?? "" })}<SystemBadge compact />{/if}
+										<!-- Štítek i podle verdiktu ukončení: štítek a nabídka
+										     nesmí o téže skupině říkat každý něco jiného. -->
+										{#if g.ukonceni?.windows || isSystemApp({ identity_key: g.key, display_name: g.app_name, publisher: g.publisher ?? "" })}<SystemBadge compact title={NEUKONCOVAT} />{/if}
 										{#if g.protection === 'critical'}
 											<Lock class="lock-ico" size={14} strokeWidth={2} />
 										{/if}
@@ -1750,7 +1831,13 @@
 												style:box-shadow={`0 0 5px ${colorForLoad(vrcholRadku(p))}`}
 											></span>
 										</td>
-										<td class="t-name child-name">{p.name}</td>
+										<td class="t-name child-name">
+											{p.name}
+											<!-- Štítek i u procesu ve skupině: ve skupině
+											     aplikace může být jen jeden proces, který
+											     se ukončit nesmí, a ten musí být vidět. -->
+											{#if p.ukonceni?.windows}<SystemBadge compact title={NEUKONCOVAT} />{/if}
+										</td>
 										<td class="t-pub"></td>
 										<td class="t-num value-mono">{p.pid}</td>
 										{#each bunky(p, false) as b, i (i)}
@@ -1785,6 +1872,7 @@
 											<span class="app-icon placeholder"></span>
 										{/if}
 										<span class="app-name">{p.name}</span>
+										{#if p.ukonceni?.windows}<SystemBadge compact title={NEUKONCOVAT} />{/if}
 										{#if p.protection === 'critical'}
 											<Lock class="lock-ico" size={14} strokeWidth={2} />
 										{/if}
@@ -2370,6 +2458,12 @@
 		color: var(--warn);
 		margin-bottom: 14px;
 	}
+	/* Varování u služby je obsahové (co se stane potom), ne obecná
+	   poučka — proto výraznější než řádek pod ním a hned nad ním. */
+	.k-warn.k-sluzba {
+		font-size: var(--fs-lg);
+		margin-bottom: 6px;
+	}
 	.k-cizi {
 		font-size: var(--fs-lg);
 		color: var(--danger);
@@ -2378,6 +2472,10 @@
 	}
 	.k-steps li.cizi {
 		color: var(--danger);
+	}
+	/* Procesy, které služba ze stromu vynechá — informace, ne krok. */
+	.k-steps li.ponechano {
+		color: var(--text-faint);
 	}
 	.k-deny {
 		font-size: var(--fs-xl);

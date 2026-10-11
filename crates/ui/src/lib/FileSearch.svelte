@@ -39,7 +39,7 @@
 	} from 'lucide-svelte';
 	import AppIcon from '$lib/AppIcon.svelte';
 	import SystemBadge from '$lib/SystemBadge.svelte';
-	import { isSystemApp, systemPathInfo } from '$lib/mandatory.js';
+	import { isSystemApp, systemPathInfo, titulek } from '$lib/mandatory.js';
 	import { typSouboru } from '$lib/filetype.js';
 	import { nacti as nactiPosledni, zapamatuj, zapomen, zapomenJednu } from '$lib/recent.js';
 	import { openMenu, akceKopirovat, oddelovac } from '$lib/itemmenu.svelte.js';
@@ -780,13 +780,18 @@
 			return;
 		}
 		const t = it.kind === 'dir' ? null : typSouboru(it.name);
+		// „Složka Windows" jen u složek, které Windows opravdu patří —
+		// dřív se tak hledala každá složka, i „Fotky z dovolené".
+		const lvl = it.systemInfo?.level;
+		const windows = lvl === 'mandatory' || lvl === 'managed';
 		openMenu(e, {
 			title: it.name,
 			subtitle: it.sub,
 			// Celá cesta se do vyhledávače neposílá — je v ní jméno
-			// uživatele a struktura jeho disku.
-			hledat: [it.name],
-			kontext: it.kind === 'dir' ? 'složka Windows' : 'soubor',
+			// uživatele a struktura jeho disku. U známých míst se hledá
+			// jejich jméno („NVIDIA DXCache"), hash souboru nic neřekne.
+			hledat: [it.systemInfo?.hledat ?? it.name],
+			kontext: it.kind === 'dir' ? (windows ? 'složka Windows' : 'složka') : 'soubor',
 			items: [
 				{ label: 'Otevřít v Průzkumníku', icon: 'folder', run: () => otevrit(it) },
 				t?.pripona
@@ -995,7 +1000,12 @@
 								</span>
 								{#if it.system}<SystemBadge compact />{/if}
 								{#if it.systemInfo}
-									<SystemBadge compact level={it.systemInfo.level} title={it.systemInfo.reason} />
+									<SystemBadge
+										compact
+										level={it.systemInfo.level}
+										certainty={it.systemInfo.certainty}
+										title={titulek(it.systemInfo)}
+									/>
 								{/if}
 								{#if it.missing}
 									<span

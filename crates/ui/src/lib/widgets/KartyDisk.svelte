@@ -10,6 +10,10 @@
 	// Plnost a opotřebení na téže stupnici jako Files, Hardware a odznak
 	// v postranním panelu — dřív tu opotřebení neznalo kritické varování.
 	import { barvaZaplneni, barvaOpotrebeni } from '$lib/barvy.js';
+	// Táž značka jako v Files: na přehledu je nejvýš C:\Users a AppData,
+	// a bez značky by vypadaly jako „tady je co mazat".
+	import SystemBadge from '$lib/SystemBadge.svelte';
+	import { systemPathInfo, titulek } from '$lib/mandatory.js';
 
 	// Rozměry přicházejí v jednotkách mřížky: šířka ve sloupcích,
 	// výška v řádcích (řádek je nízký, viz registr.js). Obsah se podle
@@ -155,9 +159,11 @@
 		</div>
 		<ul class="w-list scroll">
 			{#each velkeRadky as [, cesta, vel] (cesta)}
+				{@const info = systemPathInfo(cesta)}
 				<li>
 					<button class="w-klik w-row" onclick={() => otevri(cesta)} title={cesta}>
 						<span class="w-name">{cesta}</span>
+						{#if info}<SystemBadge compact level={info.level} certainty={info.certainty} title={titulek(info)} />{/if}
 						<span class="w-mono w-dim">{velikost(vel)}</span>
 					</button>
 				</li>

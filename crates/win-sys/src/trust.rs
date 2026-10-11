@@ -141,6 +141,35 @@ pub fn catalog_signer(path: &Path) -> Option<String> {
         .find_map(|alg| catalog::signer(path, h, alg))
 }
 
+/// Podepisující, za kterým stojí sám Microsoft — celé jméno, ne
+/// podřetězec (ten by pustil i „Not Microsoft s.r.o.").
+/// „Microsoft Windows Hardware Compatibility Publisher" (WHQL) sem
+/// nepatří: tím Microsoft podepisuje CIZÍ ovladače a jejich doprovodné
+/// programy (NVIDIA, Realtek), ne vlastní soubory Windows.
+pub fn is_microsoft_signer(subject: &str) -> bool {
+    matches!(
+        subject.trim(),
+        "Microsoft Windows" | "Microsoft Windows Publisher" | "Microsoft Corporation"
+    )
+}
+
+/// Je soubor podepsaný Microsoftem — PLATNÝM embedded podpisem, nebo
+/// (když embedded podpis nemá) katalogem Windows? `signer` je výsledek
+/// `signer_subject` pro tentýž soubor; volající ho často potřebuje
+/// i jinde, ať se neověřuje dvakrát.
+///
+/// Jeden test pro identitu „os:windows" (crate identity) i pro pravidlo
+/// „součást Windows Winsent neukončuje" (validate). Kdyby se rozešly,
+/// UI by nabídlo akci, kterou služba vždycky zamítne — nebo naopak.
+/// Katalog se ověřuje jen u souborů bez embedded podpisu (blokující,
+/// jednotky až desítky ms).
+pub fn microsoft_signed(path: &Path, signer: &SignerInfo) -> bool {
+    match signer.subject.as_deref() {
+        Some(s) => signer.valid && is_microsoft_signer(s),
+        None => catalog_signer(path).is_some_and(|s| is_microsoft_signer(&s)),
+    }
+}
+
 /// Ověření souboru proti systémovým katalogům (WTD_CHOICE_CATALOG).
 mod catalog {
     use std::ffi::c_void;
@@ -461,5 +490,15 @@ mod tests {
         let s = catalog_signer(&tmp);
         let _ = std::fs::remove_file(&tmp);
         assert!(s.is_none(), "{s:?}");
+    }
+
+    #[test]
+    fn microsoft_signer_is_exact_name() {
+        assert!(is_microsoft_signer("Microsoft Windows"));
+        assert!(is_microsoft_signer("Microsoft Corporation"));
+        assert!(!is_microsoft_signer(
+            "Microsoft Windows Hardware Compatibility Publisher"
+        ));
+        assert!(!is_microsoft_signer("Not Microsoft Corporation s.r.o."));
     }
 }

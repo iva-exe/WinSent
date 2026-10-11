@@ -20,7 +20,6 @@
 		ChevronUp
 	} from 'lucide-svelte';
 	import SystemBadge from '$lib/SystemBadge.svelte';
-	import { isSystemApp, isSystemPath } from '$lib/mandatory.js';
 	import { prefs } from '$lib/prefs.svelte.js';
 	import AppIcon from '$lib/AppIcon.svelte';
 
@@ -98,12 +97,37 @@
 	};
 	const srcOf = (s) => sources[s] ?? { label: s, icon: Cog };
 
+	// Bezpečnostní software (antivirus) služba zamyká stejně jako položky
+	// Windows — `system` + důvod (PLAN §5) — protože jeho vypnutí patří do
+	// jeho vlastního nastavení. Windows to ale NENÍ a štítek „součást
+	// Windows" by u něj lhal. Rozlišit se to dá jen podle důvodu, který
+	// služba posílá; kdyby ho přeformulovala, spadne položka zpět mezi
+	// systémové — zamčená zůstane tak jako tak.
+	const jeBezpecnostni = (i) => (i.system_reason ?? '').startsWith('bezpečnostní software');
+
+	// Štítek „součást Windows" u skupiny jen tehdy, když verdikt služby
+	// říká „Windows" u VŠECH jejích položek. Dřív stačila cesta se
+	// \system32\ v příkazu — a služby ovladačů NVIDIA či Realteku z úložiště
+	// ovladačů dostaly štítek Windows, přestože každá z nich měla živý
+	// přepínač.
+	const skupinaWindows = (g) => g.items.every((i) => i.system && !jeBezpecnostni(i));
+
+	// Winlogon (Shell/Userinit) se tu ukazuje JEN v nestandardním stavu
+	// — tedy právě když systému nepatří. Je to poplach, ne systémová
+	// položka.
+	const SHELL_ALARM = 'nestandardní hodnota — může jít o škodlivý software';
+
 	// Systémové položky jsou ve výchozím stavu pryč. Verdikt počítá
 	// služba (validate::system_startup_reason) a přijde jako pole
 	// `system` — UI si ho nedopočítává, aby se dvě pravidla nemohla
 	// rozejít. Přepnout je nejde tak jako tak; dlouhý seznam zamčených
-	// řádků by jen zakryl to, co uživatel ovlivnit může.
-	let visibleItems = $derived(prefs.showSystemStartup ? items : items.filter((i) => !i.system));
+	// řádků by jen zakryl to, co uživatel ovlivnit může. Bezpečnostní
+	// software zůstává vidět i bez volby: Windows to není (volba se jmenuje
+	// „Startovací položky Windows"), dřív tu byl vidět a dlaždice na
+	// přehledu ho počítá mezi „nepatří Windows" — čísla se musí shodovat.
+	let visibleItems = $derived(
+		prefs.showSystemStartup ? items : items.filter((i) => !i.system || jeBezpecnostni(i))
+	);
 
 	let shown = $derived.by(() => {
 		const f = filter.trim().toLowerCase();
@@ -153,7 +177,7 @@
 		arr
 			.map(
 				(i) =>
-					`${i.id}:${i.enabled}:${i.running}:${i.toggleable}:${i.system}:${i.identity_key ?? ''}:${i.command}`
+					`${i.id}:${i.enabled}:${i.running}:${i.toggleable}:${i.system}:${i.identity_key ?? ''}:${i.command}:${i.caution ?? ''}`
 			)
 			.join('|');
 	let lastSig = '';
@@ -225,8 +249,14 @@
 					label: i.enabled ? 'Vypnout po spuštění' : 'Zapnout po spuštění',
 					icon: 'power',
 					disabled: !i.toggleable,
-					hint: i.toggleable ? '' : (i.system_reason ?? 'patří Windows'),
-					run: () => toggle(i)
+					hint: i.toggleable
+						? i.enabled && i.caution
+							? 'pozor'
+							: ''
+						: i.source === 'shell'
+							? 'jen k náhledu'
+							: (i.system_reason ?? 'patří Windows'),
+					run: () => prepnout(i)
 				},
 				{
 					label: 'Nastavení po spuštění ve Windows',
@@ -239,6 +269,26 @@
 				akceKopirovat(i.command, 'Kopírovat příkaz')
 			]
 		});
+	}
+
+	// Vypnutí položky, na které něco visí (součást ovladače, služba Office,
+	// aktualizace WebView2), se nejdřív potvrdí s varováním ze služby.
+	// Ostatní přepnutí zůstávají bez ptaní — jsou vratná a dialog u každé
+	// položky by z potvrzení udělal rutinu, kterou nikdo nečte.
+	// Zapnutí se nepotvrzuje nikdy: vrací stav, se kterým to funguje.
+	let potvrdit = $state(null); // položka čekající na potvrzení vypnutí
+	function prepnout(item) {
+		if (!item.toggleable || busy.has(item.id)) return;
+		if (item.enabled && item.caution) {
+			potvrdit = item;
+			return;
+		}
+		toggle(item);
+	}
+	function potvrzeno() {
+		const item = potvrdit;
+		potvrdit = null;
+		if (item) toggle(item);
 	}
 
 	// Přepnutí: optimisticky překlopit, po odpovědi srovnat s realitou.
@@ -306,6 +356,21 @@
 		<div class="toast {toast.kind}">{toast.text}</div>
 	{/if}
 
+	<!-- Potvrzení vypnutí položky s varováním ze služby. -->
+	{#if potvrdit}
+		<div class="dlg-backdrop" role="presentation" onclick={() => (potvrdit = null)} onkeydown={() => {}}>
+			<div class="dlg" role="dialog" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
+				<h2>Vypnout {potvrdit.name} po spuštění?</h2>
+				<p class="d-warn"><TriangleAlert size={15} /> {potvrdit.caution}</p>
+				<p class="d-note">Vypnutí nic nemaže — položku tady kdykoli zase zapneš.</p>
+				<div class="d-actions">
+					<button class="d-btn" onclick={() => (potvrdit = null)}>Zrušit</button>
+					<button class="d-btn primary" onclick={potvrzeno}>Vypnout</button>
+				</div>
+			</div>
+		</div>
+	{/if}
+
 	{#if loadError}
 		<p class="empty">{loadError}</p>
 	{:else}
@@ -317,8 +382,8 @@
 					<header class="g-head">
 						<AppIcon src={g.identity_key ? iconUrls[g.identity_key] : null} name={g.label} size={21} />
 						<span class="g-name">{g.label}</span>
-						{#if isSystemApp({ identity_key: g.identity_key ?? '', display_name: g.label, publisher: g.publisher ?? '' }) || g.items.every((i) => (!i.toggleable && !i.source.startsWith('run_once')) || isSystemPath(i.command))}
-							<SystemBadge compact />
+						{#if skupinaWindows(g)}
+							<SystemBadge compact title="Součást Windows — Winsent ji nepřepíná" />
 						{/if}
 						<span class="g-count label-tech">{g.items.length}</span>
 					</header>
@@ -347,6 +412,14 @@
 										{/if}
 									</span>
 									<span class="i-cmd mono" title={i.command}>{i.command}</span>
+									<!-- Varování ze služby: co přestane fungovat, když se
+									     položka vypne. Rovnou v řádku, ne až v dialogu —
+									     rozhoduje se podle toho, jestli na ni sahat. -->
+									{#if i.caution}
+										<span class="i-caution"><TriangleAlert size={12} /> {i.caution}</span>
+									{:else if i.source === 'shell'}
+										<span class="i-caution alarm"><TriangleAlert size={12} /> {SHELL_ALARM}</span>
+									{/if}
 								</span>
 								<span class="i-srclabel label-tech">{s.label}</span>
 								{#if i.toggleable}
@@ -354,12 +427,18 @@
 										class="sw"
 										class:on={i.enabled}
 										class:busy={busy.has(i.id)}
-										onclick={() => toggle(i)}
+										onclick={() => prepnout(i)}
 										title={i.enabled ? 'Vypnout po spuštění' : 'Zapnout po spuštění'}
 										aria-label="přepnout"
 									>
 										<span class="knob"></span>
 									</button>
+								{:else if i.system && jeBezpecnostni(i)}
+									<!-- Antivirus: zamčený jako Windows, ale Windows to
+									     není — jiný popisek i barva. -->
+									<span class="locked secitem" title="{i.system_reason}. Winsent ho nepřepíná.">
+										<ShieldCheck size={16} />
+									</span>
 								{:else if i.system}
 									<!-- Položka Windows. Přepínač tu není schválně:
 									     službě by ho validační vrstva stejně odmítla
@@ -370,6 +449,10 @@
 										title="Patří Windows{i.system_reason ? ` — ${i.system_reason}` : ''}. Winsent startovací položky systému nepřepíná."
 									>
 										<ShieldCheck size={16} />
+									</span>
+								{:else if i.source === 'shell'}
+									<span class="locked alarm" title="Winlogon: {SHELL_ALARM}. Jen k náhledu — Winsent ho nepřepíná.">
+										<TriangleAlert size={16} />
 									</span>
 								{:else}
 									<span class="locked" title={i.system_reason ?? 'Systémová položka — jen k náhledu'}>
@@ -754,6 +837,91 @@
 	   není to problém, je to prostě systém. */
 	.locked.sysitem {
 		color: var(--net-down);
+	}
+	/* Antivirus — štít, ale ne modrý: modrá v aplikaci znamená Windows. */
+	.locked.secitem {
+		color: var(--text-dim);
+	}
+	/* Nestandardní Winlogon je poplach, ne „jen k náhledu". */
+	.locked.alarm {
+		color: var(--danger);
+	}
+	/* Co přestane fungovat, když se položka vypne (ze služby). */
+	.i-caution {
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		font-size: var(--fs-xs);
+		color: var(--warn);
+		margin-top: 2px;
+	}
+	.i-caution :global(svg) {
+		flex: none;
+	}
+	.i-caution.alarm {
+		color: var(--danger);
+	}
+
+	/* Potvrzení vypnutí — stejný jazyk jako dialogy v Programs a Tasks. */
+	.dlg-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(8, 9, 11, 0.62);
+		display: grid;
+		place-items: center;
+		z-index: 40;
+	}
+	.dlg {
+		width: min(520px, 92vw);
+		background: #16171c;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-lg);
+		padding: 20px 22px;
+	}
+	.dlg h2 {
+		font-size: 1.05rem;
+		margin: 0 0 10px;
+		overflow-wrap: anywhere;
+	}
+	.d-warn {
+		display: flex;
+		gap: 7px;
+		align-items: flex-start;
+		font-size: var(--fs-lg);
+		color: var(--warn);
+		margin: 0 0 10px;
+		line-height: 1.45;
+	}
+	.d-warn :global(svg) {
+		flex: none;
+		margin-top: 3px;
+	}
+	.d-note {
+		font-size: var(--fs-md);
+		color: var(--text-faint);
+		margin: 0 0 14px;
+	}
+	.d-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+	}
+	.d-btn {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text);
+		font: inherit;
+		font-size: var(--fs-lg);
+		padding: 7px 14px;
+		cursor: pointer;
+	}
+	.d-btn:hover {
+		border-color: var(--border-strong);
+	}
+	.d-btn.primary {
+		border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+		color: var(--warn);
 	}
 	.locked {
 		color: var(--warn);

@@ -273,6 +273,12 @@ pub fn find_duplicates(root: &str, min_size: u64, max_files: usize) -> Vec<DupGr
 
     let mut out = Vec::new();
     for (size, paths) in by_size {
+        // Kopie instalátorů a programů do skupin nepatří (viz
+        // `vyloucit_z_duplicit`) — vyřazují se ještě před hashováním.
+        let paths: Vec<std::path::PathBuf> = paths
+            .into_iter()
+            .filter(|p| !vyloucit_z_duplicit(&p.to_string_lossy()))
+            .collect();
         if paths.len() < 2 {
             continue;
         }
@@ -306,6 +312,37 @@ pub struct CleanupReport {
     pub zero_byte: Vec<String>,
     /// (cesta, velikost) — temp/cache adresáře k úklidu.
     pub junk: Vec<(String, u64)>,
+}
+
+/// Leží cesta tam, kde „duplicita" není plýtvání, ale kopie, kterou si
+/// drží Windows nebo instalátor — a smazat ji nejde bez škody?
+///
+/// - koš a WinSxS: nejsou úklid uživatele;
+/// - `ProgramData\Package Cache`, `Windows\Installer`: mezipaměti
+///   instalátorů — bez nich nejde program opravit ani odinstalovat
+///   (installer v Package Cache je VŽDY „duplicita" toho ve Stažených);
+/// - `WindowsApps`, `Program Files*`: nainstalované programy; stejná DLL
+///   ve dvou programech patří oběma.
+///
+/// Takové kopie se ze skupin duplicit vyřazují. Skupina, ve které pak
+/// zbude jediný soubor, není skupina.
+pub fn vyloucit_z_duplicit(path: &str) -> bool {
+    let p = path.replace('/', "\\").to_ascii_lowercase();
+    // Cesta za „x:\" — pravidla jsou kotvená v kořeni svazku, ne
+    // podřetězce kdekoli (`Stažené\windows\installer\` nikomu nepatří).
+    let za_korenem = p.get(3..).unwrap_or("");
+    let pod = |prefix: &str| za_korenem.starts_with(prefix);
+    let sysroot = std::env::var("SystemRoot")
+        .unwrap_or_else(|_| r"C:\Windows".into())
+        .to_ascii_lowercase();
+    p.contains(r"\$recycle")
+        || p.contains(r"\winsxs\")
+        || pod(r"windowsapps\")
+        || pod(r"program files\")
+        || pod(r"program files (x86)\")
+        || pod(r"programdata\package cache\")
+        || pod(r"windows\installer\")
+        || p.starts_with(&format!(r"{}\installer\", sysroot.trim_end_matches('\\')))
 }
 
 /// Přípony, u kterých duplicity uživatele zajímají (média, archivy,
@@ -364,11 +401,15 @@ pub fn cleanup_analysis(indexes: &[&VolumeIndex]) -> CleanupReport {
         if paths.len() < 2 || paths.len() > 10 || stats > 30_000 {
             continue;
         }
-        // Recycle bin a WinSxS nejsou úklid uživatele.
-        if paths.iter().any(|p| {
-            let lc = p.to_ascii_lowercase();
-            lc.contains("\\$recycle") || lc.contains("\\winsxs\\")
-        }) {
+        // Koš, WinSxS, mezipaměti instalátorů a nainstalované programy
+        // nejsou úklid uživatele (viz `vyloucit_z_duplicit`). Vyřadí se
+        // jen ty kopie, ne celá skupina — dvě stejná ISO ve Stažených
+        // jsou duplicita i tehdy, když třetí leží v Package Cache.
+        let paths: Vec<String> = paths
+            .into_iter()
+            .filter(|p| !vyloucit_z_duplicit(p))
+            .collect();
+        if paths.len() < 2 {
             continue;
         }
         let mut by_size: HashMap<u64, Vec<String>> = HashMap::new();
@@ -790,6 +831,32 @@ fn mistni_tvar(root: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Kopie instalátorů a programů do duplicit nepatří; uživatelova
+    // data ano — i když se složka jmenuje podobně.
+    #[test]
+    fn duplicity_bez_instalatoru_a_programu() {
+        for p in [
+            r"C:\ProgramData\Package Cache\{GUID}\vc_redist.x64.exe",
+            r"C:\Windows\Installer\1a2b3c.msi",
+            r"C:\Program Files\Hra\data.zip",
+            r"D:\Program Files (x86)\Steam\x.exe",
+            r"D:\WindowsApps\Hra_1.0_x64__abc\video.mp4",
+            r"C:\Program Files\WindowsApps\Foo\a.png",
+            r"C:\$Recycle.Bin\S-1-5-21-1\$R1.zip",
+            r"C:\Windows\WinSxS\amd64_x\a.exe",
+        ] {
+            assert!(vyloucit_z_duplicit(p), "{p} vyřadit");
+        }
+        for p in [
+            r"C:\Users\IVA\Downloads\vc_redist.x64.exe",
+            r"C:\Users\IVA\Downloads\windows\installer\x.msi",
+            r"D:\Zalohy\Program Files\fotka.jpg",
+            r"D:\Hry\package cache\x.zip",
+        ] {
+            assert!(!vyloucit_z_duplicit(p), "{p} nechat");
+        }
+    }
 
     #[test]
     fn substring_matches_case_insensitive() {

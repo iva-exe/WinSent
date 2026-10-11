@@ -497,6 +497,132 @@ fn plan_delete(paths: Vec<String>) -> Result<PlanOrDeny, String> {
     .map_err(|e| e.to_string())
 }
 
+/// Jak dopadlo mazání do koše (v11).
+#[derive(Debug, Serialize)]
+struct DeleteResult {
+    /// Ze schválených cest na disku nic nezbylo. Jestli je všechno
+    /// v koši, nebo část pryč natrvalo (nevešla se a uživatel to
+    /// v dotazu Windows potvrdil), říká `detail` — UI ho má ukázat.
+    ok: bool,
+    /// Uživatel přesun zrušil (Windows se zeptaly, protože se položka do
+    /// koše nevejde a smazala by se natrvalo).
+    aborted: bool,
+    /// Česky, pro UI: co se stalo, nebo proč služba mazání zamítla.
+    detail: String,
+}
+
+/// Mazání do koše, krok 2 — po potvrzení plánu (`plan_delete`).
+///
+/// Služba plán znovu zvaliduje a vydá ověřené cesty; do koše je ale
+/// přesouváme **tady**, pod účtem přihlášeného uživatele. Služba běží
+/// jako SYSTEM a soubory od ní končily v koši SYSTEMu, kam uživatel
+/// nevidí — „jde vrátit z koše" nebyla pravda. Tady skončí v jeho koši
+/// a platí jeho práva k souborům.
+#[tauri::command]
+async fn delete_to_recycle(
+    window: tauri::WebviewWindow,
+    plan_id: u64,
+) -> Result<DeleteResult, String> {
+    // Okno, ke kterému se váže případný dotaz Windows („nevejde se do
+    // koše — smazat natrvalo?"). Bez vlastníka by vyskočil kdesi za
+    // oknem Winsentu.
+    let owner = window.hwnd().ok().map(|h| h.0 as isize);
+    v_poolu(move || delete_to_recycle_blok(plan_id, owner)).await?
+}
+
+fn delete_to_recycle_blok(plan_id: u64, owner: Option<isize>) -> Result<DeleteResult, String> {
+    let (paths, audit_id) = match roura::volej(|| ipc::client::authorize_delete(plan_id)) {
+        Ok(Ok(pair)) => pair,
+        // Zamítnutí není chyba volání — vracíme ho UI k zobrazení.
+        Ok(Err(deny)) => {
+            return Ok(DeleteResult {
+                ok: false,
+                aborted: false,
+                detail: deny.deny_reason.unwrap_or_else(|| "zamítnuto".into()),
+            })
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    // Vlastní vlákno: IFileOperation chce STA (to si recycle založí sám)
+    // a případný dotaz Windows obsluhuje modální smyčkou — vlákna fondu
+    // mohou být MTA a blokovat je dotazem nechceme.
+    let pro_vlakno = paths.clone();
+    let vysledek = std::thread::spawn(move || win_sys::recycle::to_recycle_bin(&pro_vlakno, owner))
+        .join()
+        .map_err(|_| "přesun do koše spadl".to_string())?;
+
+    // Rozhoduje disk, ne návratový kód: co ze schválených cest zbylo.
+    let zbylo = paths
+        .iter()
+        .filter(|p| std::path::Path::new(p.as_str()).exists())
+        .count();
+    let (ok, aborted, v_kosi, detail) = popis_mazani(paths.len(), zbylo, &vysledek);
+    // Služba výsledek ověří sama (disk) a doplní k auditu i s tím, kolik
+    // položek jde obnovit z koše. Když hlášení neprojde, smazané zůstává
+    // smazané — jen historie ukáže „probíhá".
+    let _ = roura::volej(|| ipc::client::report_delete(audit_id, ok, v_kosi as u32, detail.clone()));
+    Ok(DeleteResult {
+        ok,
+        aborted,
+        detail,
+    })
+}
+
+/// Výsledek mazání pro UI a audit: `(ok, aborted, v_kosi, detail)`.
+///
+/// `ok` = ze schválených cest na disku nic nezbylo. Kolik z toho je
+/// v koši a kolik pryč natrvalo, hlásí Windows po položkách (posluchač
+/// `IFileOperation`); počty se ořežou na to, co z disku opravdu zmizelo.
+/// Natrvalo smazané položky se do koše nevešly a uživatel jejich
+/// smazání potvrdil v dotazu Windows — detail to musí říct, protože
+/// „přesunuto do koše" by u nich byla nepravda.
+fn popis_mazani(
+    celkem: usize,
+    zbylo: usize,
+    vysledek: &Result<win_sys::recycle::Recycled, win_sys::Error>,
+) -> (bool, bool, usize, String) {
+    let r = match vysledek {
+        Ok(r) => r,
+        Err(e) => return (false, false, 0, format!("přesun do koše selhal: {e}")),
+    };
+    let pryc = celkem.saturating_sub(zbylo);
+    if r.aborted && pryc == 0 {
+        return (false, true, 0, "zrušeno — nic se nesmazalo".into());
+    }
+    let v_kosi = r.v_kosi.min(pryc);
+    let natrvalo = r.natrvalo.min(pryc - v_kosi);
+    // Zmizelo, ale Windows o tom nic neohlásily — slibovat koš nejde.
+    let neovereno = pryc - v_kosi - natrvalo;
+    if zbylo == 0 && v_kosi == celkem {
+        return (true, false, v_kosi, format!("přesunuto do koše: {celkem} položek"));
+    }
+    let mut casti = Vec::new();
+    if v_kosi > 0 {
+        casti.push(format!("do koše {v_kosi}"));
+    }
+    if natrvalo > 0 {
+        casti.push(format!(
+            "natrvalo {natrvalo} (do koše se nevešly a smazání jsi potvrdil v dotazu Windows)"
+        ));
+    }
+    if neovereno > 0 {
+        casti.push(format!("{neovereno} bez potvrzení, že jsou v koši"));
+    }
+    if zbylo > 0 {
+        casti.push(format!("zůstalo na místě {zbylo}"));
+    }
+    // „Zrušeno" jen když opravdu něco zůstalo — zrušení, po kterém je
+    // všechno pryč, by UI ukázalo jako nezdar.
+    let zruseno = r.aborted && zbylo > 0;
+    let uvod = if zruseno { "zrušeno — " } else { "" };
+    (
+        zbylo == 0,
+        zruseno,
+        v_kosi,
+        format!("{uvod}odstraněno {pryc} z {celkem}: {}", casti.join(", ")),
+    )
+}
+
 /// T1 plán odinstalace (v8) — vrací kroky k potvrzení, nebo deny.
 #[tauri::command(async)]
 fn plan_uninstall(identity_key: String) -> Result<PlanOrDeny, String> {
@@ -993,19 +1119,42 @@ fn query_launchables() -> Vec<LaunchableRow> {
         // Odkaz na webovou stránku není program — stejné pravidlo,
         // jaké platí pro spouštění.
         .filter(|p| !p.aumid.contains("://"))
-        .map(|p| {
-            let lc = p.aumid.to_ascii_lowercase();
-            LaunchableRow {
-                identity_key: msix_klic(&p.aumid),
-                // Položka shellu (Ovládací panely, Plánovač úloh) je
-                // GUID; nástroje ve Windows leží pod C:\Windows.
-                system: lc.starts_with('{') || lc.contains("\\windows\\"),
-                missing: p.chybi,
-                name: p.jmeno,
-                aumid: p.aumid,
-            }
+        .map(|p| LaunchableRow {
+            identity_key: msix_klic(&p.aumid),
+            system: launchable_systemovy(&p.aumid),
+            missing: p.chybi,
+            name: p.jmeno,
+            aumid: p.aumid,
         })
         .collect()
+}
+
+/// Je spustitelná položka nástrojem Windows?
+///
+/// AUMID desktopového programu začíná GUIDem známé složky. Dřív stačil
+/// jakýkoli GUID — jenže tak začínají i programy v Program Files
+/// (`{6D809377…}` = Program Files, `{7C5A40EF…}` = Program Files (x86))
+/// a 68 jich pak v liště neslo štítek „součást Windows". Windows jsou
+/// jen System32, SysWOW64 a složka Windows samotná. Holá cesta se bere
+/// jen kotvená v %SystemRoot%, ne podřetězec „\windows\" kdekoli.
+fn launchable_systemovy(aumid: &str) -> bool {
+    const SLOZKY_WINDOWS: &[&str] = &[
+        "{1ac14e77-02e7-4e5d-b744-2eb1ae5198b7}", // FOLDERID_System (System32)
+        "{d65231b0-b2f1-4857-a4ce-a8e7c6ea7d27}", // FOLDERID_SystemX86 (SysWOW64)
+        "{f38bf404-1d43-42f2-9305-67de0b28fc23}", // FOLDERID_Windows
+    ];
+    let lc = aumid.trim().to_ascii_lowercase();
+    if SLOZKY_WINDOWS.iter().any(|g| {
+        lc.strip_prefix(g)
+            .is_some_and(|zbytek| zbytek.is_empty() || zbytek.starts_with(char::from(92u8)))
+    }) {
+        return true;
+    }
+    let sysroot = std::env::var("SystemRoot")
+        .unwrap_or_else(|_| r"C:\Windows".into())
+        .trim_end_matches(char::from(92u8))
+        .to_ascii_lowercase();
+    lc.starts_with(&format!(r"{sysroot}\"))
 }
 
 /// Ikona spustitelné položky. Volá se až tehdy, když ji služba nemá.
@@ -1686,6 +1835,7 @@ fn main() {
             query_audit,
             plan_kill,
             plan_delete,
+            delete_to_recycle,
             plan_uninstall,
             plan_purge_ghost,
             check_update,
@@ -1795,6 +1945,54 @@ fn main() {
 mod tests {
     use super::*;
 
+    // Výsledek mazání: „přesunuto do koše" jen když tam opravdu všechno
+    // je; smazání natrvalo se řekne nahlas a nepočítá se do koše.
+    #[test]
+    fn popis_mazani_rozlisi_kos_a_natrvalo() {
+        use win_sys::recycle::Recycled;
+        let r = |aborted, v_kosi, natrvalo| {
+            Ok(Recycled {
+                aborted,
+                v_kosi,
+                natrvalo,
+            })
+        };
+        let (ok, ab, kos, d) = popis_mazani(2, 0, &r(false, 2, 0));
+        assert_eq!((ok, ab, kos), (true, false, 2));
+        assert_eq!(d, "přesunuto do koše: 2 položek");
+
+        // Jedna se nevešla a uživatel potvrdil smazání natrvalo.
+        let (ok, ab, kos, d) = popis_mazani(2, 0, &r(false, 1, 1));
+        assert_eq!((ok, ab, kos), (true, false, 1));
+        assert!(d.contains("natrvalo 1") && !d.starts_with("přesunuto"), "{d}");
+
+        // Zrušeno na dotaz Windows, nic se nestalo.
+        let (ok, ab, kos, d) = popis_mazani(1, 1, &r(true, 0, 0));
+        assert_eq!((ok, ab, kos), (false, true, 0));
+        assert_eq!(d, "zrušeno — nic se nesmazalo");
+
+        // Zrušeno v půlce: jedna v koši, druhá zůstala.
+        let (ok, ab, kos, d) = popis_mazani(2, 1, &r(true, 1, 0));
+        assert_eq!((ok, ab, kos), (false, true, 1));
+        assert!(d.starts_with("zrušeno — ") && d.contains("zůstalo na místě 1"), "{d}");
+
+        // Počty z Windows se ořežou na to, co z disku opravdu zmizelo;
+        // co zmizelo bez hlášení, koš neslibuje.
+        let (_, _, kos, _) = popis_mazani(1, 1, &r(false, 1, 0));
+        assert_eq!(kos, 0);
+        let (ok, _, kos, d) = popis_mazani(1, 0, &r(false, 0, 0));
+        assert_eq!((ok, kos), (true, 0));
+        assert!(d.contains("bez potvrzení"), "{d}");
+
+        let chyba = Err(win_sys::Error::Win32 {
+            call: "x",
+            code: 5,
+        });
+        let (ok, ab, kos, d) = popis_mazani(1, 1, &chyba);
+        assert_eq!((ok, ab, kos), (false, false, 0));
+        assert!(d.starts_with("přesun do koše selhal"), "{d}");
+    }
+
     // Čekající aktualizace nesmí každou kontrolou (30 s) brát dotaz
     // z hodinového limitu API — ani když se ověření nepovedlo.
     #[test]
@@ -1830,6 +2028,26 @@ mod tests {
         assert_eq!(msix_klic(r"D:\steam\Steam.exe"), None);
         // Vypadá jako rodina, ale identifikátor vydavatele nemá 13 znaků.
         assert_eq!(msix_klic("Neco.Divneho_kratke!App"), None);
+    }
+
+    // Jen System32, SysWOW64 a Windows — ne Program Files, i když AUMID
+    // taky začíná GUIDem známé složky.
+    #[test]
+    fn launchable_systemovy_jen_slozky_windows() {
+        assert!(launchable_systemovy(r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\cmd.exe"));
+        assert!(launchable_systemovy(r"{D65231B0-B2F1-4857-A4CE-A8E7C6EA7D27}\odbcad32.exe"));
+        assert!(launchable_systemovy(r"{F38BF404-1D43-42F2-9305-67DE0B28FC23}\regedit.exe"));
+        let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        assert!(launchable_systemovy(&format!(r"{sysroot}\System32\notepad.exe")));
+        for a in [
+            r"{6D809377-6AF0-444B-8957-A3773F02200E}\Focusrite\Focusrite Control 2.exe",
+            r"{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}\Git\cmd\git-gui.exe",
+            r"C:\Program Files\Neco\windows\x.exe",
+            "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
+            r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}x",
+        ] {
+            assert!(!launchable_systemovy(a), "{a} není součást Windows");
+        }
     }
 
     // Smazaný soubor s cestou nad 250 znaků se musí ohlásit jako chybějící.

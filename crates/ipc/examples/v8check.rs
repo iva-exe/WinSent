@@ -43,7 +43,9 @@ fn main() {
         }
     }
 
-    // ── 3. Skutečné smazání testovacího souboru do koše ──
+    // ── 3. Skutečné smazání testovacího souboru do koše (v11) ──
+    // Služba mazání jen schválí; do koše soubor přesune tenhle proces
+    // pod tokenem uživatele — stejně jako UI (`delete_to_recycle`).
     let tmp = std::env::temp_dir().join("winsent-v8-gate.tmp");
     std::fs::write(&tmp, b"gate").expect("zapsat testovaci soubor");
     let path = tmp.to_string_lossy().into_owned();
@@ -52,19 +54,36 @@ fn main() {
     }) {
         Ok(Ok(plan)) => {
             println!("plan mazani: {} kroku", plan.steps.len());
+            // Služba sama nemaže — ExecuteAction musí odmítnout.
             match ipc::client::execute_action(plan.plan_id) {
+                Ok(r) if r.verdict == "deny" => println!("OK ExecuteAction mazani odmitl"),
                 Ok(r) => {
+                    println!("SELHANI: sluzba mazala sama: {:?}", r.outcome);
+                    fails += 1;
+                }
+                Err(e) => {
+                    println!("CHYBA execute: {e}");
+                    fails += 1;
+                }
+            }
+            match ipc::client::authorize_delete(plan.plan_id) {
+                Ok(Ok((paths, audit_id))) => {
+                    let out = win_sys::recycle::to_recycle_bin(&paths, None);
                     let gone = !tmp.exists();
-                    println!(
-                        "provedeni: {} / {:?}; soubor pryc: {gone}",
-                        r.verdict, r.outcome
-                    );
+                    let ok = matches!(out, Ok(r) if !r.aborted) && gone;
+                    let v_kosi = out.as_ref().map_or(0, |r| r.v_kosi as u32);
+                    let r = ipc::client::report_delete(audit_id, ok, v_kosi, format!("{out:?}"));
+                    println!("provedeni: {out:?}; soubor pryc: {gone}; audit: {r:?}");
                     if !gone {
                         fails += 1;
                     }
                 }
+                Ok(Err(d)) => {
+                    println!("SELHANI: schvaleni zamitnuto: {:?}", d.deny_reason);
+                    fails += 1;
+                }
                 Err(e) => {
-                    println!("CHYBA execute: {e}");
+                    println!("CHYBA authorize_delete: {e}");
                     fails += 1;
                 }
             }

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// `HardwareReport` přečte razítko času z bajtu příznaku `Option`,
 /// takže vyjde rok 1970 a nikde se nic nezhroutí. Tichý nesmysl je
 /// horší než chybová hláška, protože ho nikdo nenahlásí.
-pub const PROTOCOL_VERSION: u32 = 51;
+pub const PROTOCOL_VERSION: u32 = 52;
 
 /// Požadavek UI → služba.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -151,6 +151,23 @@ pub enum Request {
     ReportUninstall {
         audit_id: i64,
         identity_key: String,
+        detail: String,
+    },
+    /// Mazání do koše, krok 2 (v11): služba plán ZNOVU validuje, zapíše
+    /// audit a vrátí ověřené cesty v kanonickém tvaru — ale NEMAŽE.
+    /// Do koše je přesune UI pod tokenem uživatele, takže skončí v JEHO
+    /// koši; služba jako SYSTEM by je odklidila do koše SYSTEMu.
+    AuthorizeDelete { plan_id: u64 },
+    /// Mazání do koše, krok 3: UI hlásí, jak přesun dopadl. Služba sama
+    /// ověří, že cesty na disku nejsou, a doplní výsledek k auditu.
+    ReportDelete {
+        audit_id: i64,
+        ok: bool,
+        /// Kolik položek podle Windows skončilo v koši uživatele. Zbytek
+        /// odstraněných se smazal natrvalo (nevešel se do koše a uživatel
+        /// to na dotaz Windows potvrdil) — u něj historie nesmí slibovat
+        /// „obnovit z koše".
+        recycled: u32,
         detail: String,
     },
 }
@@ -298,6 +315,13 @@ pub enum Response {
     Error {
         message: String,
     },
+    /// Mazání schváleno (v11): ověřené cesty v kanonickém tvaru — smazat
+    /// se smí přesně tyhle — a id auditního záznamu pro ReportDelete.
+    /// Na konci výčtu, ať se nehnou čísla starších variant.
+    DeleteAuthorized {
+        paths: Vec<String>,
+        audit_id: i64,
+    },
 }
 
 #[cfg(test)]
@@ -350,7 +374,7 @@ mod wire_shape {
     /// NIKDY nepřepisuj jen čísla tady.
     #[test]
     fn zmena_tvaru_zpravy_vyzaduje_povyseni_protokolu() {
-        // (jméno, naměřeno, zaznamenáno při PROTOCOL_VERSION 51)
+        // (jméno, naměřeno, zaznamenáno při PROTOCOL_VERSION 52)
         let mereno: Vec<(&str, (usize, u64), (usize, u64))> = vec![
             ("ProcRow", otisk::<ProcRow>(), (24, 17595938677206541484)),
             ("SystemSnapshot", otisk::<SystemSnapshot>(), (32, 14742943376526283089)),
@@ -358,7 +382,7 @@ mod wire_shape {
             // snapshotu jeho změnu nevidí, proto má otisk zvlášť.
             ("GpuInfo", otisk::<GpuInfo>(), (15, 8208288304695416354)),
             ("StaticInfo", otisk::<StaticInfo>(), (11, 16331367557955489898)),
-            ("StartupRow", otisk::<StartupRow>(), (12, 5603128357851775481)),
+            ("StartupRow", otisk::<StartupRow>(), (13, 8918267249040242059)),
             ("ProtectionReport", otisk::<ProtectionReport>(), (20, 7503998234196962424)),
             ("HardwareReport", otisk::<HardwareReport>(), (19, 16128689981868478521)),
             ("OsInfoRow", otisk::<OsInfoRow>(), (10, 15116235607699317519)),
@@ -368,7 +392,7 @@ mod wire_shape {
             ("ConnectionReport", otisk::<ConnectionReport>(), (4, 11340516523186696761)),
             ("DriversReport", otisk::<DriversReport>(), (3, 2119242957881570790)),
             ("CollectorHealth", otisk::<CollectorHealth>(), (5, 5942219211452029580)),
-            ("AppRow", otisk::<AppRow>(), (9, 17305535340744830704)),
+            ("AppRow", otisk::<AppRow>(), (13, 237111863288090446)),
             ("IncidentRow", otisk::<IncidentRow>(), (8, 11433128703909839783)),
             ("EventRow", otisk::<EventRow>(), (5, 15093540666795501623)),
             ("HistProcRow", otisk::<HistProcRow>(), (13, 1874953404327417601)),

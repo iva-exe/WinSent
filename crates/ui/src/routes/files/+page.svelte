@@ -20,7 +20,15 @@
 		FolderTree
 	} from 'lucide-svelte';
 	import SystemBadge from '$lib/SystemBadge.svelte';
-	import { systemPathInfo } from '$lib/mandatory.js';
+	import {
+		systemPathInfo,
+		smiDoKose,
+		titulek,
+		souhrnUrovne,
+		STITKY,
+		infoKopie,
+		infoPrazdneho
+	} from '$lib/mandatory.js';
 	import { prefs } from '$lib/prefs.svelte.js';
 	// Pruh svazku a životnost disku na téže stupnici jako dlaždice na Home,
 	// Hardware a odznak Files v postranním panelu.
@@ -136,19 +144,25 @@
 
 	// ── Mazání do koše (v8) — nabídka, ne výchozí cesta. Plán ukáže
 	// i to, kdo soubor drží; provedení jde přes validační vrstvu.
-	let delPlan = $state(null); // { plan | deny, paths }
+	let delPlan = $state(null); // { plan | deny, paths, infos }
 	let delBusy = $state(false);
 	let delToast = $state(null);
 
-	async function askDelete(paths, ev) {
+	/// `zarad` = čím se cesta klasifikuje: duplicity a prázdné soubory
+	/// mají vlastní (kopie v datech programu, značky), jinak obecná.
+	/// Brána je táž jako u tlačítka v řádku — kdyby se sem někdy dostala
+	/// cesta, u které tlačítko není, plán se ani nevyžádá.
+	async function askDelete(paths, ev, zarad = systemPathInfo) {
 		ev?.stopPropagation();
 		// Během provádění plánu nový neplánovat: askDelete by po svém
 		// doběhnutí shodil delBusy, ač execute ještě běží.
 		if (delBusy) return;
+		const infos = paths.map((p) => zarad(p));
+		if (!infos.every(smiDoKose)) return;
 		delBusy = true;
 		try {
 			const r = await invoke('plan_delete', { paths });
-			delPlan = r.plan_id != null ? { plan: r, paths } : { deny: r, paths };
+			delPlan = r.plan_id != null ? { plan: r, paths, infos } : { deny: r, paths, infos };
 		} catch (e) {
 			// Bez časovače toast („služba neběží…") visel napořád, i když
 			// služba mezitím naběhla.
@@ -167,11 +181,20 @@
 		const plan = delPlan;
 		delBusy = true;
 		try {
-			const r = await invoke('execute_plan', { planId: plan.plan.plan_id });
-			delToast =
-				r.verdict === 'allow' && r.outcome === 'ok'
-					? { kind: 'ok', text: `přesunuto do koše (${plan.paths.length})` }
-					: { kind: 'deny', text: r.deny_reason ?? `nepodařilo se (${r.outcome})` };
+			// Do koše přesouvá UI pod účtem uživatele, ne služba: služba
+			// běží jako SYSTEM a soubory jí končily v koši SYSTEMu, kam
+			// uživatel nevidí. Služba plán jen znovu ověří a zapíše audit.
+			// `aborted` = Windows se zeptaly, jestli smazat natrvalo
+			// (soubor se do koše nevešel), a uživatel odmítl.
+			const r = await invoke('delete_to_recycle', { planId: plan.plan.plan_id });
+			delToast = r.aborted
+				? { kind: 'info', text: 'zrušeno — nic se nesmazalo' }
+				: r.ok
+					? // Hostitel ví, kolik skončilo v koši a kolik Windows
+						// smazalo natrvalo (soubor se do koše nevešel a smazání
+						// jsi potvrdil v jeho dotazu) — napevno „do koše" by lhalo.
+						{ kind: 'ok', text: r.detail || `přesunuto do koše (${plan.paths.length})` }
+					: { kind: 'deny', text: r.detail || 'do koše se to přesunout nepodařilo' };
 			// Report ze služby se mazáním nemění — řádek zmizí až tím,
 			// že si sami ověříme, že soubor v koši opravdu skončil.
 			load().then(recheckGone);
@@ -184,21 +207,36 @@
 		setTimeout(() => (delToast = null), 4000);
 	}
 
+	/// Co to je, jednou krátkou větou — do hlavičky menu (vejde se tam
+	/// jen jeden řádek). Celé vysvětlení je v tooltipu značky, třída
+	/// („spravuje Windows") u zakázaného koše.
+	function hlavickaDuvodu(info) {
+		if (!info) return 'Winsent neví, co to je';
+		return info.reason.split(/ — |\. /)[0];
+	}
+
 	// Kontextové menu cesty (soubor, složka, duplicita).
 	//
 	// Celá cesta se do vyhledávače NEPOSÍLÁ — je v ní jméno uživatele
 	// a struktura jeho disku. Hledá se jen jméno souboru, případně jeho
 	// přípona: „co je pagefile.sys" dává smysl, „co je
-	// C:\Users\Jan Novak\…" ne.
-	function menuCesta(e, path, size, jeSlozka) {
+	// C:\Users\Jan Novak\…" ne. U známých míst se hledá jejich jméno
+	// („NVIDIA DXCache") — hash typu „a3f9….nvph" by nenašel nic.
+	//
+	// Koš v menu má STEJNOU bránu jako tlačítko v řádku (`smiDoKose`);
+	// dřív menu zakázalo každou značku, tlačítko jen „součást Windows".
+	function menuCesta(e, path, size, jeSlozka, zarad = systemPathInfo) {
 		const jmeno = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 		const pripona = jmeno.includes('.') ? jmeno.split('.').pop().toLowerCase() : '';
-		const guard = systemPathInfo(path);
+		const guard = zarad(path);
+		const windows = guard?.level === 'mandatory' || guard?.level === 'managed';
 		openMenu(e, {
 			title: jmeno,
-			subtitle: size != null ? fmtSize(size) : '',
-			hledat: [jmeno],
-			kontext: jeSlozka ? 'složka Windows' : 'soubor',
+			subtitle: [size != null ? fmtSize(size) : '', hlavickaDuvodu(guard)]
+				.filter(Boolean)
+				.join(' · '),
+			hledat: [guard?.hledat ?? jmeno],
+			kontext: jeSlozka ? (windows ? 'složka Windows' : 'složka') : 'soubor',
 			items: [
 				{
 					label: 'Otevřít v Průzkumníku',
@@ -213,9 +251,9 @@
 							label: 'Přesunout do koše',
 							icon: 'trash',
 							danger: true,
-							disabled: !!guard,
-							hint: guard ? guard.reason : '',
-							run: () => askDelete([path])
+							disabled: !smiDoKose(guard),
+							hint: smiDoKose(guard) ? '' : STITKY[guard.level],
+							run: () => askDelete([path], null, zarad)
 						},
 				pripona
 					? {
@@ -364,7 +402,7 @@
 						{@const guard = systemPathInfo(path)}
 						<button class="row" onclick={() => openPath(path)} oncontextmenu={(e) => menuCesta(e, path, size, true)} title="Otevřít v Průzkumníku">
 							<span class="r-path mono">{path}</span>
-							{#if guard}<SystemBadge compact level={guard.level} title={guard.reason} />{/if}
+							{#if guard}<SystemBadge compact level={guard.level} certainty={guard.certainty} title={titulek(guard)} />{/if}
 							<span class="r-size mono">{fmtSize(size)}</span>
 						</button>
 					{/each}
@@ -376,10 +414,13 @@
 						<div class="row-wrap">
 							<button class="row" onclick={() => openPath(path)} oncontextmenu={(e) => menuCesta(e, path, size, false)} title="Otevřít v Průzkumníku">
 								<span class="r-path mono">{path}</span>
-								{#if guard}<SystemBadge compact level={guard.level} title={guard.reason} />{/if}
+								{#if guard}<SystemBadge compact level={guard.level} certainty={guard.certainty} title={titulek(guard)} />{/if}
 								<span class="r-size mono">{fmtSize(size)}</span>
 							</button>
-							{#if guard?.level !== 'mandatory'}
+							<!-- Koš jen tam, kde smazání nic nerozbije; u ostatních
+							     značka říká, jak místo uvolnit správně. Prázdné
+							     místo drží sloupec velikostí zarovnaný. -->
+							{#if smiDoKose(guard)}
 								<button
 									class="del-btn"
 									title="Přesunout do koše (jde vrátit)"
@@ -387,19 +428,27 @@
 								>
 									<Trash2 size={14} />
 								</button>
+							{:else}
+								<span class="del-gap"></span>
 							{/if}
 						</div>
 					{/each}
 				</div>
 			</div>
-			<!-- Legenda k oběma sloupcům. Největší soubory na disku jsou
-			     skoro vždy systémové; bez tohohle to vypadá jako seznam
-			     smetí k úklidu. -->
-			<p class="note big">
-				<SystemBadge compact /> povinná součást Windows — smazat ji nejde a systém by se rozbil ·
-				<SystemBadge compact level="managed" /> systémové, ale uklidit to umí nástroj Windows
-				(Vyčištění disku, Ochrana systému, koš) · bez značky jsou tvoje data. Po najetí myší
-				na značku je vidět, o co přesně jde.
+			<!-- Legenda k oběma sloupcům. Největší položky na disku jsou
+			     skoro vždy systémové nebo kontejnery (profil, AppData);
+			     bez tohohle to vypadá jako seznam smetí k úklidu. „Bez
+			     značky" NEZNAMENÁ „tvoje data": značku dostane jen to, co
+			     Winsent opravdu zná. -->
+			<p class="note big legend">
+				<span><SystemBadge compact /> součást Windows — nemazat</span>
+				<span><SystemBadge compact level="managed" /> spravuje Windows — místo uvolní jeho nástroj (Vyčištění disku, Ochrana systému, koš)</span>
+				<span><SystemBadge compact level="kontejner" /> nemazat celé — velikost je součet obsahu, rozklikni</span>
+				<span><SystemBadge compact level="aplikace" /> patří programu — odebírá se odinstalací nebo v programu</span>
+				<span><SystemBadge compact level="data" /> tvoje data — smazat jde, ale přijdeš o ně</span>
+				<span><SystemBadge compact level="cache" certainty="high" /> mezipaměť — smazat jde, vytvoří se znovu (tlumeně: obvykle bezpečné, výrobce to nepotvrzuje)</span>
+				<span>bez značky = Winsent neví, co to je — nemaž, dokud si nejsi jistý.</span>
+				<span>Po najetí myší na značku je vidět, o co přesně jde a jak místo uvolnit správně.</span>
 			</p>
 		</section>
 	{/if}
@@ -451,18 +500,26 @@
 							{#each dupGroups.slice(0, 40) as [size, paths], gi (gi)}
 								<li>
 									<span class="dup-size mono">{fmtSize(size)} × {paths.length}</span>
+									<!-- Kopie v datech programu nejsou smetí: každou
+									     používá jiný profil nebo program (infoKopie). -->
 									{#each paths as p (p)}
+										{@const guard = infoKopie(p)}
 										<div class="row-wrap">
-											<button class="row" onclick={() => openPath(p)} oncontextmenu={(e) => menuCesta(e, p, size, false)}>
+											<button class="row" onclick={() => openPath(p)} oncontextmenu={(e) => menuCesta(e, p, size, false, infoKopie)}>
 												<span class="r-path mono">{p}</span>
+												{#if guard}<SystemBadge compact level={guard.level} certainty={guard.certainty} title={titulek(guard)} />{/if}
 											</button>
-											<button
-												class="del-btn"
-												title="Přesunout do koše (jde vrátit)"
-												onclick={(ev) => askDelete([p], ev)}
-											>
-												<Trash2 size={14} />
-											</button>
+											{#if smiDoKose(guard)}
+												<button
+													class="del-btn"
+													title="Přesunout do koše (jde vrátit)"
+													onclick={(ev) => askDelete([p], ev, infoKopie)}
+												>
+													<Trash2 size={14} />
+												</button>
+											{:else}
+												<span class="del-gap"></span>
+											{/if}
 										</div>
 									{/each}
 								</li>
@@ -483,18 +540,26 @@
 						{#if zeroFiles.length === 0}
 							<p class="note">žádné prázdné soubory v profilech</p>
 						{:else}
+							<!-- Prázdný neznamená zbytečný: značky (__init__.py,
+							     .gitkeep, zámky) programy potřebují (infoPrazdneho). -->
 							{#each zeroFiles.slice(0, 60) as p (p)}
+								{@const guard = infoPrazdneho(p)}
 								<div class="row-wrap">
-									<button class="row" onclick={() => openPath(p)} oncontextmenu={(e) => menuCesta(e, p, null, false)}>
+									<button class="row" onclick={() => openPath(p)} oncontextmenu={(e) => menuCesta(e, p, null, false, infoPrazdneho)}>
 										<span class="r-path mono">{p}</span>
+										{#if guard}<SystemBadge compact level={guard.level} certainty={guard.certainty} title={titulek(guard)} />{/if}
 									</button>
-									<button
-										class="del-btn"
-										title="Přesunout do koše (jde vrátit)"
-										onclick={(ev) => askDelete([p], ev)}
-									>
-										<Trash2 size={14} />
-									</button>
+									{#if smiDoKose(guard)}
+										<button
+											class="del-btn"
+											title="Přesunout do koše (jde vrátit)"
+											onclick={(ev) => askDelete([p], ev, infoPrazdneho)}
+										>
+											<Trash2 size={14} />
+										</button>
+									{:else}
+										<span class="del-gap"></span>
+									{/if}
 								</div>
 							{/each}
 						{/if}
@@ -505,7 +570,8 @@
 				Winsent ukáže, co zabírá místo — mazat necháme na tobě. Klik otevře složku
 				v Průzkumníku, kde soubor uvidíš v kontextu a smažeš vědomě. Žádná appka
 				za tebe nemá rozhodovat, co je tvoje data a co smetí. Když si přesto chceš
-				nechat pomoct, ikona koše u položky ji přesune do koše — odkud jde vrátit.
+				nechat pomoct, ikona koše u položky ji přesune do tvého koše — odkud jde vrátit.
+				U věcí Windows a programů koš není; jejich značka říká, jak místo uvolnit správně.
 			</p>
 		{/if}
 	</section>
@@ -531,12 +597,36 @@
 					</div>
 				{:else}
 					<h2>Přesunout do koše?</h2>
+					<!-- Co to je, ještě před potvrzením: třída, důvod, co udělat
+					     předtím a správná cesta. U tvých dat a u neznámých
+					     souborů je to varování — koš tam je, ale ne naslepo. -->
+					{#each delPlan.paths as p, i (p)}
+						{@const info = delPlan.infos?.[i] ?? null}
+						<div class="d-class">
+							{#if info}
+								<span class="d-class-head">
+									<SystemBadge level={info.level} certainty={info.certainty} title={titulek(info)} />
+									<span class:warn={info.level === 'data' || (info.level === 'cache' && info.certainty !== 'high')}>
+										{souhrnUrovne(info.level, info.certainty)}
+									</span>
+								</span>
+								<p>{info.reason}</p>
+								{#if info.condition}<p><b>Předtím:</b> {info.condition}</p>{/if}
+								{#if info.tool}<p><b>Správná cesta:</b> {info.tool}</p>{/if}
+							{:else}
+								<p class="warn d-class-head"><TriangleAlert size={14} /> {souhrnUrovne(null)}.</p>
+							{/if}
+						</div>
+					{/each}
 					<ul class="d-steps">
 						{#each delPlan.plan.steps as s, i (i)}
 							<li class:warn={s.description.startsWith('pozor')}>{s.description}</li>
 						{/each}
 					</ul>
-					<p class="d-note">Z koše jde soubor kdykoli vrátit zpět.</p>
+					<p class="d-note">
+						Soubor půjde do tvého koše, odkud ho jde kdykoli vrátit. Když se do koše
+						nevejde, Windows se nejdřív zeptají, jestli ho smazat natrvalo.
+					</p>
 					<div class="d-actions">
 						<button class="d-btn" disabled={delBusy} onclick={() => (delPlan = null)}>Zrušit</button>
 						<button class="d-btn primary" disabled={delBusy} onclick={confirmDelete}>
@@ -863,6 +953,24 @@
 		color: var(--danger);
 		background: var(--surface-hover);
 	}
+	/* Místo po koši u řádků, které se mazat nedají — velikosti pod
+	   sebou pak zůstanou v jednom sloupci (šířka = ikona + padding). */
+	.del-gap {
+		flex: none;
+		width: 24px;
+	}
+	/* Legenda značek: každá položka drží pohromadě, řádky se lámou
+	   mezi nimi, ne uprostřed ikony a jejího popisu. */
+	.legend {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px 16px;
+	}
+	.legend span {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+	}
 
 	/* Dialog potvrzení (stejný jazyk jako v Tasks) */
 	.dlg-backdrop {
@@ -904,6 +1012,32 @@
 		color: var(--danger);
 		font-size: var(--fs-xl);
 		margin-bottom: 12px;
+	}
+	/* Třída souboru v dialogu: co to je a jak s tím správně. */
+	.d-class {
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--surface);
+		padding: 8px 10px;
+		margin-bottom: 10px;
+		font-size: var(--fs-md);
+		color: var(--text-dim);
+	}
+	.d-class p {
+		margin: 4px 0 0;
+	}
+	.d-class b {
+		color: var(--text);
+		font-weight: 500;
+	}
+	.d-class-head {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		color: var(--text);
+	}
+	.d-class .warn {
+		color: var(--warn);
 	}
 	.d-note {
 		font-size: var(--fs-sm);
@@ -949,6 +1083,9 @@
 	}
 	.dlg-toast.deny {
 		color: var(--danger);
+	}
+	.dlg-toast.info {
+		color: var(--text-dim);
 	}
 
 	.mono {
