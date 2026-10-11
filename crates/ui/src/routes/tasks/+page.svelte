@@ -911,18 +911,34 @@
 	// a VRAM jako podíl z celku (stejně jako graf RAM); I/O a vlákna
 	// žádný celek nemají, ty jen šednou v nule.
 	function bunky(r, skupina) {
-		const pamet = (system?.mem_total_mb ?? 0) * 1024 * 1024;
-		const vram = system?.gpu?.vram_total_mb;
+		const { pamet, vram } = podily(r);
 		const b = (text, pct) => ({ text, barva: barvaBunky(text, pct) });
 		return [
 			b(`${r.sys_pct.toFixed(1)} %`, r.sys_pct),
 			b(`${r.cpu_pct.toFixed(1)} %`, r.cpu_pct),
 			b(fmtGpu(r.gpu_pct), r.gpu_pct),
-			b(fmtVram(r.vram_mb), r.vram_mb != null && vram ? (r.vram_mb / vram) * 100 : null),
-			b(fmtMem(r.ws_bytes), pamet > 0 ? (r.ws_bytes / pamet) * 100 : null),
+			b(fmtVram(r.vram_mb), vram),
+			b(fmtMem(r.ws_bytes), pamet),
 			b(fmtBps(r.disk_bps), null),
 			b(String(skupina ? r.threads || '—' : (r.threads ?? '—')), null)
 		];
+	}
+	// Paměť a VRAM řádku jako procenta z celku (null = celek neznámý).
+	function podily(r) {
+		const pamet = (system?.mem_total_mb ?? 0) * 1024 * 1024;
+		const vram = system?.gpu?.vram_total_mb;
+		return {
+			pamet: pamet > 0 ? (r.ws_bytes / pamet) * 100 : null,
+			vram: r.vram_mb != null && vram ? (r.vram_mb / vram) * 100 : null
+		};
+	}
+	// Tečka vlevo: nejvytíženější složka řádku, ne celková zátěž SYS.
+	// Proces s SYS 33 %, který ale bere 90 % GPU, je pro grafiku červený
+	// — a tečka to má říct, i když průměr vypadá klidně.
+	function vrcholRadku(r) {
+		const { pamet, vram } = podily(r);
+		const v = [r.cpu_pct, r.gpu_pct, pamet, vram].filter((x) => x != null && !Number.isNaN(x));
+		return v.length ? Math.max(...v) : r.sys_pct;
 	}
 	function fmtClock(unix) {
 		return new Date(unix * 1000).toLocaleTimeString('cs-CZ');
@@ -1654,7 +1670,12 @@
 				</colgroup>
 				<thead>
 					<tr>
-						<th class="t-dot" class:serazeno={sortKey === 'sys_pct'} onclick={() => setSort('sys_pct')} title="Zátěž systému"></th>
+						<th
+							class="t-dot"
+							class:serazeno={sortKey === 'sys_pct'}
+							onclick={() => setSort('sys_pct')}
+							title="Barva tečky = nejvytíženější složka (CPU, GPU, paměť, VRAM). Klik řadí podle SYS."
+						></th>
 						<th class="t-name" class:serazeno={sortKey === 'name'} onclick={() => setSort('name')}>
 							{viewMode === 'apps' ? 'Aplikace' : 'Proces'} {#if sortKey === 'name'}{arrow}{/if}
 						</th>
@@ -1715,8 +1736,8 @@
 								<td class="t-dot">
 									<span
 										class="load-dot"
-										style:background={colorForLoad(g.sys_pct)}
-										style:box-shadow={`0 0 5px ${colorForLoad(g.sys_pct)}`}
+										style:background={colorForLoad(vrcholRadku(g))}
+										style:box-shadow={`0 0 5px ${colorForLoad(vrcholRadku(g))}`}
 									></span>
 								</td>
 								<td class="t-name">
@@ -1772,8 +1793,8 @@
 								<td class="t-dot">
 									<span
 										class="load-dot"
-										style:background={colorForLoad(p.sys_pct)}
-										style:box-shadow={`0 0 5px ${colorForLoad(p.sys_pct)}`}
+										style:background={colorForLoad(vrcholRadku(p))}
+										style:box-shadow={`0 0 5px ${colorForLoad(vrcholRadku(p))}`}
 									></span>
 								</td>
 								<td class="t-name">
