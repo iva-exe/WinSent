@@ -103,6 +103,12 @@ Write-Host "Vydáno: $version" -ForegroundColor Green
 Write-Host "Testeři dostanou aktualizaci spuštěním WinsentSetup.exe."
 Write-Host "Instalátor k rozeslání: $(Join-Path $rel 'WinsentSetup.exe')"
 
+# ── Úklid vývojové složky ──────────────────────────────────────────
+# Cargo staré přeložené verze nikdy nemaže; bez tohohle složka projektu
+# dorostla na 39 GB (viz tools\uklid.ps1). Až po pushi: vydání je hotové
+# a selhání úklidu ho nesmí shodit.
+try { & (Join-Path $PSScriptRoot 'uklid.ps1') } catch { Write-Host "Úklid selhal: $_" -ForegroundColor Yellow }
+
 # ── Co je NAINSTALOVANÉ ────────────────────────────────────────────
 # Tenhle skript nic neinstaluje: staví, kopíruje do release\ a pushuje.
 # Do C:\Program Files\Winsent zapisuje jen WinsentSetup.exe. Mezi

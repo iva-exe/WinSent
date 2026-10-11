@@ -116,6 +116,12 @@ ctrlc = "3"
 # backtraces; krokový debugger na projektu nepoužíváme (SPEC: logy).
 debug = "line-tables-only"
 
+# Knihovny třetích stran bez ladicích informací vůbec: windows-rs a tauri
+# jsou obrovské a jejich řádky v backtrace nikdo nečte — backtrace z našich
+# crate zůstává čitelný. Spolu s tools/uklid.ps1 drží target/ malý.
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 # Menší binárka služby; panic=abort ať Service Recovery restart funguje i při panice.
 lto = "thin"
